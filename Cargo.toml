@@ -1,0 +1,68 @@
+[workspace]
+members = [
+    "crates/forge-core",
+    "crates/forge-net",
+    "crates/forge-shard",
+    "crates/forge-infer",
+    "crates/forge-proto",
+    "crates/forge-ledger",
+    "crates/forge-node",
+    "crates/forge-cli",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/nicola-pache/forge"
+
+[workspace.dependencies]
+# Internal crates
+forge-core = { path = "crates/forge-core" }
+forge-net = { path = "crates/forge-net" }
+forge-shard = { path = "crates/forge-shard" }
+forge-infer = { path = "crates/forge-infer" }
+forge-proto = { path = "crates/forge-proto" }
+forge-ledger = { path = "crates/forge-ledger" }
+forge-node = { path = "crates/forge-node" }
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+bincode = "1"
+
+# Error handling
+thiserror = "2"
+anyhow = "1"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# Crypto
+ed25519-dalek = { version = "2", features = ["serde"] }
+rand = "0.8"
+hex = "0.4"
+
+# Inference (llama.cpp via Rust bindings)
+llama-cpp-2 = "0.1"
+
+# Tokenization
+tokenizers = { version = "0.21", default-features = false, features = ["onig"] }
+hf-hub = "0.4"
+
+# Networking (Iroh)
+iroh = "0.97"
+
+# HTTP (for single-node API)
+axum = "0.8"
+tower = "0.5"
+tokio-stream = "0.1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }

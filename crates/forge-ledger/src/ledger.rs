@@ -1,0 +1,616 @@
+use forge_core::{NodeBalance, NodeId, WorkUnit};
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+
+/// 1 Compute Unit = 1 billion FLOPs of verified inference work.
+pub const FLOPS_PER_CU: u64 = 1_000_000_000;
+
+/// Local compute ledger — the economic engine of Forge.
+///
+/// Philosophy: Compute + Electricity = Money.
+/// A Mac Mini on Forge is like an apartment building — it earns yield
+/// by performing useful work (inference) while idle.
+///
+/// Each node maintains its own view of the ledger based on observed behavior.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ComputeLedger {
+    balances: HashMap<NodeId, NodeBalance>,
+    work_log: Vec<WorkUnit>,
+    trade_log: Vec<TradeRecord>,
+    price: MarketPrice,
+}
+
+/// Dynamic pricing based on local supply/demand observation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MarketPrice {
+    /// Base: 1 CU per FLOPS_PER_CU of compute.
+    pub base_cu_per_token: f64,
+    /// More idle nodes → lower price (0.5 to 2.0).
+    pub supply_factor: f64,
+    /// More requests than capacity → higher price.
+    pub demand_factor: f64,
+}
+
+impl Default for MarketPrice {
+    fn default() -> Self {
+        Self {
+            base_cu_per_token: 1.0,
+            supply_factor: 1.0,
+            demand_factor: 1.0,
+        }
+    }
+}
+
+impl MarketPrice {
+    /// Effective CU cost per token.
+    pub fn effective_cu_per_token(&self) -> f64 {
+        self.base_cu_per_token * self.demand_factor / self.supply_factor
+    }
+}
+
+/// A record of a completed trade between two nodes.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TradeRecord {
+    pub provider: NodeId,
+    pub consumer: NodeId,
+    pub cu_amount: u64,
+    pub tokens_processed: u64,
+    pub timestamp: u64,
+    pub model_id: String,
+}
+
+/// Per-node summary within a settlement window.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SettlementNode {
+    pub node_id: String,
+    pub gross_earned_cu: u64,
+    pub gross_spent_cu: u64,
+    pub net_cu: i64,
+    pub trade_count: usize,
+    pub estimated_payout_value: Option<f64>,
+}
+
+/// Exportable statement for off-protocol settlement adapters.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SettlementStatement {
+    pub generated_at: u64,
+    pub window_start: u64,
+    pub window_end: u64,
+    pub trade_count: usize,
+    pub total_cu_transferred: u64,
+    pub reference_price_per_cu: Option<f64>,
+    pub nodes: Vec<SettlementNode>,
+    pub trades: Vec<TradeRecord>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PersistedLedger {
+    balances: Vec<NodeBalance>,
+    work_log: Vec<WorkUnit>,
+    trade_log: Vec<TradeRecord>,
+    price: MarketPrice,
+}
+
+impl ComputeLedger {
+    pub fn new() -> Self {
+        Self {
+            balances: HashMap::new(),
+            work_log: Vec::new(),
+            trade_log: Vec::new(),
+            price: MarketPrice::default(),
+        }
+    }
+
+    /// Get the current market price.
+    pub fn market_price(&self) -> &MarketPrice {
+        &self.price
+    }
+
+    /// Return the most recent trades, newest first.
+    pub fn recent_trades(&self, limit: usize) -> Vec<TradeRecord> {
+        self.trade_log
+            .iter()
+            .rev()
+            .take(limit)
+            .cloned()
+            .collect()
+    }
+
+    /// Save the current ledger snapshot as JSON.
+    pub fn save_to_path(&self, path: &std::path::Path) -> Result<(), forge_core::ForgeError> {
+        if let Some(parent) = path.parent() {
+            if !parent.as_os_str().is_empty() {
+                std::fs::create_dir_all(parent)?;
+            }
+        }
+
+        let snapshot = PersistedLedger {
+            balances: self.balances.values().cloned().collect(),
+            work_log: self.work_log.clone(),
+            trade_log: self.trade_log.clone(),
+            price: self.price.clone(),
+        };
+
+        let json = serde_json::to_string_pretty(&snapshot)
+            .map_err(|e| forge_core::ForgeError::LedgerError(format!("serialize ledger: {e}")))?;
+        std::fs::write(path, json)?;
+        Ok(())
+    }
+
+    /// Load a ledger snapshot from JSON.
+    pub fn load_from_path(path: &std::path::Path) -> Result<Self, forge_core::ForgeError> {
+        let json = std::fs::read_to_string(path)?;
+        let snapshot: PersistedLedger = serde_json::from_str(&json)
+            .map_err(|e| forge_core::ForgeError::LedgerError(format!("deserialize ledger: {e}")))?;
+
+        let balances = snapshot
+            .balances
+            .into_iter()
+            .map(|balance| (balance.node_id.clone(), balance))
+            .collect();
+
+        Ok(Self {
+            balances,
+            work_log: snapshot.work_log,
+            trade_log: snapshot.trade_log,
+            price: snapshot.price,
+        })
+    }
+
+    /// Export an aggregate settlement statement for a time window.
+    pub fn export_settlement_statement(
+        &self,
+        window_start: u64,
+        window_end: u64,
+        reference_price_per_cu: Option<f64>,
+    ) -> SettlementStatement {
+        use std::collections::BTreeMap;
+
+        let trades: Vec<TradeRecord> = self
+            .trade_log
+            .iter()
+            .filter(|trade| trade.timestamp >= window_start && trade.timestamp <= window_end)
+            .cloned()
+            .collect();
+
+        let mut nodes: BTreeMap<String, SettlementNode> = BTreeMap::new();
+        let total_cu_transferred = trades.iter().map(|trade| trade.cu_amount).sum();
+
+        for trade in &trades {
+            let provider_id = trade.provider.to_hex();
+            let provider = nodes
+                .entry(provider_id.clone())
+                .or_insert_with(|| SettlementNode {
+                    node_id: provider_id.clone(),
+                    gross_earned_cu: 0,
+                    gross_spent_cu: 0,
+                    net_cu: 0,
+                    trade_count: 0,
+                    estimated_payout_value: None,
+                });
+            provider.gross_earned_cu += trade.cu_amount;
+            provider.trade_count += 1;
+
+            let consumer_id = trade.consumer.to_hex();
+            let consumer = nodes
+                .entry(consumer_id.clone())
+                .or_insert_with(|| SettlementNode {
+                    node_id: consumer_id.clone(),
+                    gross_earned_cu: 0,
+                    gross_spent_cu: 0,
+                    net_cu: 0,
+                    trade_count: 0,
+                    estimated_payout_value: None,
+                });
+            consumer.gross_spent_cu += trade.cu_amount;
+            consumer.trade_count += 1;
+        }
+
+        let mut nodes: Vec<SettlementNode> = nodes
+            .into_values()
+            .map(|mut node| {
+                node.net_cu = node.gross_earned_cu as i64 - node.gross_spent_cu as i64;
+                node.estimated_payout_value =
+                    reference_price_per_cu.map(|price| node.net_cu as f64 * price);
+                node
+            })
+            .collect();
+        nodes.sort_by(|a, b| b.net_cu.cmp(&a.net_cu));
+
+        SettlementStatement {
+            generated_at: now_millis(),
+            window_start,
+            window_end,
+            trade_count: trades.len(),
+            total_cu_transferred,
+            reference_price_per_cu,
+            nodes,
+            trades,
+        }
+    }
+
+    /// Estimate the CU cost for a given inference request.
+    pub fn estimate_cost(&self, tokens: u64, layers: u32, model_layers: u32) -> u64 {
+        let fraction = layers as f64 / model_layers as f64;
+        let base_cost = tokens as f64 * self.price.effective_cu_per_token() * fraction;
+        base_cost.ceil() as u64
+    }
+
+    /// Record a unit of work contributed by a node.
+    pub fn record_contribution(&mut self, work: WorkUnit) {
+        let node_id = work.node_id.clone();
+        let cu = work.estimated_flops / FLOPS_PER_CU.max(1);
+
+        let balance = self.balances.entry(node_id.clone()).or_insert(NodeBalance {
+            node_id,
+            contributed: 0,
+            consumed: 0,
+            reserved: 0,
+            reputation: 0.5,
+        });
+
+        balance.contributed += cu;
+        self.work_log.push(work);
+    }
+
+    /// Record compute consumed by a node (it requested inference).
+    pub fn record_consumption(&mut self, node_id: &NodeId, cu: u64) {
+        let balance = self
+            .balances
+            .entry(node_id.clone())
+            .or_insert(NodeBalance {
+                node_id: node_id.clone(),
+                contributed: 0,
+                consumed: 0,
+                reserved: 0,
+                reputation: 0.5,
+            });
+
+        balance.consumed += cu;
+    }
+
+    /// Execute a trade: provider earns CU, consumer spends CU.
+    pub fn execute_trade(&mut self, trade: &TradeRecord) {
+        // Credit provider
+        let provider = self
+            .balances
+            .entry(trade.provider.clone())
+            .or_insert(NodeBalance {
+                node_id: trade.provider.clone(),
+                contributed: 0,
+                consumed: 0,
+                reserved: 0,
+                reputation: 0.5,
+            });
+        provider.contributed += trade.cu_amount;
+
+        // Debit consumer
+        let consumer = self
+            .balances
+            .entry(trade.consumer.clone())
+            .or_insert(NodeBalance {
+                node_id: trade.consumer.clone(),
+                contributed: 0,
+                consumed: 0,
+                reserved: 0,
+                reputation: 0.5,
+            });
+        consumer.consumed += trade.cu_amount;
+        self.trade_log.push(trade.clone());
+    }
+
+    /// Can a node afford a given CU cost?
+    /// New nodes with no history get a free tier allowance.
+    pub fn can_afford(&self, node_id: &NodeId, cu_cost: u64) -> bool {
+        const FREE_TIER_CU: i64 = 1000; // new nodes get 1000 CU free
+        match self.balances.get(node_id) {
+            Some(balance) => balance.balance() + FREE_TIER_CU >= cu_cost as i64,
+            None => FREE_TIER_CU >= cu_cost as i64, // new node, use free tier
+        }
+    }
+
+    /// Get a node's current balance.
+    pub fn get_balance(&self, node_id: &NodeId) -> Option<&NodeBalance> {
+        self.balances.get(node_id)
+    }
+
+    /// Get a node's net CU balance (contributed - consumed), including free tier.
+    pub fn effective_balance(&self, node_id: &NodeId) -> i64 {
+        const FREE_TIER_CU: i64 = 1000;
+        match self.balances.get(node_id) {
+            Some(b) => b.balance() + FREE_TIER_CU,
+            None => FREE_TIER_CU,
+        }
+    }
+
+    /// Update reputation based on uptime and reliability.
+    /// Reputation affects priority in node selection.
+    pub fn update_reputation(&mut self, node_id: &NodeId, delta: f64) {
+        if let Some(balance) = self.balances.get_mut(node_id) {
+            balance.reputation = (balance.reputation + delta).clamp(0.0, 1.0);
+        }
+    }
+
+    /// Apply yield: nodes that have been online and contributing
+    /// earn a bonus proportional to their contribution.
+    /// This is the "interest" — compute resources appreciate with use.
+    pub fn apply_yield(&mut self, node_id: &NodeId, uptime_hours: f64) {
+        // Yield rate: 0.1% per hour of uptime (compounding with reputation)
+        const BASE_YIELD_RATE: f64 = 0.001;
+
+        if let Some(balance) = self.balances.get_mut(node_id) {
+            let yield_rate = BASE_YIELD_RATE * balance.reputation;
+            let yield_cu = (balance.contributed as f64 * yield_rate * uptime_hours) as u64;
+            if yield_cu > 0 {
+                balance.contributed += yield_cu;
+            }
+        }
+    }
+
+    /// Update market price based on observed supply and demand.
+    pub fn update_price(&mut self, active_providers: usize, pending_requests: usize) {
+        // Supply: more providers → lower price
+        self.price.supply_factor = (active_providers as f64 / 10.0).max(0.5).min(2.0);
+
+        // Demand: more pending requests → higher price
+        self.price.demand_factor = (pending_requests as f64 / 5.0).max(0.5).min(3.0);
+    }
+
+    /// Get all nodes sorted by balance (highest contributors first).
+    pub fn ranked_nodes(&self) -> Vec<&NodeBalance> {
+        let mut nodes: Vec<_> = self.balances.values().collect();
+        nodes.sort_by(|a, b| b.balance().cmp(&a.balance()));
+        nodes
+    }
+
+    /// Get total network statistics.
+    pub fn network_stats(&self) -> NetworkStats {
+        let total_contributed: u64 = self.balances.values().map(|b| b.contributed).sum();
+        let total_consumed: u64 = self.balances.values().map(|b| b.consumed).sum();
+        NetworkStats {
+            total_nodes: self.balances.len(),
+            total_contributed_cu: total_contributed,
+            total_consumed_cu: total_consumed,
+            total_trades: self.trade_log.len(),
+            avg_reputation: if self.balances.is_empty() {
+                0.0
+            } else {
+                self.balances.values().map(|b| b.reputation).sum::<f64>()
+                    / self.balances.len() as f64
+            },
+        }
+    }
+}
+
+impl Default for ComputeLedger {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+fn now_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+
+/// Aggregate network statistics.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NetworkStats {
+    pub total_nodes: usize,
+    pub total_contributed_cu: u64,
+    pub total_consumed_cu: u64,
+    pub total_trades: usize,
+    pub avg_reputation: f64,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use forge_core::{LayerRange, ModelId};
+
+    fn unique_temp_path(prefix: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!("{prefix}-{}.json", now_millis()))
+    }
+
+    fn make_work(node: [u8; 32], flops: u64) -> WorkUnit {
+        WorkUnit {
+            node_id: NodeId(node),
+            timestamp: 0,
+            layers_computed: LayerRange::new(0, 8),
+            model_id: ModelId("test".to_string()),
+            tokens_processed: 100,
+            estimated_flops: flops,
+        }
+    }
+
+    #[test]
+    fn contribution_increases_balance() {
+        let mut ledger = ComputeLedger::new();
+        let node = [1u8; 32];
+        // 5 billion FLOPS = 5 CU
+        ledger.record_contribution(make_work(node, 5 * FLOPS_PER_CU));
+        let balance = ledger.get_balance(&NodeId(node)).unwrap();
+        assert_eq!(balance.contributed, 5);
+        assert_eq!(balance.consumed, 0);
+        assert_eq!(balance.balance(), 5);
+    }
+
+    #[test]
+    fn consumption_decreases_balance() {
+        let mut ledger = ComputeLedger::new();
+        let node_id = NodeId([1u8; 32]);
+        ledger.record_contribution(make_work([1u8; 32], 10 * FLOPS_PER_CU));
+        ledger.record_consumption(&node_id, 4);
+        let balance = ledger.get_balance(&node_id).unwrap();
+        assert_eq!(balance.balance(), 6); // 10 - 4
+    }
+
+    #[test]
+    fn trade_execution() {
+        let mut ledger = ComputeLedger::new();
+        let provider = NodeId([1u8; 32]);
+        let consumer = NodeId([2u8; 32]);
+
+        let trade = TradeRecord {
+            provider: provider.clone(),
+            consumer: consumer.clone(),
+            cu_amount: 100,
+            tokens_processed: 256,
+            timestamp: 1000,
+            model_id: "llama-7b".to_string(),
+        };
+
+        ledger.execute_trade(&trade);
+
+        assert_eq!(ledger.get_balance(&provider).unwrap().contributed, 100);
+        assert_eq!(ledger.get_balance(&consumer).unwrap().consumed, 100);
+        assert_eq!(ledger.get_balance(&provider).unwrap().balance(), 100);
+        assert_eq!(ledger.get_balance(&consumer).unwrap().balance(), -100);
+    }
+
+    #[test]
+    fn free_tier_for_new_nodes() {
+        let ledger = ComputeLedger::new();
+        let new_node = NodeId([99u8; 32]);
+
+        // New node can afford up to 1000 CU (free tier)
+        assert!(ledger.can_afford(&new_node, 500));
+        assert!(ledger.can_afford(&new_node, 1000));
+        assert!(!ledger.can_afford(&new_node, 1001));
+    }
+
+    #[test]
+    fn yield_accumulation() {
+        let mut ledger = ComputeLedger::new();
+        let node = [1u8; 32];
+        let node_id = NodeId(node);
+
+        // Node contributes 10000 CU
+        ledger.record_contribution(make_work(node, 10000 * FLOPS_PER_CU));
+        ledger.update_reputation(&node_id, 0.5); // reputation now 1.0
+
+        // After 8 hours of uptime (sleeping overnight)
+        ledger.apply_yield(&node_id, 8.0);
+
+        let balance = ledger.get_balance(&node_id).unwrap();
+        // 10000 * 0.001 * 1.0 * 8.0 = 80 CU yield
+        assert_eq!(balance.contributed, 10080);
+    }
+
+    #[test]
+    fn market_price_adjusts() {
+        let mut ledger = ComputeLedger::new();
+
+        // Low supply, high demand → expensive
+        ledger.update_price(2, 20);
+        assert!(ledger.market_price().effective_cu_per_token() > 1.0);
+
+        // High supply, low demand → cheap
+        ledger.update_price(20, 2);
+        assert!(ledger.market_price().effective_cu_per_token() < 1.0);
+    }
+
+    #[test]
+    fn network_stats() {
+        let mut ledger = ComputeLedger::new();
+        ledger.record_contribution(make_work([1u8; 32], 5 * FLOPS_PER_CU));
+        ledger.record_contribution(make_work([2u8; 32], 3 * FLOPS_PER_CU));
+        ledger.record_consumption(&NodeId([1u8; 32]), 2);
+
+        let stats = ledger.network_stats();
+        assert_eq!(stats.total_nodes, 2);
+        assert_eq!(stats.total_contributed_cu, 8); // 5 + 3
+        assert_eq!(stats.total_consumed_cu, 2);
+        assert_eq!(stats.total_trades, 0);
+    }
+
+    #[test]
+    fn recent_trades_returns_newest_first() {
+        let mut ledger = ComputeLedger::new();
+        let provider = NodeId([1u8; 32]);
+        let consumer = NodeId([2u8; 32]);
+
+        ledger.execute_trade(&TradeRecord {
+            provider: provider.clone(),
+            consumer: consumer.clone(),
+            cu_amount: 10,
+            tokens_processed: 10,
+            timestamp: 1,
+            model_id: "small".to_string(),
+        });
+        ledger.execute_trade(&TradeRecord {
+            provider,
+            consumer,
+            cu_amount: 20,
+            tokens_processed: 20,
+            timestamp: 2,
+            model_id: "large".to_string(),
+        });
+
+        let trades = ledger.recent_trades(2);
+        assert_eq!(trades.len(), 2);
+        assert_eq!(trades[0].timestamp, 2);
+        assert_eq!(trades[1].timestamp, 1);
+    }
+
+    #[test]
+    fn ledger_roundtrip_persists_to_disk() {
+        let path = unique_temp_path("forge-ledger-roundtrip");
+        let mut ledger = ComputeLedger::new();
+        ledger.record_contribution(make_work([7u8; 32], 5 * FLOPS_PER_CU));
+        ledger.execute_trade(&TradeRecord {
+            provider: NodeId([7u8; 32]),
+            consumer: NodeId([8u8; 32]),
+            cu_amount: 12,
+            tokens_processed: 12,
+            timestamp: 42,
+            model_id: "persisted".to_string(),
+        });
+
+        ledger.save_to_path(&path).unwrap();
+        let loaded = ComputeLedger::load_from_path(&path).unwrap();
+
+        assert_eq!(loaded.network_stats().total_trades, 1);
+        assert_eq!(loaded.get_balance(&NodeId([7u8; 32])).unwrap().contributed, 17);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn settlement_statement_aggregates_nodes_in_window() {
+        let mut ledger = ComputeLedger::new();
+        ledger.execute_trade(&TradeRecord {
+            provider: NodeId([1u8; 32]),
+            consumer: NodeId([2u8; 32]),
+            cu_amount: 10,
+            tokens_processed: 10,
+            timestamp: 100,
+            model_id: "m1".to_string(),
+        });
+        ledger.execute_trade(&TradeRecord {
+            provider: NodeId([2u8; 32]),
+            consumer: NodeId([3u8; 32]),
+            cu_amount: 4,
+            tokens_processed: 4,
+            timestamp: 200,
+            model_id: "m2".to_string(),
+        });
+        ledger.execute_trade(&TradeRecord {
+            provider: NodeId([9u8; 32]),
+            consumer: NodeId([8u8; 32]),
+            cu_amount: 99,
+            tokens_processed: 99,
+            timestamp: 999,
+            model_id: "ignored".to_string(),
+        });
+
+        let statement = ledger.export_settlement_statement(50, 250, Some(0.5));
+        assert_eq!(statement.trade_count, 2);
+        assert_eq!(statement.total_cu_transferred, 14);
+        assert_eq!(statement.nodes.len(), 3);
+        assert_eq!(statement.nodes[0].gross_earned_cu, 10);
+        assert_eq!(statement.nodes[0].estimated_payout_value, Some(5.0));
+        assert!(statement.trades.iter().all(|trade| trade.timestamp <= 250));
+    }
+}

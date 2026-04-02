@@ -1,12 +1,8 @@
 //! RPC server subprocess manager for distributed inference.
-//!
-//! Manages llama.cpp `rpc-server` processes on peer nodes.
-//! Forge provides the P2P discovery and encrypted transport layer;
-//! llama.cpp's RPC protocol handles the actual tensor operations.
 
 use forge_core::ForgeError;
 use std::net::TcpStream;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::{Child, Command};
 use std::time::{Duration, Instant};
 
@@ -17,40 +13,64 @@ pub struct RpcServer {
     host: String,
 }
 
+/// Validate that a path points to an actual executable file.
+fn validate_executable(path: &PathBuf) -> Result<PathBuf, ForgeError> {
+    let canonical = path.canonicalize().map_err(|e| {
+        ForgeError::InferenceError(format!("invalid binary path {:?}: {e}", path))
+    })?;
+
+    if !canonical.is_file() {
+        return Err(ForgeError::InferenceError(format!(
+            "not a file: {:?}",
+            canonical
+        )));
+    }
+
+    // Reject paths containing suspicious components
+    let path_str = canonical.to_string_lossy();
+    if path_str.contains("..") || path_str.contains('\0') {
+        return Err(ForgeError::InferenceError(format!(
+            "suspicious path: {:?}",
+            canonical
+        )));
+    }
+
+    Ok(canonical)
+}
+
+/// Validate a port number is in safe range.
+fn validate_port(port: u16) -> Result<u16, ForgeError> {
+    if port < 1024 {
+        return Err(ForgeError::InferenceError(format!(
+            "port {} is in privileged range (must be >= 1024)",
+            port
+        )));
+    }
+    Ok(port)
+}
+
 impl RpcServer {
-    /// Find the rpc-server binary. Checks:
-    /// 1. FORGE_RPC_SERVER_PATH env var
-    /// 2. `rpc-server` on PATH
-    /// 3. Common llama.cpp build locations
+    /// Find the rpc-server binary from trusted locations only.
     pub fn find_binary() -> Option<PathBuf> {
         // Check env var first
         if let Ok(path) = std::env::var("FORGE_RPC_SERVER_PATH") {
             let p = PathBuf::from(&path);
-            if p.exists() {
+            if validate_executable(&p).is_ok() {
                 return Some(p);
             }
         }
 
-        // Check PATH
-        if let Ok(output) = Command::new("which").arg("rpc-server").output() {
-            if output.status.success() {
-                let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
-                if !path.is_empty() {
-                    return Some(PathBuf::from(path));
-                }
-            }
-        }
-
-        // Common locations
+        // Check trusted locations only (not arbitrary PATH)
         for candidate in &[
             "/usr/local/bin/rpc-server",
             "/opt/homebrew/bin/rpc-server",
-            "./rpc-server",
-            "./build/bin/rpc-server",
+            "/tmp/llama.cpp/build/bin/rpc-server",
         ] {
             let p = PathBuf::from(candidate);
             if p.exists() {
-                return Some(p);
+                if let Ok(validated) = validate_executable(&p) {
+                    return Some(validated);
+                }
             }
         }
 
@@ -59,22 +79,27 @@ impl RpcServer {
 
     /// Spawn a local rpc-server on the given port.
     pub fn spawn(port: u16) -> Result<Self, ForgeError> {
+        let port = validate_port(port)?;
+
         let binary = Self::find_binary().ok_or_else(|| {
             ForgeError::InferenceError(
-                "rpc-server binary not found. Set FORGE_RPC_SERVER_PATH or install llama.cpp"
-                    .to_string(),
+                "rpc-server binary not found. Set FORGE_RPC_SERVER_PATH".to_string(),
             )
         })?;
 
+        let binary = validate_executable(&binary)?;
+
         tracing::info!("Starting rpc-server on port {} ({:?})", port, binary);
 
+        // Only pass safe, controlled arguments
         let child = Command::new(&binary)
             .arg("-p")
             .arg(port.to_string())
+            // Bind to localhost only — never expose on 0.0.0.0
+            .arg("--host")
+            .arg("127.0.0.1")
             .spawn()
-            .map_err(|e| {
-                ForgeError::InferenceError(format!("spawn rpc-server: {e}"))
-            })?;
+            .map_err(|e| ForgeError::InferenceError(format!("spawn rpc-server: {e}")))?;
 
         let mut server = Self {
             child: Some(child),
@@ -82,24 +107,19 @@ impl RpcServer {
             host: "127.0.0.1".to_string(),
         };
 
-        // Wait for the server to be ready
         server.wait_ready(Duration::from_secs(10))?;
-
         tracing::info!("rpc-server ready on {}:{}", server.host, server.port);
 
         Ok(server)
     }
 
-    /// Wait until the RPC server is accepting TCP connections.
     fn wait_ready(&self, timeout: Duration) -> Result<(), ForgeError> {
         let start = Instant::now();
         let addr = format!("{}:{}", self.host, self.port);
-
         loop {
             if TcpStream::connect(&addr).is_ok() {
                 return Ok(());
             }
-
             if start.elapsed() > timeout {
                 return Err(ForgeError::InferenceError(format!(
                     "rpc-server failed to start within {}s on {}",
@@ -107,35 +127,26 @@ impl RpcServer {
                     addr
                 )));
             }
-
             std::thread::sleep(Duration::from_millis(100));
         }
     }
 
-    /// Get the endpoint address string (host:port) for llama.cpp --rpc flag.
     pub fn endpoint(&self) -> String {
         format!("{}:{}", self.host, self.port)
     }
 
-    /// Get the port.
     pub fn port(&self) -> u16 {
         self.port
     }
 
-    /// Check if the server is still running.
     pub fn is_running(&mut self) -> bool {
         if let Some(ref mut child) = self.child {
-            match child.try_wait() {
-                Ok(None) => true,  // still running
-                Ok(Some(_)) => false,  // exited
-                Err(_) => false,
-            }
+            matches!(child.try_wait(), Ok(None))
         } else {
             false
         }
     }
 
-    /// Stop the server.
     pub fn stop(&mut self) {
         if let Some(ref mut child) = self.child {
             let _ = child.kill();
@@ -163,8 +174,20 @@ mod tests {
 
     #[test]
     fn find_binary_returns_none_if_not_installed() {
-        // This test verifies the function doesn't panic.
-        // It may return Some or None depending on the system.
         let _ = RpcServer::find_binary();
+    }
+
+    #[test]
+    fn validate_port_rejects_privileged() {
+        assert!(validate_port(80).is_err());
+        assert!(validate_port(443).is_err());
+        assert!(validate_port(1024).is_ok());
+        assert!(validate_port(50052).is_ok());
+    }
+
+    #[test]
+    fn validate_executable_rejects_nonexistent() {
+        let result = validate_executable(&PathBuf::from("/nonexistent/binary"));
+        assert!(result.is_err());
     }
 }

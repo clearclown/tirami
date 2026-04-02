@@ -34,40 +34,63 @@ pub struct DistributedConfig {
     pub llama_cli_path: PathBuf,
 }
 
-/// Find the llama-cli binary.
+/// Find the llama-cli binary from trusted locations.
 pub fn find_llama_cli() -> Option<PathBuf> {
-    // Check env var
+    // Check env var first
     if let Ok(path) = std::env::var("FORGE_LLAMA_CLI_PATH") {
         let p = PathBuf::from(&path);
-        if p.exists() {
-            return Some(p);
-        }
-    }
-
-    // Check PATH
-    if let Ok(output) = Command::new("which").arg("llama-cli").output() {
-        if output.status.success() {
-            let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            if !path.is_empty() {
-                return Some(PathBuf::from(path));
+        if let Ok(canonical) = p.canonicalize() {
+            if canonical.is_file() {
+                return Some(canonical);
             }
         }
     }
 
-    // Common locations
+    // Trusted locations only (no arbitrary PATH search)
     for candidate in &[
         "/tmp/llama.cpp/build/bin/llama-cli",
         "/usr/local/bin/llama-cli",
         "/opt/homebrew/bin/llama-cli",
-        "./llama-cli",
     ] {
         let p = PathBuf::from(candidate);
-        if p.exists() {
-            return Some(p);
+        if let Ok(canonical) = p.canonicalize() {
+            if canonical.is_file() {
+                return Some(canonical);
+            }
         }
     }
 
     None
+}
+
+/// Validate an RPC endpoint string (must be host:port format).
+fn validate_rpc_endpoint(endpoint: &str) -> Result<(), ForgeError> {
+    let parts: Vec<&str> = endpoint.split(':').collect();
+    if parts.len() != 2 {
+        return Err(ForgeError::InferenceError(format!(
+            "invalid RPC endpoint (expected host:port): {}",
+            endpoint
+        )));
+    }
+    // Validate port is numeric
+    let port: u16 = parts[1].parse().map_err(|_| {
+        ForgeError::InferenceError(format!("invalid port in endpoint: {}", endpoint))
+    })?;
+    if port < 1024 {
+        return Err(ForgeError::InferenceError(format!(
+            "privileged port in endpoint: {}",
+            endpoint
+        )));
+    }
+    // Reject shell metacharacters in host
+    let host = parts[0];
+    if host.contains(|c: char| !c.is_alphanumeric() && c != '.' && c != '-' && c != '_') {
+        return Err(ForgeError::InferenceError(format!(
+            "invalid characters in host: {}",
+            host
+        )));
+    }
+    Ok(())
 }
 
 /// Run distributed inference using llama-cli with --rpc.
@@ -85,6 +108,29 @@ pub fn run_distributed_inference(
         ));
     }
 
+    // Validate all endpoints
+    for endpoint in &config.rpc_endpoints {
+        validate_rpc_endpoint(endpoint)?;
+    }
+
+    // Validate model path
+    let model_path = config.model_path.canonicalize().map_err(|e| {
+        ForgeError::InferenceError(format!("invalid model path: {e}"))
+    })?;
+
+    // Validate llama-cli path
+    let cli_path = config.llama_cli_path.canonicalize().map_err(|e| {
+        ForgeError::InferenceError(format!("invalid llama-cli path: {e}"))
+    })?;
+    if !cli_path.is_file() {
+        return Err(ForgeError::InferenceError("llama-cli is not a file".to_string()));
+    }
+
+    // Sanitize prompt — reject null bytes
+    if prompt.contains('\0') {
+        return Err(ForgeError::InferenceError("prompt contains null bytes".to_string()));
+    }
+
     let rpc_arg = config.rpc_endpoints.join(",");
 
     tracing::info!(
@@ -95,11 +141,11 @@ pub fn run_distributed_inference(
         temperature
     );
 
-    let mut cmd = Command::new(&config.llama_cli_path);
+    let mut cmd = Command::new(&cli_path);
     cmd.arg("--rpc")
         .arg(&rpc_arg)
         .arg("-m")
-        .arg(&config.model_path)
+        .arg(&model_path)
         .arg("-p")
         .arg(prompt)
         .arg("-n")

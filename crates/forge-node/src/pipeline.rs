@@ -98,10 +98,11 @@ impl PipelineCoordinator {
                         }
                     }
                     Payload::InferenceRequest(req) => {
+                        // Never log prompt content — privacy protection
                         tracing::info!(
-                            "Inference request from {}: \"{}\" (max {})",
+                            "Inference request from {}: {} chars, max {} tokens",
                             peer_id,
-                            truncate(&req.prompt_text, 50),
+                            req.prompt_text.len(),
                             req.max_tokens
                         );
 

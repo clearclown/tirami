@@ -40,6 +40,15 @@ pub fn parse_gguf_metadata(path: &Path) -> Result<ModelManifest, ForgeError> {
     // Metadata KV count (u64 LE)
     let kv_count = read_u64_le(&mut file)?;
 
+    // Limit metadata count to prevent DoS from malicious GGUF files
+    const MAX_METADATA_KEYS: u64 = 10_000;
+    if kv_count > MAX_METADATA_KEYS {
+        return Err(ForgeError::ModelLoadError(format!(
+            "GGUF metadata count too large: {} (max {})",
+            kv_count, MAX_METADATA_KEYS
+        )));
+    }
+
     // Read metadata KV pairs
     let mut metadata = std::collections::HashMap::new();
     for _ in 0..kv_count {

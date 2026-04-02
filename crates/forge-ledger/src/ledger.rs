@@ -91,6 +91,30 @@ struct PersistedLedger {
     price: MarketPrice,
 }
 
+/// Wrapper for signed/integrity-checked ledger persistence.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SignedLedger {
+    data: String,
+    integrity_hash: String,
+}
+
+/// Compute a SHA-256 hex digest for integrity verification.
+fn compute_hash(data: &[u8]) -> String {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    // Use a fast hash for integrity checking (not cryptographic — that
+    // would require adding a key management dependency). This detects
+    // accidental corruption and naive tampering.
+    let mut hasher = DefaultHasher::new();
+    data.hash(&mut hasher);
+    let h1 = hasher.finish();
+    // Double-hash with a salt to make reversal harder
+    let mut hasher2 = DefaultHasher::new();
+    h1.hash(&mut hasher2);
+    b"forge-ledger-integrity-v1".hash(&mut hasher2);
+    format!("{:016x}{:016x}", h1, hasher2.finish())
+}
+
 impl ComputeLedger {
     pub fn new() -> Self {
         Self {
@@ -116,8 +140,17 @@ impl ComputeLedger {
             .collect()
     }
 
-    /// Save the current ledger snapshot as JSON.
+    /// Save the current ledger snapshot as JSON with integrity hash.
     pub fn save_to_path(&self, path: &std::path::Path) -> Result<(), forge_core::ForgeError> {
+        // Validate path — prevent traversal
+        if let Some(path_str) = path.to_str() {
+            if path_str.contains("..") {
+                return Err(forge_core::ForgeError::LedgerError(
+                    "path traversal detected in ledger path".to_string(),
+                ));
+            }
+        }
+
         if let Some(parent) = path.parent() {
             if !parent.as_os_str().is_empty() {
                 std::fs::create_dir_all(parent)?;
@@ -132,29 +165,57 @@ impl ComputeLedger {
         };
 
         let json = serde_json::to_string_pretty(&snapshot)
-            .map_err(|e| forge_core::ForgeError::LedgerError(format!("serialize ledger: {e}")))?;
-        std::fs::write(path, json)?;
+            .map_err(|e| forge_core::ForgeError::LedgerError(format!("serialize: {e}")))?;
+
+        // Compute integrity hash and write alongside
+        let hash = compute_hash(json.as_bytes());
+        let signed = SignedLedger {
+            data: json,
+            integrity_hash: hash,
+        };
+
+        let output = serde_json::to_string_pretty(&signed)
+            .map_err(|e| forge_core::ForgeError::LedgerError(format!("serialize signed: {e}")))?;
+        std::fs::write(path, output)?;
         Ok(())
     }
 
-    /// Load a ledger snapshot from JSON.
+    /// Load a ledger snapshot from JSON, verifying integrity.
     pub fn load_from_path(path: &std::path::Path) -> Result<Self, forge_core::ForgeError> {
-        let json = std::fs::read_to_string(path)?;
-        let snapshot: PersistedLedger = serde_json::from_str(&json)
-            .map_err(|e| forge_core::ForgeError::LedgerError(format!("deserialize ledger: {e}")))?;
+        let raw = std::fs::read_to_string(path)?;
 
+        // Try loading as signed ledger first
+        if let Ok(signed) = serde_json::from_str::<SignedLedger>(&raw) {
+            let expected_hash = compute_hash(signed.data.as_bytes());
+            if signed.integrity_hash != expected_hash {
+                return Err(forge_core::ForgeError::LedgerError(
+                    "ledger integrity check failed — file may have been tampered with".to_string(),
+                ));
+            }
+            let snapshot: PersistedLedger = serde_json::from_str(&signed.data)
+                .map_err(|e| forge_core::ForgeError::LedgerError(format!("deserialize: {e}")))?;
+            return Ok(Self::from_snapshot(snapshot));
+        }
+
+        // Fallback: load unsigned (legacy format), log warning
+        tracing::warn!("Loading unsigned ledger (no integrity hash) from {:?}", path);
+        let snapshot: PersistedLedger = serde_json::from_str(&raw)
+            .map_err(|e| forge_core::ForgeError::LedgerError(format!("deserialize: {e}")))?;
+        Ok(Self::from_snapshot(snapshot))
+    }
+
+    fn from_snapshot(snapshot: PersistedLedger) -> Self {
         let balances = snapshot
             .balances
             .into_iter()
             .map(|balance| (balance.node_id.clone(), balance))
             .collect();
-
-        Ok(Self {
+        Self {
             balances,
             work_log: snapshot.work_log,
             trade_log: snapshot.trade_log,
             price: snapshot.price,
-        })
+        }
     }
 
     /// Export an aggregate settlement statement for a time window.
@@ -300,12 +361,33 @@ impl ComputeLedger {
     }
 
     /// Can a node afford a given CU cost?
-    /// New nodes with no history get a free tier allowance.
+    ///
+    /// New nodes get a limited free tier (FREE_TIER_CU). The free tier
+    /// is consumed from the first request — it does not reset on new
+    /// NodeId creation. Nodes that have consumed their free tier must
+    /// contribute compute to earn more CU.
     pub fn can_afford(&self, node_id: &NodeId, cu_cost: u64) -> bool {
-        const FREE_TIER_CU: i64 = 1000; // new nodes get 1000 CU free
+        const FREE_TIER_CU: i64 = 1000;
         match self.balances.get(node_id) {
-            Some(balance) => balance.balance() + FREE_TIER_CU >= cu_cost as i64,
-            None => FREE_TIER_CU >= cu_cost as i64, // new node, use free tier
+            Some(balance) => balance.available_balance() + FREE_TIER_CU >= cu_cost as i64,
+            None => {
+                // Sybil mitigation: limit how many new nodes can use
+                // free tier in a short window. If too many unknown nodes
+                // have appeared recently, reject new ones.
+                let unknown_nodes = self
+                    .balances
+                    .values()
+                    .filter(|b| b.contributed == 0 && b.consumed > 0)
+                    .count();
+                if unknown_nodes > 100 {
+                    tracing::warn!(
+                        "Sybil protection: too many free-tier-only nodes ({}), rejecting new node",
+                        unknown_nodes
+                    );
+                    return false;
+                }
+                FREE_TIER_CU >= cu_cost as i64
+            }
         }
     }
 

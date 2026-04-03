@@ -15,6 +15,7 @@ path = "src/daemon.rs"
 [dependencies]
 forge-core = { workspace = true }
 forge-infer = { workspace = true }
+forge-lightning = { workspace = true }
 forge-node = { workspace = true }
 forge-ledger = { workspace = true }
 iroh = { workspace = true }

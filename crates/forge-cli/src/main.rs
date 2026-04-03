@@ -13,15 +13,15 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Chat with your local LLM
+    /// Chat with your local LLM (auto-downloads model if needed)
     Chat {
-        /// Path to a GGUF model file
-        #[arg(short, long)]
+        /// Model name (e.g., "qwen2.5:0.5b") or path to GGUF file
+        #[arg(short, long, default_value = "qwen2.5:0.5b")]
         model: String,
 
-        /// Path to tokenizer.json file
+        /// Path to tokenizer.json (auto-resolved if using model name)
         #[arg(short, long)]
-        tokenizer: String,
+        tokenizer: Option<String>,
 
         /// Initial prompt (interactive mode if omitted)
         prompt: Option<String>,
@@ -34,6 +34,9 @@ enum Commands {
         #[arg(long, default_value = "0.7")]
         temperature: f32,
     },
+
+    /// List available models
+    Models,
 
     /// Start as a seed node (holds model, serves inference)
     Seed {
@@ -122,6 +125,12 @@ enum Commands {
         api_token: Option<String>,
     },
 
+    /// Bitcoin Lightning wallet management
+    Wallet {
+        #[command(subcommand)]
+        action: WalletAction,
+    },
+
     /// Run distributed inference across RPC peers
     Distribute {
         /// Path to GGUF model file
@@ -172,6 +181,25 @@ enum Commands {
     },
 }
 
+#[derive(Subcommand)]
+enum WalletAction {
+    /// Show wallet info (node ID, balances, funding address)
+    Info,
+    /// Create a Lightning invoice to receive sats
+    Invoice {
+        /// Amount in satoshis
+        amount_sats: u64,
+        /// Description
+        #[arg(short, long, default_value = "Forge inference")]
+        description: String,
+    },
+    /// Pay a Lightning invoice
+    Pay {
+        /// BOLT11 invoice string
+        invoice: String,
+    },
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
@@ -184,6 +212,38 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
+        Commands::Models => {
+            forge_infer::model_registry::list_models();
+        }
+        Commands::Wallet { action } => {
+            let config = forge_lightning::node::WalletConfig::default();
+            let wallet = forge_lightning::ForgeWallet::start(config)?;
+
+            match action {
+                WalletAction::Info => {
+                    println!("Lightning Node ID: {}", wallet.node_id());
+                    println!("Network: {:?}", wallet.network());
+                    println!("On-chain balance: {} sats", wallet.onchain_balance_sats());
+                    println!("Lightning balance: {} sats", wallet.lightning_balance_sats());
+                    println!("Funding address: {}", wallet.funding_address()?);
+
+                    let rate = forge_lightning::payment::ExchangeRate::default();
+                    println!("Exchange rate: {} msats/CU", rate.msats_per_cu);
+                }
+                WalletAction::Invoice {
+                    amount_sats,
+                    description,
+                } => {
+                    let amount_msats = amount_sats * 1000;
+                    let invoice = wallet.create_invoice(amount_msats, &description, 3600)?;
+                    println!("{}", invoice);
+                }
+                WalletAction::Pay { invoice } => {
+                    let payment_id = wallet.pay_invoice(&invoice)?;
+                    println!("Payment sent: {}", payment_id);
+                }
+            }
+        }
         Commands::Chat {
             model,
             tokenizer,
@@ -194,8 +254,26 @@ async fn main() -> anyhow::Result<()> {
             let config = Config::default();
             let node = forge_node::ForgeNode::new(config);
 
-            let model_path = PathBuf::from(&model);
-            let tokenizer_path = PathBuf::from(&tokenizer);
+            // Resolve model: either a registry name or a file path
+            let (model_path, tokenizer_path) = if PathBuf::from(&model).exists() {
+                // User provided a file path
+                let tp = tokenizer
+                    .map(PathBuf::from)
+                    .ok_or_else(|| anyhow::anyhow!(
+                        "when using a model file path, --tokenizer is required"
+                    ))?;
+                (PathBuf::from(&model), tp)
+            } else {
+                // Try to resolve from model registry (auto-download)
+                let spec = forge_infer::model_registry::find_model(&model)
+                    .ok_or_else(|| anyhow::anyhow!(
+                        "unknown model '{}'. Run 'forge models' to see available models.",
+                        model
+                    ))?;
+                let resolved = forge_infer::model_registry::resolve_model(&spec)?;
+                (resolved.model_path, resolved.tokenizer_path)
+            };
+
             node.load_model(&model_path, &tokenizer_path).await?;
 
             if let Some(prompt) = prompt {

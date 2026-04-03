@@ -8,6 +8,7 @@ members = [
     "crates/forge-ledger",
     "crates/forge-node",
     "crates/forge-cli",
+    "crates/forge-lightning",
 ]
 resolver = "2"
 
@@ -26,6 +27,7 @@ forge-infer = { path = "crates/forge-infer" }
 forge-proto = { path = "crates/forge-proto" }
 forge-ledger = { path = "crates/forge-ledger" }
 forge-node = { path = "crates/forge-node" }
+forge-lightning = { path = "crates/forge-lightning" }
 
 # Async runtime
 tokio = { version = "1", features = ["full"] }
@@ -52,6 +54,9 @@ rand = "0.8"
 hex = "0.4"
 hmac = "0.12"
 sha2 = "0.10"
+
+# Bitcoin Lightning
+ldk-node = "0.4"
 
 # Inference (llama.cpp via Rust bindings)
 llama-cpp-2 = "0.1"

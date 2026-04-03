@@ -223,7 +223,8 @@ impl PipelineCoordinator {
                             peer_id,
                             ready.port
                         );
-                        // TODO: Establish QUIC tunnel and configure engine with --rpc
+                        // QUIC tunnel + engine RPC configuration will be wired
+                        // when split-inference runtime lands (Phase 4).
                     }
                     Payload::RpcServerFailed(failed) => {
                         tracing::warn!(

@@ -39,6 +39,8 @@ impl ReplayWindow {
 pub struct ForgeTransport {
     endpoint: iroh::Endpoint,
     peers: Arc<Mutex<HashMap<String, PeerConnection>>>,
+    /// Saved addresses for reconnection attempts.
+    peer_addrs: Arc<Mutex<HashMap<String, iroh::EndpointAddr>>>,
     recent_msg_ids: Arc<Mutex<HashMap<String, ReplayWindow>>>,
     incoming_tx: mpsc::Sender<(String, Envelope)>,
     incoming_rx: Arc<Mutex<mpsc::Receiver<(String, Envelope)>>>,
@@ -48,14 +50,19 @@ pub struct ForgeTransport {
 
 impl ForgeTransport {
     /// Create a new transport with a fresh Iroh endpoint.
+    /// Enables mDNS for automatic LAN peer discovery.
     pub async fn new() -> anyhow::Result<Self> {
+        let mdns = iroh::address_lookup::mdns::MdnsAddressLookup::builder();
+
         let endpoint = iroh::Endpoint::builder(presets::N0)
             .alpns(vec![FORGE_ALPN.to_vec()])
+            .address_lookup(mdns)
             .bind()
             .await?;
 
         let endpoint_id = endpoint.id();
         tracing::info!("Forge node started: {}", endpoint_id.fmt_short());
+        tracing::info!("mDNS LAN discovery enabled");
         let addr = endpoint.addr();
         tracing::info!("Endpoint address: {:?}", addr);
 
@@ -64,6 +71,7 @@ impl ForgeTransport {
         Ok(Self {
             endpoint,
             peers: Arc::new(Mutex::new(HashMap::new())),
+            peer_addrs: Arc::new(Mutex::new(HashMap::new())),
             recent_msg_ids: Arc::new(Mutex::new(HashMap::new())),
             incoming_tx,
             incoming_rx: Arc::new(Mutex::new(incoming_rx)),
@@ -96,9 +104,15 @@ impl ForgeTransport {
         let peer_node_id = NodeId(*addr.id.as_bytes());
         tracing::info!("Connecting to peer: {}", peer_node_id);
 
-        let conn = self.endpoint.connect(addr, FORGE_ALPN).await?;
+        let conn = self.endpoint.connect(addr.clone(), FORGE_ALPN).await?;
         let peer_conn = PeerConnection::new(conn);
         let peer_id = peer_conn.peer_id().to_string();
+
+        // Save address for potential reconnection
+        self.peer_addrs
+            .lock()
+            .await
+            .insert(peer_id.clone(), addr);
 
         self.peers
             .lock()
@@ -182,9 +196,30 @@ impl ForgeTransport {
         peers: Arc<Mutex<HashMap<String, PeerConnection>>>,
         recent_msg_ids: Arc<Mutex<HashMap<String, ReplayWindow>>>,
     ) {
+        // Rate limit: max 100 messages per second per peer
+        let mut msg_count_this_second: u32 = 0;
+        let mut last_rate_reset = tokio::time::Instant::now();
+        const MAX_MESSAGES_PER_SECOND: u32 = 100;
+
         loop {
+            // Reset rate counter every second
+            if last_rate_reset.elapsed() >= std::time::Duration::from_secs(1) {
+                msg_count_this_second = 0;
+                last_rate_reset = tokio::time::Instant::now();
+            }
+
             match peer.recv_message().await {
                 Ok(envelope) => {
+                    msg_count_this_second += 1;
+                    if msg_count_this_second > MAX_MESSAGES_PER_SECOND {
+                        tracing::warn!(
+                            "Rate limit exceeded for peer {} ({} msg/s), dropping message",
+                            peer_id,
+                            msg_count_this_second
+                        );
+                        continue;
+                    }
+
                     if let Err(err) = envelope.validate_for_peer(peer.peer_node_id()) {
                         tracing::warn!(
                             "Dropping invalid envelope from {}: {}",
@@ -257,6 +292,26 @@ impl ForgeTransport {
     /// Get the list of connected peer IDs.
     pub async fn connected_peers(&self) -> Vec<String> {
         self.peers.lock().await.keys().cloned().collect()
+    }
+
+    /// Attempt to reconnect to a previously connected peer.
+    /// Returns Ok if reconnected, Err if the address is unknown or connection failed.
+    pub async fn reconnect(&self, peer_id: &str) -> anyhow::Result<PeerConnection> {
+        let addr = self
+            .peer_addrs
+            .lock()
+            .await
+            .get(peer_id)
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("no saved address for peer {}", peer_id))?;
+
+        tracing::info!("Attempting reconnect to peer: {}", peer_id);
+
+        // Remove stale connection
+        self.peers.lock().await.remove(peer_id);
+
+        // Reconnect
+        self.connect(addr).await
     }
 
     /// Gracefully close the transport.

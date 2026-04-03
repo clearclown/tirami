@@ -27,6 +27,42 @@ struct AppState {
     model_manifest: ModelState,
     advertised_topology: TopologyState,
     cluster: Option<Arc<ClusterManager>>,
+    /// Track recent auth failures for rate limiting.
+    auth_failures: Arc<Mutex<AuthFailureTracker>>,
+}
+
+/// Simple rate limiter for authentication failures.
+struct AuthFailureTracker {
+    count: u32,
+    window_start: std::time::Instant,
+}
+
+impl Default for AuthFailureTracker {
+    fn default() -> Self {
+        Self {
+            count: 0,
+            window_start: std::time::Instant::now(),
+        }
+    }
+}
+
+impl AuthFailureTracker {
+    const MAX_FAILURES_PER_MINUTE: u32 = 10;
+    const WINDOW_DURATION: std::time::Duration = std::time::Duration::from_secs(60);
+
+    fn record_failure(&mut self) -> bool {
+        if self.window_start.elapsed() > Self::WINDOW_DURATION {
+            self.count = 0;
+            self.window_start = std::time::Instant::now();
+        }
+        self.count += 1;
+        self.count <= Self::MAX_FAILURES_PER_MINUTE
+    }
+
+    fn is_blocked(&self) -> bool {
+        self.window_start.elapsed() <= Self::WINDOW_DURATION
+            && self.count > Self::MAX_FAILURES_PER_MINUTE
+    }
 }
 
 pub fn create_router(
@@ -44,6 +80,7 @@ pub fn create_router(
         model_manifest,
         advertised_topology,
         cluster,
+        auth_failures: Arc::new(Mutex::new(AuthFailureTracker::default())),
     };
     let api_max_request_body_bytes = state.config.api_max_request_body_bytes;
 
@@ -135,6 +172,14 @@ async fn require_bearer_auth(
         return Ok(next.run(request).await);
     };
 
+    // Check if rate-limited due to too many auth failures
+    if state.auth_failures.lock().await.is_blocked() {
+        return Err((
+            StatusCode::TOO_MANY_REQUESTS,
+            "too many authentication failures, try again later".to_string(),
+        ));
+    }
+
     let Some(value) = request.headers().get(AUTHORIZATION) else {
         return Err((StatusCode::UNAUTHORIZED, "missing bearer token".to_string()));
     };
@@ -153,7 +198,9 @@ async fn require_bearer_auth(
         ));
     };
 
-    if token != expected {
+    // Constant-time comparison to prevent timing attacks
+    if !constant_time_eq(token.as_bytes(), expected.as_bytes()) {
+        state.auth_failures.lock().await.record_failure();
         return Err((StatusCode::UNAUTHORIZED, "invalid bearer token".to_string()));
     }
 
@@ -320,6 +367,18 @@ async fn chat_stream(
     );
 
     Ok(Sse::new(stream))
+}
+
+/// Constant-time byte comparison to prevent timing attacks on bearer tokens.
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut result = 0u8;
+    for (x, y) in a.iter().zip(b.iter()) {
+        result |= x ^ y;
+    }
+    result == 0
 }
 
 fn now_millis() -> u64 {

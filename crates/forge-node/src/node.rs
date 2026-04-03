@@ -277,4 +277,30 @@ impl ForgeNode {
 
         build_topology_snapshot(model, local_capability, connected_peers)
     }
+
+    /// Graceful shutdown: announce leaving, persist ledger, close transport.
+    pub async fn shutdown(&self) {
+        tracing::info!("Shutting down Forge node...");
+
+        // Announce leaving to all peers
+        if let Some(cluster) = self.cluster.as_ref() {
+            cluster
+                .announce_leaving(forge_proto::LeaveReason::Shutdown)
+                .await;
+        }
+
+        // Persist ledger
+        if let Err(e) = self.persist_ledger().await {
+            tracing::warn!("Failed to persist ledger on shutdown: {}", e);
+        } else {
+            tracing::info!("Ledger persisted");
+        }
+
+        // Close transport
+        if let Some(transport) = self.transport.as_ref() {
+            transport.close().await;
+        }
+
+        tracing::info!("Forge node shut down");
+    }
 }

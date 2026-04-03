@@ -101,7 +101,15 @@ async fn main() -> anyhow::Result<()> {
                 .await?;
 
             tracing::info!("Starting forged seed with model: {}", model);
-            node.run_seed().await?;
+
+            // Run seed with graceful shutdown on Ctrl+C
+            tokio::select! {
+                result = node.run_seed() => { result?; }
+                _ = tokio::signal::ctrl_c() => {
+                    tracing::info!("Ctrl+C received");
+                    node.shutdown().await;
+                }
+            }
         }
         DaemonCommand::Node {
             model,
@@ -126,7 +134,14 @@ async fn main() -> anyhow::Result<()> {
             }
 
             tracing::info!("Starting forged local API server on port {}", port);
-            node.serve_api().await?;
+
+            tokio::select! {
+                result = node.serve_api() => { result?; }
+                _ = tokio::signal::ctrl_c() => {
+                    tracing::info!("Ctrl+C received");
+                    node.shutdown().await;
+                }
+            }
         }
     }
 

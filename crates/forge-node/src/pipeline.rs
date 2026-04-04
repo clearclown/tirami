@@ -511,7 +511,15 @@ async fn handle_inference(
     }
 
     // Dual-sign trade: provider proposes, consumer counter-signs
-    let cu_amount = ledger.lock().await.estimate_cost(total_tokens, 32, 32);
+    // Release excess reservation (reserved max_tokens, actual may be less)
+    let cu_amount = {
+        let mut ledger = ledger.lock().await;
+        let actual_cost = ledger.estimate_cost(total_tokens, 32, 32);
+        if estimated_cost > actual_cost {
+            ledger.release_reserve(&consumer_id, estimated_cost - actual_cost);
+        }
+        actual_cost
+    };
     let trade = TradeRecord {
         provider: node_id.clone(),
         consumer: consumer_id.clone(),
@@ -578,9 +586,11 @@ async fn handle_inference(
                 }
                 Err(e) => {
                     tracing::warn!("Trade signature verification failed: {}", e);
-                    // Fall back to unsigned trade
+                    // 50% penalty on unsigned trades (Issue #3)
+                    let mut penalized = trade.clone();
+                    penalized.cu_amount /= 2;
                     let mut ledger = ledger.lock().await;
-                    ledger.execute_trade(&trade);
+                    ledger.execute_trade(&penalized);
                     if let Some(path) = ledger_path.as_ref() {
                         ledger.save_to_path(path)?;
                     }
@@ -588,10 +598,12 @@ async fn handle_inference(
             }
         }
         _ => {
-            // Timeout or no accept — fall back to unsigned trade recording
-            tracing::debug!("TradeAccept timeout from {}, recording unsigned trade", peer_id);
+            // Timeout: 50% penalty on unsigned trades (Issue #3)
+            tracing::debug!("TradeAccept timeout from {}, recording penalized trade", peer_id);
+            let mut penalized = trade.clone();
+            penalized.cu_amount /= 2;
             let mut ledger = ledger.lock().await;
-            ledger.execute_trade(&trade);
+            ledger.execute_trade(&penalized);
             if let Some(path) = ledger_path.as_ref() {
                 ledger.save_to_path(path)?;
             }

@@ -440,16 +440,33 @@ impl Payload {
                         actual: proposal.provider.to_hex(),
                     });
                 }
+                if proposal.model_id.len() > 256 {
+                    return Err(ProtocolValidationError::ReasonTooLarge {
+                        chars: proposal.model_id.len(),
+                        limit: 256,
+                    });
+                }
                 Ok(())
             }
             Payload::TradeAccept(_) => Ok(()),
-            Payload::TradeGossip(_) => Ok(()),
+            Payload::TradeGossip(gossip) => {
+                if gossip.model_id.len() > 256 {
+                    return Err(ProtocolValidationError::ReasonTooLarge {
+                        chars: gossip.model_id.len(),
+                        limit: 256,
+                    });
+                }
+                Ok(())
+            }
         }
     }
 }
 
+/// Supported protocol versions.
+const SUPPORTED_VERSIONS: &[u16] = &[1];
+
 fn validate_protocol_version(version: u16) -> Result<(), ProtocolValidationError> {
-    if version == 0 {
+    if !SUPPORTED_VERSIONS.contains(&version) {
         return Err(ProtocolValidationError::InvalidVersion);
     }
     Ok(())

@@ -8,27 +8,43 @@
 use crate::transport::ForgeTransport;
 use forge_ledger::SignedTradeRecord;
 use forge_proto::{Envelope, Payload, TradeGossip};
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
+/// Maximum number of trade hashes to remember for deduplication.
+/// Prevents unbounded memory growth under trade flooding (Issue #1).
+const MAX_GOSSIP_SEEN: usize = 100_000;
+
 /// Tracks which trades have been seen to avoid re-broadcasting.
+/// Bounded: evicts oldest entries when exceeding MAX_GOSSIP_SEEN.
 pub struct GossipState {
-    /// Trade hashes we've already seen (sha256 of canonical bytes).
     seen: HashSet<[u8; 32]>,
+    order: VecDeque<[u8; 32]>,
 }
 
 impl GossipState {
     pub fn new() -> Self {
         Self {
             seen: HashSet::new(),
+            order: VecDeque::new(),
         }
     }
 
     /// Check if we've already seen this trade. Returns true if new.
     pub fn mark_seen(&mut self, trade: &SignedTradeRecord) -> bool {
         let hash = trade_hash(trade);
-        self.seen.insert(hash)
+        if !self.seen.insert(hash) {
+            return false; // already seen
+        }
+        self.order.push_back(hash);
+        // Evict oldest when over limit
+        while self.order.len() > MAX_GOSSIP_SEEN {
+            if let Some(evicted) = self.order.pop_front() {
+                self.seen.remove(&evicted);
+            }
+        }
+        true
     }
 
     /// Number of unique trades seen.
@@ -153,7 +169,7 @@ mod tests {
             consumer: NodeId(consumer_key.verifying_key().to_bytes()),
             cu_amount: 100,
             tokens_processed: 50,
-            timestamp: 12345,
+            timestamp: now_millis(),
             model_id: "test".to_string(),
         };
 
@@ -183,7 +199,7 @@ mod tests {
             consumer: NodeId([2u8; 32]),
             cu_amount: 100,
             tokens_processed: 50,
-            timestamp: 12345,
+            timestamp: now_millis(),
             model_id: "test".to_string(),
             provider_sig: vec![0u8; 64], // invalid
             consumer_sig: vec![0u8; 64], // invalid

@@ -90,9 +90,20 @@ pub struct SignedTradeRecord {
 
 impl SignedTradeRecord {
     /// Verify both signatures on this trade.
-    /// Returns Ok(()) if both provider and consumer signatures are valid.
+    /// Maximum age of a trade timestamp before rejection (1 hour).
+    const MAX_TRADE_AGE_MS: u64 = 3_600_000;
+
+    /// Returns Ok(()) if both provider and consumer signatures are valid
+    /// and the trade timestamp is within the acceptable window.
     pub fn verify(&self) -> Result<(), SignatureError> {
         use ed25519_dalek::{Signature, VerifyingKey};
+
+        // Timestamp freshness check (Issue #4)
+        let now = now_millis();
+        let age = now.abs_diff(self.trade.timestamp);
+        if age > Self::MAX_TRADE_AGE_MS {
+            return Err(SignatureError::TimestampExpired { age_ms: age });
+        }
 
         let canonical = self.trade.canonical_bytes();
 
@@ -131,6 +142,8 @@ pub enum SignatureError {
     InvalidConsumerKey,
     #[error("invalid consumer signature")]
     InvalidConsumerSignature,
+    #[error("trade timestamp expired: {age_ms}ms old (max {}ms)", SignedTradeRecord::MAX_TRADE_AGE_MS)]
+    TimestampExpired { age_ms: u64 },
 }
 
 /// Per-node summary within a settlement window.
@@ -273,7 +286,10 @@ impl ComputeLedger {
 
         let output = serde_json::to_string_pretty(&signed)
             .map_err(|e| forge_core::ForgeError::LedgerError(format!("serialize signed: {e}")))?;
-        std::fs::write(path, output)?;
+        // Atomic write: write to temp file, then rename (Issue #8)
+        let tmp = path.with_extension("tmp");
+        std::fs::write(&tmp, &output)?;
+        std::fs::rename(&tmp, path)?;
         Ok(())
     }
 
@@ -508,17 +524,26 @@ impl ComputeLedger {
     pub fn can_afford(&self, node_id: &NodeId, cu_cost: u64) -> bool {
         const FREE_TIER_CU: i64 = 1000;
         match self.balances.get(node_id) {
-            Some(balance) => balance.available_balance() + FREE_TIER_CU >= cu_cost as i64,
+            Some(balance) => {
+                // Nodes that have only consumed (never contributed) get reduced free tier
+                // to prevent "contribute 1 CU then abuse" attacks (Issue #6)
+                let free_bonus = if balance.contributed > 0 {
+                    FREE_TIER_CU
+                } else {
+                    // Decay free tier based on how much they've already consumed
+                    (FREE_TIER_CU - balance.consumed as i64).max(0)
+                };
+                balance.available_balance() + free_bonus >= cu_cost as i64
+            }
             None => {
                 // Sybil mitigation: limit how many new nodes can use
-                // free tier in a short window. If too many unknown nodes
-                // have appeared recently, reject new ones.
+                // free tier in a short window (Issue #6).
                 let unknown_nodes = self
                     .balances
                     .values()
                     .filter(|b| b.contributed == 0 && b.consumed > 0)
                     .count();
-                if unknown_nodes > 100 {
+                if unknown_nodes > 50 {
                     tracing::warn!(
                         "Sybil protection: too many free-tier-only nodes ({}), rejecting new node",
                         unknown_nodes

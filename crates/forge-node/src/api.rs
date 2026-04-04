@@ -69,31 +69,38 @@ impl AuthFailureTracker {
     }
 }
 
-/// Simple sliding-window rate limiter for economic endpoints (Issue #5).
+/// Token-bucket rate limiter for economic endpoints (Issue #22).
+/// Refills at a fixed rate, preventing race condition bypass.
 struct RateLimiter {
-    count: u32,
-    window_start: std::time::Instant,
+    tokens: f64,
+    last_refill: std::time::Instant,
 }
 
 impl Default for RateLimiter {
     fn default() -> Self {
         Self {
-            count: 0,
-            window_start: std::time::Instant::now(),
+            tokens: Self::MAX_TOKENS,
+            last_refill: std::time::Instant::now(),
         }
     }
 }
 
 impl RateLimiter {
-    const MAX_REQUESTS_PER_SECOND: u32 = 30;
+    const MAX_TOKENS: f64 = 30.0;
+    const REFILL_RATE: f64 = 30.0; // tokens per second
 
     fn check(&mut self) -> bool {
-        if self.window_start.elapsed() > std::time::Duration::from_secs(1) {
-            self.count = 0;
-            self.window_start = std::time::Instant::now();
+        let now = std::time::Instant::now();
+        let elapsed = now.duration_since(self.last_refill).as_secs_f64();
+        self.tokens = (self.tokens + elapsed * Self::REFILL_RATE).min(Self::MAX_TOKENS);
+        self.last_refill = now;
+
+        if self.tokens >= 1.0 {
+            self.tokens -= 1.0;
+            true
+        } else {
+            false
         }
-        self.count += 1;
-        self.count <= Self::MAX_REQUESTS_PER_SECOND
     }
 }
 
@@ -1057,6 +1064,7 @@ async fn forge_invoice(
     State(state): State<AppState>,
     Json(req): Json<InvoiceRequest>,
 ) -> Result<Json<InvoiceResponse>, (StatusCode, String)> {
+    check_forge_rate_limit(&state).await?;
     let ledger = state.ledger.lock().await;
     let effective = ledger.effective_balance(&state.local_node_id);
 

@@ -498,7 +498,16 @@ impl ComputeLedger {
     }
 
     /// Execute a trade: provider earns CU, consumer spends CU.
+    /// Rejects self-trades and zero-CU trades (Issue #23, #27).
     pub fn execute_trade(&mut self, trade: &TradeRecord) {
+        if trade.cu_amount == 0 {
+            tracing::debug!("Rejecting zero-CU trade");
+            return;
+        }
+        if trade.provider == trade.consumer {
+            tracing::warn!("Rejecting self-trade from {}", trade.provider.to_hex());
+            return;
+        }
         // Credit provider
         let provider = self
             .balances
@@ -1335,5 +1344,52 @@ mod tests {
 
         // After convergence, price should be higher than after one update (EMA smoothing)
         assert!(price_converged > price_after_one);
+    }
+
+    #[test]
+    fn prepare_anchor_data_returns_80_bytes() {
+        let mut ledger = ComputeLedger::new();
+        ledger.execute_trade(&TradeRecord {
+            provider: NodeId([1u8; 32]),
+            consumer: NodeId([2u8; 32]),
+            cu_amount: 100,
+            tokens_processed: 50,
+            timestamp: now_millis(),
+            model_id: "test".to_string(),
+        });
+        let data = ledger.prepare_anchor_data();
+        assert_eq!(data.len(), 80);
+        assert_eq!(&data[..5], b"FORGE");
+    }
+
+    #[test]
+    fn self_trade_is_rejected() {
+        let mut ledger = ComputeLedger::new();
+        let node = NodeId([1u8; 32]);
+        ledger.execute_trade(&TradeRecord {
+            provider: node.clone(),
+            consumer: node.clone(),
+            cu_amount: 100,
+            tokens_processed: 50,
+            timestamp: now_millis(),
+            model_id: "test".to_string(),
+        });
+        // Self-trade should not be recorded
+        assert!(ledger.get_balance(&node).is_none());
+        assert_eq!(ledger.recent_trades(10).len(), 0);
+    }
+
+    #[test]
+    fn zero_cu_trade_is_rejected() {
+        let mut ledger = ComputeLedger::new();
+        ledger.execute_trade(&TradeRecord {
+            provider: NodeId([1u8; 32]),
+            consumer: NodeId([2u8; 32]),
+            cu_amount: 0,
+            tokens_processed: 0,
+            timestamp: now_millis(),
+            model_id: "test".to_string(),
+        });
+        assert_eq!(ledger.recent_trades(10).len(), 0);
     }
 }

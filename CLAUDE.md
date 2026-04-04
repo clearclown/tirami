@@ -92,12 +92,16 @@ Inference Layer (mesh-llm-derived)  ← This is inherited
 
 ### Forge Economic (our original contribution)
 - `GET /v1/forge/balance` — CU balance, reputation, contribution history
-- `GET /v1/forge/pricing` — Market price, supply/demand, cost estimates
+- `GET /v1/forge/pricing` — Market price (EMA smoothed), supply/demand, cost estimates
 - `GET /v1/forge/trades` — Recent trade history (provider, consumer, CU, tokens)
+- `GET /v1/forge/network` — Mesh economic summary + Merkle root
+- `GET /v1/forge/providers` — Ranked providers with reputation-adjusted costs (agent routing)
 - `POST /v1/forge/invoice` — Create Lightning invoice from CU balance
 - `GET /status` — Node health, market price, recent trades
-- `GET /settlement` — Exportable settlement statement
+- `GET /settlement` — Exportable settlement statement with Merkle root
 - `GET /topology` — Model manifest, peer capabilities
+
+All `/v1/forge/*` endpoints are rate-limited (token bucket, 30 req/sec).
 
 ## What's Implemented vs Planned
 

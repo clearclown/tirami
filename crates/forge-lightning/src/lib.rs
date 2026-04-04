@@ -12,4 +12,7 @@ pub mod node;
 pub mod payment;
 
 pub use node::ForgeWallet;
-pub use payment::{InvoiceRequest, PaymentResult};
+pub use payment::{
+    ExchangeRate, InvoiceRequest, PaymentResult, PricingSummary,
+    SettlementInvoice, SettlementPaymentStatus, TrackedSettlement,
+};

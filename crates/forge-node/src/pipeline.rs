@@ -514,7 +514,9 @@ async fn handle_inference(
     // Release excess reservation (reserved max_tokens, actual may be less)
     let cu_amount = {
         let mut ledger = ledger.lock().await;
-        let actual_cost = ledger.estimate_cost(total_tokens, 32, 32);
+        let base_cost = ledger.estimate_cost(total_tokens, 32, 32);
+        // Apply reputation-adjusted pricing (Issue #24)
+        let actual_cost = ledger.reputation_adjusted_cost(&consumer_id, base_cost);
         if estimated_cost > actual_cost {
             ledger.release_reserve(&consumer_id, estimated_cost - actual_cost);
         }

@@ -84,6 +84,8 @@ Inference Layer (mesh-llm-derived)  ← This is inherited
 ### Forge Economic (our original contribution)
 - `GET /v1/forge/balance` — CU balance, reputation, contribution history
 - `GET /v1/forge/pricing` — Market price, supply/demand, cost estimates
+- `GET /v1/forge/trades` — Recent trade history (provider, consumer, CU, tokens)
+- `POST /v1/forge/invoice` — Create Lightning invoice from CU balance
 - `GET /status` — Node health, market price, recent trades
 - `GET /settlement` — Exportable settlement statement
 - `GET /topology` — Model manifest, peer capabilities
@@ -91,32 +93,31 @@ Inference Layer (mesh-llm-derived)  ← This is inherited
 ## What's Implemented vs Planned
 
 ### Working Now
-- Single-node CU ledger with persistence and HMAC integrity
-- Trade recording (provider earns, consumer spends)
+- CU ledger with HMAC-SHA256 persistence and tamper detection
+- **Dual-signed trades** (Ed25519): TradeProposal → TradeAccept → SignedTradeRecord
+- **Gossip protocol**: signed trades broadcast to all connected peers with dedup
+- **CU reservation**: reserve before inference, release on failure, prevents double-spend
 - Dynamic market pricing (supply/demand)
-- Free tier (1,000 CU for new nodes) with Sybil protection
+- Free tier (1,000 CU) with Sybil protection (>100 unknown nodes → reject)
 - Reputation system with yield (0.1%/hr × reputation)
+- OpenAI-compatible API with CU metering (`x_forge` extension)
+- Agent budget endpoints (`/v1/forge/balance`, `/pricing`, `/trades`)
+- Lightning invoice endpoint (`POST /v1/forge/invoice`)
+- Lightning wallet (CLI: `forge wallet`, `forge settle --pay`)
 - Settlement statement export
-- OpenAI-compatible API with CU metering
-- Agent budget endpoints
-- Lightning wallet (CLI only, not integrated in node)
 - P2P encrypted transport (iroh QUIC + Noise)
 
-### Next: Dual-Signed Trades (Phase 6a)
-- `SignedTradeRecord` with Ed25519 signatures from both parties
-- New proto messages: `TradeProposal`, `TradeAccept`
-- Verification: any node can validate both signatures
-- This is the foundation for trustless CU economy
+### Next: mesh-llm Fork (Phase 5)
+- Replace inference layer with mesh-llm's distributed engine
+- Keep all economic code as-is
+- Inherit pipeline parallelism, MoE sharding, Nostr discovery
 
-### Next: Gossip Ledger Sync (Phase 6b)
-- Gossip protocol for distributing signed trades across mesh
+### Future
 - Merkle tree of trade history for efficient state comparison
-- Conflict resolution for divergent ledger views
-
-### Future: External Bridges (Phase 7)
-- Lightning settlement integrated into node (not just CLI)
+- Reputation gossip across the mesh
 - Stablecoin adapter interface
 - Bitcoin OP_RETURN anchoring for immutable audit trail
+- Agent autonomous trading and multi-model cost/quality routing
 
 ## Common Tasks
 

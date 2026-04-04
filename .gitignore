@@ -9,3 +9,9 @@ __pycache__/
 .DS_Store
 target/
 *.rs.bk
+mcp/forge_mcp.egg-info/
+sdk/python/forge_sdk.egg-info/
+sdk/python/dist/
+sdk/python/build/
+mcp/dist/
+mcp/build/

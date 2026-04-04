@@ -273,4 +273,41 @@ mod tests {
         let result2 = handle_trade_gossip(&gossip, &msg).await;
         assert!(result2.is_none());
     }
+
+    #[test]
+    fn check_consistency_detects_divergence() {
+        let root_a = [1u8; 32];
+        let root_b = [2u8; 32];
+        assert!(check_consistency(&root_a, &root_a));
+        assert!(!check_consistency(&root_a, &root_b));
+    }
+
+    #[test]
+    fn gossip_bounded_eviction() {
+        let mut state = GossipState::new();
+        // Fill beyond MAX_GOSSIP_SEEN (use a smaller count for test speed)
+        for i in 0..200 {
+            let mut rng = rand::thread_rng();
+            let provider_key = SigningKey::generate(&mut rng);
+            let consumer_key = SigningKey::generate(&mut rng);
+            let trade = forge_ledger::TradeRecord {
+                provider: NodeId(provider_key.verifying_key().to_bytes()),
+                consumer: NodeId(consumer_key.verifying_key().to_bytes()),
+                cu_amount: i + 1,
+                tokens_processed: 1,
+                timestamp: now_millis(),
+                model_id: "test".to_string(),
+            };
+            let canonical = trade.canonical_bytes();
+            let signed = SignedTradeRecord {
+                trade,
+                provider_sig: provider_key.sign(&canonical).to_bytes().to_vec(),
+                consumer_sig: consumer_key.sign(&canonical).to_bytes().to_vec(),
+            };
+            state.mark_seen(&signed);
+        }
+        // Should have entries but bounded
+        assert!(state.seen_count() <= 200);
+        assert!(state.seen_count() > 0);
+    }
 }

@@ -42,6 +42,8 @@ pub enum Payload {
     TradeProposal(TradeProposal),
     /// Consumer accepts the trade with counter-signature.
     TradeAccept(TradeAccept),
+    /// Gossip: broadcast a dual-signed trade to the mesh.
+    TradeGossip(TradeGossip),
 }
 
 // --- Discovery & Handshake ---
@@ -237,6 +239,20 @@ pub struct TradeAccept {
     pub consumer_sig: Vec<u8>,
 }
 
+/// A dual-signed trade broadcast via gossip to the mesh.
+/// Any node can verify both signatures and record the trade.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TradeGossip {
+    pub provider: NodeId,
+    pub consumer: NodeId,
+    pub cu_amount: u64,
+    pub tokens_processed: u64,
+    pub timestamp: u64,
+    pub model_id: String,
+    pub provider_sig: Vec<u8>,
+    pub consumer_sig: Vec<u8>,
+}
+
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum ProtocolValidationError {
     #[error("sender mismatch: expected {expected}, got {actual}")]
@@ -427,6 +443,7 @@ impl Payload {
                 Ok(())
             }
             Payload::TradeAccept(_) => Ok(()),
+            Payload::TradeGossip(_) => Ok(()),
         }
     }
 }

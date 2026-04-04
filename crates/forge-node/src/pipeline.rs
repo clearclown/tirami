@@ -1,6 +1,6 @@
 use forge_core::{Config, ModelManifest, NodeId, PipelineTopology};
 use forge_ledger::{ComputeLedger, SignedTradeRecord, TradeRecord};
-use forge_net::{ClusterManager, ForgeTransport};
+use forge_net::{ClusterManager, ForgeTransport, GossipState};
 use forge_proto::{
     Envelope, ErrorCode, ErrorMsg, InferenceRequest, Payload, PipelineTopologyMsg, RpcServerFailed,
     RpcServerReady, TokenStreamMsg, TradeAccept, TradeProposal, Welcome,
@@ -45,6 +45,7 @@ impl PipelineCoordinator {
         let request_slots = Arc::new(Semaphore::new(
             config.max_concurrent_remote_inference_requests,
         ));
+        let gossip = Arc::new(Mutex::new(GossipState::new()));
 
         loop {
             match self.transport.recv().await {
@@ -146,6 +147,7 @@ impl PipelineCoordinator {
                         let peer_id = peer_id.clone();
                         let config = config.clone();
                         let ledger_path = ledger_path.clone();
+                        let gossip = gossip.clone();
 
                         tokio::spawn(async move {
                             let _permit = permit;
@@ -159,6 +161,7 @@ impl PipelineCoordinator {
                                 sender_id,
                                 &peer_id,
                                 req,
+                                gossip,
                             )
                             .await
                             {
@@ -235,8 +238,29 @@ impl PipelineCoordinator {
                     }
                     Payload::TradeAccept(_) | Payload::TradeProposal(_) => {
                         // Handled within handle_inference tasks via wait_for_trade_accept
-                        // Messages arriving here are late/orphaned — safe to ignore
                         tracing::debug!("Trade message in main loop from {} (handled by task)", peer_id);
+                    }
+                    Payload::TradeGossip(trade_gossip) => {
+                        let gossip = gossip.clone();
+                        let ledger = ledger.clone();
+                        let ledger_path = ledger_path.clone();
+                        tokio::spawn(async move {
+                            if let Some(signed) =
+                                forge_net::gossip::handle_trade_gossip(&gossip, &trade_gossip).await
+                            {
+                                let mut ledger = ledger.lock().await;
+                                ledger.execute_trade(&signed.trade);
+                                if let Some(path) = ledger_path.as_ref() {
+                                    let _ = ledger.save_to_path(path);
+                                }
+                                tracing::info!(
+                                    "Gossip trade recorded: {} CU ({} → {})",
+                                    signed.trade.cu_amount,
+                                    signed.trade.provider.to_hex(),
+                                    signed.trade.consumer.to_hex()
+                                );
+                            }
+                        });
                     }
                     _ => {}
                 },
@@ -378,6 +402,7 @@ async fn handle_inference(
     consumer_id: NodeId,
     peer_id: &str,
     req: InferenceRequest,
+    gossip: Arc<Mutex<GossipState>>,
 ) -> anyhow::Result<()> {
     use forge_infer::InferenceEngine;
 
@@ -542,6 +567,9 @@ async fn handle_inference(
                         total_tokens,
                         peer_id
                     );
+                    drop(ledger);
+                    // Broadcast to mesh via gossip
+                    forge_net::gossip::broadcast_trade(&transport, &gossip, &signed).await;
                 }
                 Err(e) => {
                     tracing::warn!("Trade signature verification failed: {}", e);

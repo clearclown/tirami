@@ -1,9 +1,9 @@
 use forge_core::{Config, ModelManifest, NodeId, PipelineTopology};
-use forge_ledger::{ComputeLedger, TradeRecord};
+use forge_ledger::{ComputeLedger, SignedTradeRecord, TradeRecord};
 use forge_net::{ClusterManager, ForgeTransport};
 use forge_proto::{
     Envelope, ErrorCode, ErrorMsg, InferenceRequest, Payload, PipelineTopologyMsg, RpcServerFailed,
-    RpcServerReady, TokenStreamMsg, Welcome,
+    RpcServerReady, TokenStreamMsg, TradeAccept, TradeProposal, Welcome,
 };
 use std::sync::Arc;
 use tokio::sync::{Mutex, Semaphore};
@@ -233,6 +233,11 @@ impl PipelineCoordinator {
                             failed.reason
                         );
                     }
+                    Payload::TradeAccept(_) | Payload::TradeProposal(_) => {
+                        // Handled within handle_inference tasks via wait_for_trade_accept
+                        // Messages arriving here are late/orphaned — safe to ignore
+                        tracing::debug!("Trade message in main loop from {} (handled by task)", peer_id);
+                    }
                     _ => {}
                 },
                 None => {
@@ -246,6 +251,7 @@ impl PipelineCoordinator {
     }
 
     /// Worker: send an inference request to a seed and collect streamed text.
+    /// After receiving the response, handles dual-sign trade protocol.
     pub async fn request_inference(
         transport: &ForgeTransport,
         seed_peer_id: &str,
@@ -277,7 +283,7 @@ impl PipelineCoordinator {
         let mut result = String::new();
         loop {
             match transport.recv().await {
-                Some((_peer_id, response)) => match response.payload {
+                Some((peer_id, response)) => match response.payload {
                     Payload::TokenStream(ts) => {
                         if ts.request_id == request_id {
                             result.push_str(&ts.text);
@@ -289,6 +295,40 @@ impl PipelineCoordinator {
                     Payload::Error(err) => {
                         if err.request_id == request_id {
                             anyhow::bail!("{:?}: {}", err.code, err.message);
+                        }
+                    }
+                    Payload::TradeProposal(proposal) => {
+                        if proposal.request_id == request_id {
+                            // Counter-sign the trade
+                            let trade = TradeRecord {
+                                provider: proposal.provider,
+                                consumer: proposal.consumer,
+                                cu_amount: proposal.cu_amount,
+                                tokens_processed: proposal.tokens_processed,
+                                timestamp: proposal.timestamp,
+                                model_id: proposal.model_id,
+                            };
+                            let canonical = trade.canonical_bytes();
+                            let consumer_sig = transport.sign(&canonical).to_vec();
+
+                            let accept = Envelope {
+                                msg_id: request_id * 10000 + 10000,
+                                sender: node_id.clone(),
+                                timestamp: now_millis(),
+                                payload: Payload::TradeAccept(TradeAccept {
+                                    request_id,
+                                    consumer_sig,
+                                }),
+                            };
+                            if let Err(e) = transport.send_to(&peer_id, &accept).await {
+                                tracing::warn!("Failed to send TradeAccept: {}", e);
+                            } else {
+                                tracing::debug!(
+                                    "Trade accepted: {} CU for request {}",
+                                    trade.cu_amount,
+                                    request_id
+                                );
+                            }
                         }
                     }
                     _ => {}
@@ -442,31 +482,110 @@ async fn handle_inference(
         }
     }
 
-    // Record trade in ledger
-    {
-        let mut ledger = ledger.lock().await;
-        let cu_amount = ledger.estimate_cost(total_tokens, 32, 32);
-        let trade = TradeRecord {
-            provider: node_id,
-            consumer: consumer_id,
+    // Dual-sign trade: provider proposes, consumer counter-signs
+    let cu_amount = ledger.lock().await.estimate_cost(total_tokens, 32, 32);
+    let trade = TradeRecord {
+        provider: node_id.clone(),
+        consumer: consumer_id.clone(),
+        cu_amount,
+        tokens_processed: total_tokens,
+        timestamp: now_millis(),
+        model_id: "active".to_string(),
+    };
+
+    let canonical = trade.canonical_bytes();
+    let provider_sig = transport.sign(&canonical).to_vec();
+
+    // Send TradeProposal to consumer
+    let proposal_msg = Envelope {
+        msg_id: req.request_id * 10000 + 9999,
+        sender: node_id.clone(),
+        timestamp: now_millis(),
+        payload: Payload::TradeProposal(TradeProposal {
+            request_id: req.request_id,
+            provider: node_id.clone(),
+            consumer: consumer_id.clone(),
             cu_amount,
             tokens_processed: total_tokens,
-            timestamp: now_millis(),
-            model_id: "active".to_string(),
-        };
-        ledger.execute_trade(&trade);
-        if let Some(path) = ledger_path.as_ref() {
-            ledger.save_to_path(path)?;
+            timestamp: trade.timestamp,
+            model_id: trade.model_id.clone(),
+            provider_sig: provider_sig.clone(),
+        }),
+    };
+    transport.send_to(peer_id, &proposal_msg).await?;
+
+    // Wait for TradeAccept with timeout (5 seconds)
+    let accept_result = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        wait_for_trade_accept(&transport, req.request_id),
+    )
+    .await;
+
+    match accept_result {
+        Ok(Some(consumer_sig)) => {
+            // Record dual-signed trade
+            let signed = SignedTradeRecord {
+                trade: trade.clone(),
+                provider_sig,
+                consumer_sig,
+            };
+            match signed.verify() {
+                Ok(()) => {
+                    let mut ledger = ledger.lock().await;
+                    ledger.execute_trade(&signed.trade);
+                    if let Some(path) = ledger_path.as_ref() {
+                        ledger.save_to_path(path)?;
+                    }
+                    tracing::info!(
+                        "Signed trade recorded: {} CU for {} tokens to {}",
+                        trade.cu_amount,
+                        total_tokens,
+                        peer_id
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!("Trade signature verification failed: {}", e);
+                    // Fall back to unsigned trade
+                    let mut ledger = ledger.lock().await;
+                    ledger.execute_trade(&trade);
+                    if let Some(path) = ledger_path.as_ref() {
+                        ledger.save_to_path(path)?;
+                    }
+                }
+            }
         }
-        tracing::info!(
-            "Trade recorded: {} CU for {} tokens to {}",
-            trade.cu_amount,
-            total_tokens,
-            peer_id
-        );
+        _ => {
+            // Timeout or no accept — fall back to unsigned trade recording
+            tracing::debug!("TradeAccept timeout from {}, recording unsigned trade", peer_id);
+            let mut ledger = ledger.lock().await;
+            ledger.execute_trade(&trade);
+            if let Some(path) = ledger_path.as_ref() {
+                ledger.save_to_path(path)?;
+            }
+        }
     }
 
     Ok(())
+}
+
+/// Wait for a TradeAccept message matching the given request_id.
+async fn wait_for_trade_accept(
+    transport: &ForgeTransport,
+    request_id: u64,
+) -> Option<Vec<u8>> {
+    loop {
+        match transport.recv().await {
+            Some((_peer_id, envelope)) => {
+                if let Payload::TradeAccept(accept) = envelope.payload {
+                    if accept.request_id == request_id {
+                        return Some(accept.consumer_sig);
+                    }
+                }
+                // Ignore other messages while waiting
+            }
+            None => return None,
+        }
+    }
 }
 
 fn now_millis() -> u64 {

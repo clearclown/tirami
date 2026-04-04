@@ -425,25 +425,26 @@ async fn handle_inference(
         return Ok(());
     }
 
-    // Check if consumer can afford
-    {
-        let ledger = ledger.lock().await;
-        let estimated_cost = ledger.estimate_cost(req.max_tokens as u64, 32, 32);
-        if !ledger.can_afford(&consumer_id, estimated_cost) {
-            tracing::warn!("Consumer {} cannot afford {} CU", peer_id, estimated_cost);
+    // Reserve CU for this inference (prevents double-spending)
+    let estimated_cost = {
+        let mut ledger = ledger.lock().await;
+        let cost = ledger.estimate_cost(req.max_tokens as u64, 32, 32);
+        if !ledger.reserve_cu(&consumer_id, cost) {
+            tracing::warn!("Consumer {} cannot afford {} CU", peer_id, cost);
             send_protocol_error(
                 &transport,
                 peer_id,
                 &node_id,
                 req.request_id,
                 ErrorCode::InsufficientBalance,
-                format!("insufficient CU balance for estimated cost {estimated_cost}"),
+                format!("insufficient CU balance for estimated cost {cost}"),
                 true,
             )
             .await?;
             return Ok(());
         }
-    }
+        cost
+    };
 
     // Run inference
     let tokens = match {
@@ -457,6 +458,8 @@ async fn handle_inference(
     } {
         Ok(tokens) => tokens,
         Err(err) => {
+            // Release reservation on failure
+            ledger.lock().await.release_reserve(&consumer_id, estimated_cost);
             send_protocol_error(
                 &transport,
                 peer_id,

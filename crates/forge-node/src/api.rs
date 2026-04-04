@@ -105,6 +105,7 @@ pub fn create_router(
         // Forge economic routes
         .route("/v1/forge/balance", get(forge_balance))
         .route("/v1/forge/pricing", get(forge_pricing))
+        .route("/v1/forge/trades", get(forge_trades))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             require_bearer_auth,
@@ -891,6 +892,52 @@ async fn forge_pricing(State(state): State<AppState>) -> Json<ForgePricingRespon
     })
 }
 
+/// GET /v1/forge/trades — recent trade history.
+async fn forge_trades(
+    State(state): State<AppState>,
+    Query(params): Query<TradesQuery>,
+) -> Json<ForgeTradesResponse> {
+    let ledger = state.ledger.lock().await;
+    let limit = params.limit.unwrap_or(20).min(100) as usize;
+    let trades = ledger.recent_trades(limit);
+
+    Json(ForgeTradesResponse {
+        count: trades.len(),
+        trades: trades
+            .into_iter()
+            .map(|t| TradeEntry {
+                provider: t.provider.to_hex(),
+                consumer: t.consumer.to_hex(),
+                cu_amount: t.cu_amount,
+                tokens_processed: t.tokens_processed,
+                timestamp: t.timestamp,
+                model_id: t.model_id,
+            })
+            .collect(),
+    })
+}
+
+#[derive(Debug, Deserialize)]
+pub struct TradesQuery {
+    pub limit: Option<u32>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ForgeTradesResponse {
+    pub count: usize,
+    pub trades: Vec<TradeEntry>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct TradeEntry {
+    pub provider: String,
+    pub consumer: String,
+    pub cu_amount: u64,
+    pub tokens_processed: u64,
+    pub timestamp: u64,
+    pub model_id: String,
+}
+
 // ---------------------------------------------------------------------------
 // Utilities
 // ---------------------------------------------------------------------------
@@ -1146,6 +1193,30 @@ mod tests {
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert!(json["cu_per_token"].as_f64().unwrap() > 0.0);
         assert!(json["estimated_cost_100_tokens"].as_u64().is_some());
+    }
+
+    #[tokio::test]
+    async fn forge_trades_returns_empty_initially() {
+        let config = Config::default();
+        let app = test_router(config);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/forge/trades")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), 10_000)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["count"], 0);
+        assert!(json["trades"].as_array().unwrap().is_empty());
     }
 
     #[test]

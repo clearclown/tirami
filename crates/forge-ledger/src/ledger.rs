@@ -393,6 +393,31 @@ impl ComputeLedger {
         base_cost.ceil() as u64
     }
 
+    /// Reserve CU for an in-flight inference request.
+    /// Returns true if the reservation succeeded (node can afford it).
+    /// Reserved CU is deducted from available_balance but not yet consumed.
+    pub fn reserve_cu(&mut self, node_id: &NodeId, cu: u64) -> bool {
+        if !self.can_afford(node_id, cu) {
+            return false;
+        }
+        let balance = self.balances.entry(node_id.clone()).or_insert(NodeBalance {
+            node_id: node_id.clone(),
+            contributed: 0,
+            consumed: 0,
+            reserved: 0,
+            reputation: 0.5,
+        });
+        balance.reserved += cu;
+        true
+    }
+
+    /// Release a CU reservation (e.g., on request failure or cancellation).
+    pub fn release_reserve(&mut self, node_id: &NodeId, cu: u64) {
+        if let Some(balance) = self.balances.get_mut(node_id) {
+            balance.reserved = balance.reserved.saturating_sub(cu);
+        }
+    }
+
     /// Record a unit of work contributed by a node.
     pub fn record_contribution(&mut self, work: WorkUnit) {
         let node_id = work.node_id.clone();
@@ -448,7 +473,7 @@ impl ComputeLedger {
             });
         provider.contributed += trade.cu_amount;
 
-        // Debit consumer
+        // Debit consumer and release any matching reservation
         let consumer = self
             .balances
             .entry(trade.consumer.clone())
@@ -460,6 +485,7 @@ impl ComputeLedger {
                 reputation: 0.5,
             });
         consumer.consumed += trade.cu_amount;
+        consumer.reserved = consumer.reserved.saturating_sub(trade.cu_amount);
         self.trade_log.push(trade.clone());
     }
 
@@ -889,6 +915,59 @@ mod tests {
             model_id: "model-a".to_string(),
         };
         assert_ne!(trade1.canonical_bytes(), trade2.canonical_bytes());
+    }
+
+    #[test]
+    fn reserve_and_release_cu() {
+        let mut ledger = ComputeLedger::new();
+        let node_id = NodeId([1u8; 32]);
+
+        // Give node some balance
+        ledger.record_contribution(make_work([1u8; 32], 500 * FLOPS_PER_CU));
+
+        // Reserve should succeed
+        assert!(ledger.reserve_cu(&node_id, 200));
+        let balance = ledger.get_balance(&node_id).unwrap();
+        assert_eq!(balance.reserved, 200);
+        assert_eq!(balance.available_balance(), 300); // 500 - 200
+
+        // Cannot reserve more than available (500 - 200 reserved + 1000 free tier = 1300)
+        assert!(!ledger.reserve_cu(&node_id, 1400));
+
+        // Release reservation
+        ledger.release_reserve(&node_id, 200);
+        let balance = ledger.get_balance(&node_id).unwrap();
+        assert_eq!(balance.reserved, 0);
+        assert_eq!(balance.available_balance(), 500);
+    }
+
+    #[test]
+    fn execute_trade_releases_reservation() {
+        let mut ledger = ComputeLedger::new();
+        let provider = NodeId([1u8; 32]);
+        let consumer = NodeId([2u8; 32]);
+
+        // Give consumer some balance
+        ledger.record_contribution(make_work([2u8; 32], 1000 * FLOPS_PER_CU));
+
+        // Reserve CU
+        assert!(ledger.reserve_cu(&consumer, 100));
+        assert_eq!(ledger.get_balance(&consumer).unwrap().reserved, 100);
+
+        // Execute trade should release reservation
+        let trade = TradeRecord {
+            provider,
+            consumer: consumer.clone(),
+            cu_amount: 100,
+            tokens_processed: 50,
+            timestamp: 1000,
+            model_id: "test".to_string(),
+        };
+        ledger.execute_trade(&trade);
+
+        let balance = ledger.get_balance(&consumer).unwrap();
+        assert_eq!(balance.reserved, 0); // released
+        assert_eq!(balance.consumed, 100);
     }
 
     #[test]

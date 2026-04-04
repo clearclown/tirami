@@ -454,7 +454,7 @@ async fn record_api_trade(
     let cu_cost = ledger.estimate_cost(tokens as u64, 1, 1);
     let trade = TradeRecord {
         provider: provider.clone(),
-        consumer: NodeId([0u8; 32]), // API caller (anonymous local)
+        consumer: NodeId([255u8; 32]), // API caller (anonymous local)
         cu_amount: cu_cost,
         tokens_processed: tokens as u64,
         timestamp: now_millis(),

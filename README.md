@@ -6,6 +6,8 @@
 
 The distributed inference engine is built on [mesh-llm](https://github.com/michaelneale/mesh-llm) by Michael Neale. Forge adds a compute economy on top: CU accounting, Proof of Useful Work, dynamic pricing, and autonomous agent budgets. See [CREDITS.md](CREDITS.md) for full acknowledgements.
 
+**Integrated fork:** [forge-mesh](https://github.com/nm-arealnormalman/mesh-llm) — mesh-llm with Forge economic layer built in.
+
 ## Three Things That Make Forge Different
 
 ### 1. Compute = Currency (CU-Native Economy)

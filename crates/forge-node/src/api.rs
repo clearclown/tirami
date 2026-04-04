@@ -8,7 +8,7 @@ use axum::{
 };
 use forge_core::{Config, ModelManifest, NodeId, PeerCapability, PipelineTopology};
 use forge_infer::{CandleEngine, InferenceEngine};
-use forge_ledger::{ComputeLedger, SettlementStatement, TradeRecord};
+use forge_ledger::{ComputeLedger, SafetyController, SettlementStatement, TradeRecord};
 use forge_net::ClusterManager;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -31,6 +31,8 @@ struct AppState {
     auth_failures: Arc<Mutex<AuthFailureTracker>>,
     /// Rate limiter for economic endpoints (Issue #5).
     forge_rate_limiter: Arc<Mutex<RateLimiter>>,
+    /// Safety controller — kill switch, budget policies, circuit breakers.
+    safety: Arc<Mutex<SafetyController>>,
     /// Node identity for this seed (used as provider in trades).
     local_node_id: NodeId,
 }
@@ -127,6 +129,7 @@ pub fn create_router(
         cluster,
         auth_failures: Arc::new(Mutex::new(AuthFailureTracker::default())),
         forge_rate_limiter: Arc::new(Mutex::new(RateLimiter::default())),
+        safety: Arc::new(Mutex::new(SafetyController::new())),
         local_node_id,
     };
     let api_max_request_body_bytes = state.config.api_max_request_body_bytes;
@@ -147,6 +150,9 @@ pub fn create_router(
         .route("/v1/forge/invoice", post(forge_invoice))
         .route("/v1/forge/network", get(forge_network))
         .route("/v1/forge/providers", get(forge_providers))
+        .route("/v1/forge/safety", get(forge_safety_status))
+        .route("/v1/forge/kill", post(forge_kill_switch))
+        .route("/v1/forge/policy", post(forge_set_policy))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             require_bearer_auth,
@@ -1057,6 +1063,79 @@ async fn forge_providers(
         "count": providers.len(),
         "providers": providers,
     })))
+}
+
+/// GET /v1/forge/safety — safety status for this node.
+async fn forge_safety_status(
+    State(state): State<AppState>,
+) -> Result<Json<forge_ledger::SafetyStatus>, (StatusCode, String)> {
+    check_forge_rate_limit(&state).await?;
+    let safety = state.safety.lock().await;
+    Ok(Json(safety.status(&state.local_node_id)))
+}
+
+/// POST /v1/forge/kill — activate or deactivate the kill switch.
+async fn forge_kill_switch(
+    State(state): State<AppState>,
+    Json(req): Json<KillSwitchRequest>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let mut safety = state.safety.lock().await;
+    if req.activate {
+        safety
+            .kill_switch
+            .activate(&req.reason.unwrap_or_default(), &req.operator.unwrap_or_default());
+        Ok(Json(serde_json::json!({
+            "status": "KILL SWITCH ACTIVATED",
+            "reason": safety.kill_switch.reason,
+        })))
+    } else {
+        safety.kill_switch.deactivate();
+        Ok(Json(serde_json::json!({"status": "kill switch deactivated"})))
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct KillSwitchRequest {
+    activate: bool,
+    reason: Option<String>,
+    operator: Option<String>,
+}
+
+/// POST /v1/forge/policy — set budget policy for a node.
+async fn forge_set_policy(
+    State(state): State<AppState>,
+    Json(req): Json<SetPolicyRequest>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let node_id = NodeId::from_hex(&req.node_id)
+        .map_err(|_| (StatusCode::BAD_REQUEST, "invalid node_id hex".to_string()))?;
+    let policy = forge_ledger::BudgetPolicy {
+        max_cu_per_hour: req.max_cu_per_hour.unwrap_or(10_000),
+        max_cu_per_request: req.max_cu_per_request.unwrap_or(1_000),
+        max_cu_lifetime: req.max_cu_lifetime.unwrap_or(1_000_000),
+        human_approval_threshold: req.human_approval_threshold,
+    };
+
+    state.safety.lock().await.set_policy(&node_id, policy.clone());
+
+    Ok(Json(serde_json::json!({
+        "status": "policy set",
+        "node_id": req.node_id,
+        "policy": {
+            "max_cu_per_hour": policy.max_cu_per_hour,
+            "max_cu_per_request": policy.max_cu_per_request,
+            "max_cu_lifetime": policy.max_cu_lifetime,
+            "human_approval_threshold": policy.human_approval_threshold,
+        }
+    })))
+}
+
+#[derive(Debug, Deserialize)]
+struct SetPolicyRequest {
+    node_id: String,
+    max_cu_per_hour: Option<u64>,
+    max_cu_per_request: Option<u64>,
+    max_cu_lifetime: Option<u64>,
+    human_approval_threshold: Option<u64>,
 }
 
 /// POST /v1/forge/invoice — create a Lightning invoice from CU balance.

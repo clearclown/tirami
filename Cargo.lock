@@ -1550,6 +1550,7 @@ dependencies = [
  "forge-core",
  "forge-infer",
  "forge-ledger",
+ "forge-lightning",
  "forge-net",
  "forge-proto",
  "forge-shard",

@@ -106,6 +106,7 @@ pub fn create_router(
         .route("/v1/forge/balance", get(forge_balance))
         .route("/v1/forge/pricing", get(forge_pricing))
         .route("/v1/forge/trades", get(forge_trades))
+        .route("/v1/forge/invoice", post(forge_invoice))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             require_bearer_auth,
@@ -936,6 +937,55 @@ pub struct TradeEntry {
     pub tokens_processed: u64,
     pub timestamp: u64,
     pub model_id: String,
+}
+
+/// POST /v1/forge/invoice — create a Lightning invoice from CU balance.
+async fn forge_invoice(
+    State(state): State<AppState>,
+    Json(req): Json<InvoiceRequest>,
+) -> Result<Json<InvoiceResponse>, (StatusCode, String)> {
+    let ledger = state.ledger.lock().await;
+    let effective = ledger.effective_balance(&state.local_node_id);
+
+    if req.cu_amount == 0 {
+        return Err((StatusCode::BAD_REQUEST, "cu_amount must be > 0".to_string()));
+    }
+
+    if (req.cu_amount as i64) > effective {
+        return Err((
+            StatusCode::PAYMENT_REQUIRED,
+            format!(
+                "insufficient balance: requested {} CU, available {}",
+                req.cu_amount, effective
+            ),
+        ));
+    }
+
+    let rate = forge_lightning::payment::ExchangeRate::default();
+    let amount_msats = rate.cu_to_msats(req.cu_amount);
+    let amount_sats = amount_msats / 1000;
+
+    Ok(Json(InvoiceResponse {
+        cu_amount: req.cu_amount,
+        amount_msats,
+        amount_sats,
+        msats_per_cu: rate.msats_per_cu,
+        description: format!("Forge: {} CU settlement", req.cu_amount),
+    }))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct InvoiceRequest {
+    pub cu_amount: u64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct InvoiceResponse {
+    pub cu_amount: u64,
+    pub amount_msats: u64,
+    pub amount_sats: u64,
+    pub msats_per_cu: u64,
+    pub description: String,
 }
 
 // ---------------------------------------------------------------------------

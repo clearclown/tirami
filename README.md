@@ -113,11 +113,11 @@ Forge:    electricity  →  useful LLM inference →  CU
 
 Bitcoin proved `electricity → computation → money`. But Bitcoin's computation is purposeless. Forge inverts it: every CU represents real intelligence that solved someone's real problem.
 
-**Three things no other project does:**
+**Four things no other project does:**
 
 ### 1. Compute = Currency
 
-Every inference is a trade. Provider earns CU, consumer spends CU. No blockchain, no token, no ICO. CU is backed by physics — the electricity consumed for useful work.
+Every inference is a trade. Provider earns CU, consumer spends CU. No blockchain, no token, no ICO. CU is backed by physics — the electricity consumed for useful work. Unlike Bittensor (TAO), Akash (AKT), or Golem (GLM), CU cannot be speculated on — it is earned by performing useful computation.
 
 ### 2. Tamper-Proof Without a Blockchain
 
@@ -135,30 +135,32 @@ Agent (1.5B on phone)
   → cycle repeats → agent grows
 ```
 
+### 4. Compute Microfinance
+
+Nodes can lend idle CU to other nodes at interest. A small node borrows CU, accesses a larger model, earns more CU, repays with interest. No other distributed inference project offers compute lending — confirmed through competitive analysis of every major project in this space. This is the engine that makes the self-improvement loop economically viable for everyone, not just those who already own powerful hardware.
+
 ## Architecture
 
 ```
 ┌─────────────────────────────────────────────────┐
-│  Inference Layer (mesh-llm)                     │
-│  Pipeline parallelism, MoE expert sharding,     │
-│  iroh mesh, Nostr discovery, OpenAI API         │
-└──────────────────┬──────────────────────────────┘
-                   │
-┌──────────────────▼──────────────────────────────┐
-│  Economic Layer (Forge)                         │
-│  CU ledger, dual-signed trades, gossip,         │
-│  dynamic pricing, Merkle root, safety controls  │
-└──────────────────┬──────────────────────────────┘
-                   │
-┌──────────────────▼──────────────────────────────┐
-│  Safety Layer                                   │
-│  Kill switch, budget policies, circuit breakers,│
-│  velocity detection, human approval thresholds  │
-└──────────────────┬──────────────────────────────┘
-                   │ optional
-┌──────────────────▼──────────────────────────────┐
-│  External Bridges                               │
-│  CU ↔ BTC (Lightning), CU ↔ stablecoin        │
+│  L4: Discovery (forge-agora)                    │
+│  Agent marketplace, reputation aggregation,     │
+│  Nostr NIP-90, Google A2A payment extension     │
+├─────────────────────────────────────────────────┤
+│  L3: Intelligence (forge-mind)                  │
+│  AutoAgent self-improvement loops,              │
+│  harness marketplace, meta-optimization         │
+├─────────────────────────────────────────────────┤
+│  L2: Finance (forge-bank)                       │
+│  CU lending, yield optimization, credit scoring │
+├─────────────────────────────────────────────────┤
+│  L1: Economy (forge — this repo)                │
+│  CU ledger, dual-signed trades, dynamic pricing,│
+│  lending primitives, safety controls            │
+├─────────────────────────────────────────────────┤
+│  L0: Inference (forge-mesh / mesh-llm)          │
+│  Pipeline parallelism, MoE sharding,            │
+│  iroh mesh, Nostr discovery, MLX/llama.cpp      │
 └─────────────────────────────────────────────────┘
 ```
 
@@ -236,7 +238,19 @@ docker run -p 3000:3000 clearclown/forge:latest
 | `GET /v1/forge/network` | Total CU flow + Merkle root |
 | `GET /v1/forge/providers` | Ranked providers by reputation and cost |
 | `POST /v1/forge/invoice` | Create Lightning invoice from CU balance |
+| `GET /v1/forge/route` | Optimal provider selection (cost/quality/balanced) |
 | `GET /settlement` | Exportable settlement statement |
+
+### Lending
+
+| Endpoint | Description |
+|----------|-------------|
+| `POST /v1/forge/lend` | Offer CU to lending pool |
+| `POST /v1/forge/borrow` | Request a CU loan |
+| `POST /v1/forge/repay` | Repay outstanding loan |
+| `GET /v1/forge/credit` | Credit score and history |
+| `GET /v1/forge/pool` | Lending pool status |
+| `GET /v1/forge/loans` | Active loans |
 
 ### Safety
 
@@ -293,13 +307,16 @@ forge/
 
 ## Docs
 
+- [Strategy](docs/strategy.md) — Competitive positioning, lending spec, 5-layer architecture
 - [Concept & Vision](docs/concept.md) — Why compute is money
-- [Economic Model](docs/economy.md) — CU economy, Proof of Useful Work
+- [Economic Model](docs/economy.md) — CU economy, Proof of Useful Work, lending
 - [Architecture](docs/architecture.md) — Two-layer design
+- [Agent Integration](docs/agent-integration.md) — SDK, MCP, borrowing workflow
 - [Wire Protocol](docs/protocol-spec.md) — 17 message types
 - [Roadmap](docs/roadmap.md) — Development phases
 - [Threat Model](docs/threat-model.md) — Security + economic attacks
 - [Bootstrap](docs/bootstrap.md) — Startup, degradation, recovery
+- [A2A Payment](docs/a2a-payment.md) — CU payment extension for agent protocols
 
 ## License
 

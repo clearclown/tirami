@@ -195,3 +195,48 @@ Those later guarantees depend on shipping actual split inference first. Until th
 **Current mitigation**: Accept the risk. For most use cases, obviously wrong outputs are detectable by the consumer.
 
 **Target mitigation**: Consumer-side quality verification. The consumer can re-run a small sample of tokens locally to verify the provider's output is consistent. Reputation penalty for providers whose outputs fail spot checks.
+
+### T15: Loan Default Cascading
+
+**Threat**: A large borrower defaults on a loan, depleting lender reserves. Affected lenders cannot meet their own obligations, causing a cascade of defaults across the network.
+
+**Current mitigation**: Not yet applicable (lending not implemented).
+
+**Target mitigation**:
+- Maximum loan-to-collateral ratio (3:1) limits exposure per loan
+- Maximum single-loan size capped at 20% of lending pool
+- Pool reserve requirement: at least 30% of pool must remain unlent at all times
+- Diversification: lending pool distributes across multiple borrowers automatically
+- Circuit breaker: if default rate exceeds 10% in any hour, all new lending is suspended network-wide
+
+**Residual risk**: Coordinated default by colluding borrowers who built credit independently over months. Statistical monitoring of correlated default timing and shared IP ranges can detect this pattern.
+
+### T16: Credit Score Manipulation
+
+**Threat**: A node artificially inflates its credit score through wash trading (self-dealing between owned nodes) or strategic small-loan repayment before taking a large loan and defaulting.
+
+**Current mitigation**: Not yet applicable (credit scoring not implemented).
+
+**Target mitigation**:
+- Credit score weights repayment amount, not just count — many small repayments don't boost score as much as fewer large ones
+- Trade-based score component uses graph analysis to detect circular trading patterns between the same set of nodes
+- Minimum account age (7 days) before any borrowing is allowed
+- Score decay: credit score decreases if node is inactive for >7 days (0.01/day decay on uptime_score)
+- Anomaly detection on score velocity — rapid score increase flags the node for closer monitoring
+
+**Residual risk**: Patient attacker who builds score slowly over months before a single large default. Collateral requirements (3:1 max LTV) limit maximum loss even with perfect credit — worst case, lender loses 67% of the loan amount.
+
+### T17: Lending Pool Depletion
+
+**Threat**: A coordinated attack drains the lending pool by taking maximum loans from multiple identities simultaneously, then defaulting on all.
+
+**Current mitigation**: Not yet applicable (lending pool not implemented).
+
+**Target mitigation**:
+- Pool reserve requirement (30% minimum unlent at all times)
+- Per-identity borrowing cap based on credit score (quadratic: `credit^2 * pool * 0.2`)
+- Sybil resistance: new identities have low credit score (0.3), limiting each to ~1.8% of pool
+- Rate limiting on new loan creation (max 10 loans per minute globally)
+- Global lending velocity circuit breaker: suspends all new loans if total lending exceeds 50% of pool in any 1-hour window
+
+**Residual risk**: Slow-motion attack using aged identities accumulated over months. Maximum total exposure is bounded by `pool_size * (1 - reserve_ratio)` = 70% of pool. With collateral, actual loss is further bounded to ~47% of pool in the absolute worst case.

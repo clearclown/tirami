@@ -45,50 +45,66 @@
 | Nostr discovery | Inherit mesh-llm's public mesh discovery |
 | CREDITS.md | Document mesh-llm attribution |
 
-## Phase 6: Proof of Useful Work
+## Phase 5.5: CU Lending Primitives
 
-**Goal:** Make CU claims verifiable across the network.
+**Goal:** Enable CU lending, borrowing, and credit scoring to lower the participation barrier.
 
 | Deliverable | Description |
 |---|---|
-| Dual-sign protocol | Both provider and consumer sign each TradeRecord |
-| Gossip sync | Signed trades propagate across the mesh |
-| Fraud detection | Reject unsigned or mismatched trades |
+| LoanRecord type | Dual-signed loan structure in forge-ledger |
+| Credit score | Composite score from trade + repayment history |
+| Lending API | /v1/forge/lend, /borrow, /repay, /credit, /pool, /loans |
+| Collateral system | CU reservation for loan collateral, auto-release on repay |
+| Default handling | Auto-liquidation on missed repayment deadline |
+| Free tier evolution | 1,000 CU grant becomes 0% interest welcome loan |
+| Lending safety | Pool reserves (30%), velocity limits, default-rate circuit breaker |
+
+## Phase 6: Multi-Model Pricing + Routing
+
+**Goal:** Different CU rates per model, intelligent provider selection.
+
+| Deliverable | Description |
+|---|---|
+| Model tier pricing | CU/token rates per model size class (small/medium/large/frontier) |
+| MoE discount | Reduced pricing for mixture-of-experts models (active params / total params) |
+| Routing API | GET /v1/forge/route for cost/quality-optimal provider selection |
+| Provider ranking | Multi-factor scoring (reputation, price, latency, model quality) |
+
+## Phase 7: Discovery + Marketplace
+
+**Goal:** Agent discovery and reputation aggregation without marketing.
+
+| Deliverable | Description |
+|---|---|
 | Reputation gossip | Share reputation scores across peers |
 | Collusion resistance | Statistical anomaly detection on trade patterns |
+| Nostr NIP-90 | Provider advertisement via Data Vending Machines |
+| A2A payment extension | CU payment headers for Google A2A protocol |
+| forge-agora | Agent marketplace: discovery, capability matching, reputation |
 
-## Phase 7: External Bridges
+## Phase 8: Agent Intelligence
 
-**Goal:** Let operators convert CU to external value.
-
-| Deliverable | Description |
-|---|---|
-| Lightning bridge | Automated CU→sats settlement via LDK |
-| Stablecoin adapter | CU→USDC/USDT conversion |
-| Fiat adapter interface | Spec for bank-transfer settlement |
-| Exchange rate service | Public CU/BTC and CU/USD rate feeds |
-| Bitcoin anchoring | Optional: periodic Merkle root → OP_RETURN for immutable audit trail |
-
-## Phase 8: Agent Autonomous Economy
-
-**Goal:** Let AI agents manage their own compute lifecycle.
+**Goal:** Agents that autonomously invest CU to improve themselves.
 
 | Deliverable | Description |
 |---|---|
-| Budget policies | Human-set spend limits per agent |
-| Autonomous trading | Agent decides when to buy/sell compute |
-| Multi-model routing | Agent chooses model based on cost/quality tradeoff |
-| Self-reinforcement | Agent earns CU → buys bigger model access → earns more CU |
+| forge-mind | AutoAgent self-improvement framework with CU budgets |
+| Meta-optimization | Agents rewrite their own prompts/tools via hill-climbing |
+| Harness marketplace | Trade optimized agent configurations for CU |
+| Multi-model routing | Agent-driven model selection based on task complexity |
+| Self-reinforcement | Autonomous capability growth: earn → improve → earn more |
 | Inter-agent economy | Agents trade specialized compute (code model vs chat model) |
 
 ## Long-term
 
 | Milestone | Description |
 |---|---|
+| Compute derivatives | Forward contracts on future compute capacity |
+| forge-bank | Advanced financial instruments (futures, insurance, yield optimization) |
 | SDK release | forge-node as embeddable Rust library with stable API |
 | Protocol v2 | Lessons from v1, backward-compatible evolution |
 | Cross-architecture | NVIDIA GPU, AMD ROCm, RISC-V support (via mesh-llm) |
 | Federated training | Distributed fine-tuning, not just inference |
-| Compute derivatives | Forward contracts on future compute capacity |
+| Compute Standard paper | Academic publication on CU-native economics |
 
-> The protocol is the platform. The computation is the currency.
+> The protocol is the platform. The computation is the currency. The agents are the economy.

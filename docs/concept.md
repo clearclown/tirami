@@ -89,17 +89,51 @@ This is the self-reinforcement loop: agents that make good economic decisions gr
 
 No human needs to approve individual transactions. The agent operates within a budget policy set by its owner. The protocol provides the market; the agent provides the strategy.
 
+## Post-Marketing Economy
+
+In today's economy, marketing exists because humans have limited attention and imperfect information. AI agents don't have this problem. An agent can benchmark every provider, verify every reputation score, and compare every price — instantly and objectively.
+
+Forge enables a marketplace where providers are judged by verifiable performance, not advertising:
+
+- **Reputation** is computed from dual-signed trade history — cryptographically verifiable
+- **Pricing** reflects real supply/demand, not marketing budgets
+- **Quality** is benchmarkable — agents can spot-check inference outputs
+- **Discovery** happens via Nostr NIP-90 and A2A Agent Cards, not SEO
+
+This is the vision behind **forge-agora** (Layer 4): an agent marketplace where the best provider wins, not the loudest.
+
+## Compute Microfinance
+
+A node with 500 CU cannot access a 70B model (costs ~2,000 CU per session). Without lending, this node is permanently stuck at the small-model tier.
+
+With CU lending:
+
+```
+1. Node borrows 1,500 CU at 0.5%/hr interest
+2. Accesses 70B model for 4 hours
+3. Serves premium inference, earns 3,000 CU
+4. Repays 1,500 + 30 CU interest
+5. Net profit: 1,470 CU (minus electricity)
+```
+
+This is the engine that makes Forge's self-improvement loop economically viable. No other distributed inference project offers compute lending — this was confirmed through comprehensive competitive analysis of Bittensor, Akash, Golem, io.net, Gensyn, Ritual, and others.
+
+See [economy.md](economy.md) for the full lending specification and [strategy.md](strategy.md) for the competitive landscape.
+
 ## Comparison
 
-| Project | Inference | Economy | Agent Autonomy |
-|---------|-----------|---------|----------------|
-| **mesh-llm** | Distributed (pipeline + MoE) | None | Blackboard messaging only |
-| **Petals** | Distributed (collaborative) | None | None |
-| **Ollama** | Local only | None | None |
-| **Together AI** | Centralized | Pay-per-token (corporate) | API access only |
-| **Bitcoin** | N/A | PoW (useless work) | None |
-| **Golem** | Batch compute | GNT token | Human-directed |
-| **Forge** | Distributed (mesh-llm) | **CU (useful work)** | **Autonomous budget management** |
+| Project | Inference | Economy | Agent Autonomy | Key Limitation |
+|---------|-----------|---------|----------------|---------------|
+| **mesh-llm** | Distributed (pipeline + MoE) | None | Blackboard messaging only | No incentive to contribute |
+| **Petals** | Distributed (collaborative) | None | None | Low activity, stuck on old transformers |
+| **Ollama** | Local only | None | None | Single device, no network |
+| **Exo** | Distributed (Apple Silicon) | None | None | No economic layer, research-stage |
+| **Together AI** | Centralized | Pay-per-token (corporate) | API access only | Centralized, no agent economy |
+| **Bittensor** | Subnet-based | TAO token ($2.9B) | Subnet-level | Validator gaming, speculative token |
+| **Akash** | General cloud | AKT token ($118M) | None | Not AI-native, no lending |
+| **Autonolas** | Agent-delegated | OLAS token ($10.5M) | Full autonomy | Token-dependent, no self-improvement |
+| **Golem** | General compute | GLM token ($125M) | None | No GPU focus, 10 years of low adoption |
+| **Forge** | Distributed (mesh-llm) | **CU (useful work)** | **Autonomous budget + lending** | Early stage |
 
 ## The Metaphor
 

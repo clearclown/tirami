@@ -11,10 +11,25 @@ Forge is a distributed LLM inference protocol where **compute is currency**. The
 
 ## Repositories
 
-| Repo | Purpose |
-|------|---------|
-| `clearclown/forge` (this) | Economic layer development, specs, tests |
-| `nm-arealnormalman/mesh-llm` | **Integrated fork**: mesh-llm + Forge economy = production runtime |
+| Repo | Language | Status | Layer | Purpose |
+|------|----------|--------|-------|---------|
+| `clearclown/forge` (this) | Rust | Active | L1 | Protocol core: CU ledger, trades, lending, safety |
+| `nm-arealnormalman/mesh-llm` | Rust | Active | L0 | mesh-llm + Forge economy = production runtime |
+| `forge-sdk` | Python | Published (PyPI) | Client | Python SDK for Forge API |
+| `forge-cu-mcp` | Python | Published (PyPI) | Client | MCP server for AI tools |
+| `forge-bank` | Rust + Python | Planned | L2 | Advanced financial instruments |
+| `forge-mind` | Python | Planned | L3 | AutoAgent self-improvement + CU economy |
+| `forge-agora` | Python/TS | Planned | L4 | Agent marketplace, Nostr NIP-90, A2A |
+
+### 5-Layer Architecture
+
+```
+L4: Discovery (forge-agora)     — Agent marketplace, reputation, NIP-90
+L3: Intelligence (forge-mind)   — AutoAgent self-improvement loops
+L2: Finance (forge-bank)        — Advanced CU financial instruments
+L1: Economy (forge — this repo) — CU ledger, trades, lending, safety
+L0: Inference (forge-mesh)      — Distributed LLM inference
+```
 
 The integrated fork at `/Users/ablaze/Projects/forge-mesh` contains mesh-llm's full distributed inference engine with Forge's economic crates (`forge-economy/`) and API routes (`/api/forge/*`).
 
@@ -75,6 +90,12 @@ Inference Layer (mesh-llm-derived)  ← This is inherited
 
 6. **Agent-first API.** The `/v1/forge/balance` and `/v1/forge/pricing` endpoints exist so AI agents can make autonomous economic decisions. Design APIs that machines can use without human help.
 
+7. **Loans are bilateral.** Every loan requires dual signatures (lender + borrower). No unilateral lending. LoanRecords follow the same dual-sign + gossip pattern as TradeRecords.
+
+8. **Credit scores are local-first.** Each node computes credit scores from its own observed trade and repayment history. No central credit bureau.
+
+9. **Lending has circuit breakers.** Pool reserves (30% minimum), velocity limits, and default-rate triggers prevent cascading failures. Fail-safe: if uncertain, deny the loan.
+
 ## Code Conventions
 
 - Error handling: `ForgeError` enum in forge-core, `anyhow` in CLI only
@@ -101,6 +122,17 @@ Inference Layer (mesh-llm-derived)  ← This is inherited
 - `GET /settlement` — Exportable settlement statement with Merkle root
 - `GET /topology` — Model manifest, peer capabilities
 
+### Forge Lending (planned — Phase 5.5)
+- `POST /v1/forge/lend` — Offer CU to lending pool
+- `POST /v1/forge/borrow` — Request a CU loan
+- `POST /v1/forge/repay` — Repay outstanding loan
+- `GET /v1/forge/credit` — Credit score and history
+- `GET /v1/forge/pool` — Lending pool status (available, utilization, avg rate)
+- `GET /v1/forge/loans` — Active loans (as lender or borrower)
+
+### Forge Routing (planned — Phase 6)
+- `GET /v1/forge/route` — Optimal provider selection (cost/quality/balanced)
+
 All `/v1/forge/*` endpoints are rate-limited (token bucket, 30 req/sec).
 
 ## What's Implemented vs Planned
@@ -125,12 +157,26 @@ All `/v1/forge/*` endpoints are rate-limited (token bucket, 30 req/sec).
 - Keep all economic code as-is
 - Inherit pipeline parallelism, MoE sharding, Nostr discovery
 
+### Next: CU Lending (Phase 5.5)
+- LoanRecord type (dual-signed, gossip-synced)
+- Credit score algorithm (trade 30% + repayment 40% + uptime 20% + age 10%)
+- Lending API (/v1/forge/lend, /borrow, /repay, /credit, /pool, /loans)
+- Collateral system (CU reservation, auto-release)
+- Default handling (auto-liquidation, reputation penalty)
+- Free tier evolution (1,000 CU grant → 0% welcome loan)
+- Lending safety (30% pool reserve, velocity limits, circuit breaker)
+
 ### Future
-- Merkle tree of trade history for efficient state comparison
+- Multi-model pricing (model tiers: small/medium/large/frontier, MoE discount)
+- Routing API (/v1/forge/route — cost/quality-optimal provider selection)
+- Nostr NIP-90 provider advertisement (Data Vending Machines)
 - Reputation gossip across the mesh
-- Stablecoin adapter interface
+- forge-agora: agent marketplace, discovery, A2A payment
+- forge-mind: AutoAgent self-improvement loops with CU budgets
+- forge-bank: advanced financial instruments (futures, insurance)
+- Merkle tree of trade history for efficient state comparison
 - Bitcoin OP_RETURN anchoring for immutable audit trail
-- Agent autonomous trading and multi-model cost/quality routing
+- Compute Standard academic paper
 
 ## Common Tasks
 
@@ -165,10 +211,14 @@ All `/v1/forge/*` endpoints are rate-limited (token bucket, 30 req/sec).
 
 ## Docs
 
-- `docs/concept.md` — Why compute is money
-- `docs/economy.md` — CU-native economy, Proof of Useful Work
+- `docs/strategy.md` — Competitive positioning, lending spec, 5-layer architecture
+- `docs/concept.md` — Why compute is money, post-marketing economy
+- `docs/economy.md` — CU-native economy, Proof of Useful Work, lending
 - `docs/architecture.md` — Two-layer design
+- `docs/agent-integration.md` — SDK, MCP, borrowing workflow, credit building
+- `docs/a2a-payment.md` — CU payment extension for A2A/MCP
 - `docs/protocol-spec.md` — Wire protocol spec
-- `docs/roadmap.md` — Development phases
-- `docs/threat-model.md` — Security + economic threats
+- `docs/roadmap.md` — Development phases (1-8 + long-term)
+- `docs/threat-model.md` — Security + economic threats (T1-T17)
+- `docs/bootstrap.md` — Startup, degradation, recovery
 - `CREDITS.md` — mesh-llm attribution

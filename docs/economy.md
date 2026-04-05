@@ -217,6 +217,107 @@ Agent (small, phone)
 
 This is a possible application pattern. The protocol provides the market; agents provide the strategy.
 
+## CU Lending
+
+### Compute Microfinance
+
+Traditional finance has microloans: a farmer borrows to buy seeds, grows crops, repays with interest. Forge has micro-compute-loans: a node borrows CU to access a larger model, serves premium inference, repays from earnings.
+
+```
+Apartment renovation loan         CU loan on Forge
+───────────────────────           ──────────────────
+Borrow: $50,000                   Borrow: 5,000 CU
+Use: renovate units               Use: access 70B model
+Revenue: higher rent              Revenue: premium inference fees
+Repay: loan + interest            Repay: CU + interest
+Result: net profit                Result: net CU profit
+```
+
+Without lending, small nodes are permanently stuck at the small-model tier. With lending, any node can temporarily access frontier-class models and earn its way up.
+
+### LoanRecord
+
+Every loan is a bilateral agreement between lender and borrower, dual-signed like TradeRecords:
+
+```rust
+pub struct LoanRecord {
+    pub loan_id: [u8; 32],
+    pub lender: NodeId,
+    pub borrower: NodeId,
+    pub principal_cu: u64,
+    pub interest_rate_per_hour: f64,
+    pub term_hours: u64,
+    pub collateral_cu: u64,
+    pub status: LoanStatus,          // Active | Repaid | Defaulted
+    pub lender_sig: [u8; 64],
+    pub borrower_sig: [u8; 64],
+    pub created_at: u64,
+    pub due_at: u64,
+    pub repaid_at: Option<u64>,
+}
+```
+
+LoanRecords are gossip-synced across the mesh. Any node can verify both signatures and track the lending state of the network.
+
+### Credit Score
+
+Each node computes credit scores locally from observed behavior:
+
+```
+credit_score = 0.3 * trade_score + 0.4 * repayment_score + 0.2 * uptime_score + 0.1 * age_score
+```
+
+- **trade_score** (30%): Volume and consistency of completed inference trades
+- **repayment_score** (40%): Ratio of on-time repayments to total loans taken
+- **uptime_score** (20%): Fraction of time online since joining
+- **age_score** (10%): Time on the network (capped at 90 days for full score)
+
+New nodes start at credit score 0.3. Nodes with no loan history use a neutral repayment_score of 0.5.
+
+### Lending Pool
+
+Individual lenders contribute CU to a node-local lending pool:
+
+1. Lender calls `POST /v1/forge/lend` with amount, max term, and minimum interest rate
+2. Lent CU is reserved (cannot be spent by lender while lent)
+3. Borrowers draw from the pool based on their credit score
+4. Interest earned is distributed proportionally to lenders
+5. Pool maintains a 30% reserve — at least 30% of pool CU must remain unlent
+
+### Interest Model
+
+```
+offered_rate = base_rate + (1.0 - credit_score) * risk_premium
+```
+
+- `base_rate`: 0.1% per hour (market-driven, set by lender preferences)
+- `risk_premium`: up to 0.5% per hour
+- High credit (1.0): 0.1%/hr — reward for reliability
+- Low credit (0.3): 0.45%/hr — compensate for risk
+
+### Collateral and Default
+
+Borrowers must lock CU as collateral (maximum 3:1 loan-to-collateral ratio). The collateral is reserved in the borrower's ledger and cannot be spent during the loan term.
+
+**Default triggers:**
+- Loan term expires without full repayment
+- Kill switch activated (all loans frozen, not defaulted)
+
+**On default:**
+- Collateral is transferred to lender
+- Borrower's credit score is severely penalized (repayment_score drops to 0.0)
+- Default is recorded in LoanRecord (status = Defaulted) and gossip-synced
+- Borrower must rebuild credit before borrowing again
+
+### Free Tier as First Loan
+
+The current free tier (1,000 CU grant for new nodes) evolves into a "welcome loan":
+
+- 1,000 CU lent at 0% interest, 72-hour term
+- Repayment is optional but builds credit score immediately
+- Nodes that repay start at credit 0.4+ instead of 0.3
+- Same Sybil protection applies (>100 unknown nodes → reject)
+
 ## Why This Is Not Web3
 
 Most Web3 projects create artificial scarcity (tokens) on top of abundant digital goods. Forge does the opposite:

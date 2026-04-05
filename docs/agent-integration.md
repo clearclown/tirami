@@ -171,3 +171,92 @@ curl -X POST localhost:3000/v1/forge/kill \
 | "Am I safe?" | `/v1/forge/safety` | GET |
 | "Cash out to Bitcoin" | `/v1/forge/invoice` | POST |
 | "STOP EVERYTHING" | `/v1/forge/kill` | POST |
+
+## Agent Borrowing Workflow
+
+When an agent's CU balance is insufficient for a task, it can borrow:
+
+```python
+from forge_sdk import ForgeClient
+
+forge = ForgeClient()
+
+def agent_with_borrowing():
+    balance = forge.balance()
+    pricing = forge.pricing()
+    
+    task_cost = pricing["estimated_cost_1000_tokens"] * 2  # ~2K tokens needed
+    
+    if balance["effective_balance"] < task_cost:
+        # Check credit score
+        credit = forge.credit()
+        if credit["score"] > 0.3:
+            # Borrow the shortfall
+            shortfall = task_cost - balance["effective_balance"]
+            loan = forge.borrow(
+                amount=shortfall,
+                term_hours=4,
+                collateral=shortfall // 3
+            )
+            print(f"Borrowed {loan['principal_cu']} CU at {loan['interest_rate']}%/hr")
+    
+    # Execute the task
+    result = forge.chat("Complex analysis task...", max_tokens=2000)
+    print(f"Cost: {result['cu_cost']} CU")
+    
+    # Repay from earnings
+    forge.repay(loan_id=loan["id"])
+    print(f"Loan repaid. Credit score improving.")
+```
+
+## Credit Building Pattern
+
+New agents start with a credit score of 0.3. To build credit:
+
+```python
+def build_credit(forge):
+    """Gradually build credit through reliable behavior."""
+    
+    # Phase 1: Earn through inference (builds trade history)
+    # Serve inference normally -- every completed trade improves trade_score
+    
+    # Phase 2: Small borrow-repay cycles (builds repayment history)
+    loan = forge.borrow(amount=100, term_hours=1, collateral=50)
+    # ... do useful work ...
+    forge.repay(loan_id=loan["id"])
+    
+    # Phase 3: Check progress
+    credit = forge.credit()
+    print(f"Credit score: {credit['score']}")
+    print(f"  Trade score:     {credit['components']['trade']}")
+    print(f"  Repayment score: {credit['components']['repayment']}")
+    print(f"  Uptime score:    {credit['components']['uptime']}")
+    print(f"  Age score:       {credit['components']['age']}")
+    
+    # Typical progression:
+    # Week 1:  0.3 → 0.4 (initial trades + first repayment)
+    # Month 1: 0.4 → 0.6 (consistent trades + multiple repayments)
+    # Month 3: 0.6 → 0.8 (established history)
+```
+
+## API Reference for Lending
+
+| What agent needs | Endpoint | Method |
+|-----------------|----------|--------|
+| "What's my credit score?" | `/v1/forge/credit` | GET |
+| "How much can I borrow?" | `/v1/forge/pool` | GET |
+| "Borrow CU" | `/v1/forge/borrow` | POST |
+| "Repay my loan" | `/v1/forge/repay` | POST |
+| "Lend my idle CU" | `/v1/forge/lend` | POST |
+| "View my loans" | `/v1/forge/loans` | GET |
+
+## Credit Score Factors
+
+| Factor | Weight | How to improve |
+|--------|--------|----------------|
+| Trade history | 30% | Complete more inference trades (both as provider and consumer) |
+| Repayment history | 40% | Repay loans on time — this is the largest factor |
+| Uptime | 20% | Stay online and available for inference requests |
+| Account age | 10% | Time on the network (maxes out at 90 days) |
+
+**Note:** Credit scores are computed locally by each node from observed behavior. There is no central credit bureau. Different nodes may compute slightly different scores for the same peer based on their own observations.

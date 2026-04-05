@@ -308,6 +308,7 @@ forge/
 ## Docs
 
 - [Strategy](docs/strategy.md) — Competitive positioning, lending spec, 5-layer architecture
+- [Monetary Theory](docs/monetary-theory.md) — Why CU works: Soddy, Bitcoin, PoUW, AI-only currency
 - [Concept & Vision](docs/concept.md) — Why compute is money
 - [Economic Model](docs/economy.md) — CU economy, Proof of Useful Work, lending
 - [Architecture](docs/architecture.md) — Two-layer design

@@ -212,6 +212,7 @@ All `/v1/forge/*` endpoints are rate-limited (token bucket, 30 req/sec).
 ## Docs
 
 - `docs/strategy.md` — Competitive positioning, lending spec, 5-layer architecture
+- `docs/monetary-theory.md` — Why CU works: Soddy, Bitcoin, PoUW, AI-only currency thesis
 - `docs/concept.md` — Why compute is money, post-marketing economy
 - `docs/economy.md` — CU-native economy, Proof of Useful Work, lending
 - `docs/architecture.md` — Two-layer design

@@ -13,7 +13,7 @@ Forge is a distributed LLM inference protocol where **compute is currency**. The
 
 | Repo | Language | Status | Layer | Purpose |
 |------|----------|--------|-------|---------|
-| `clearclown/forge` (this) | Rust | Active (315 tests) | L1-L4 | Protocol core + finance, intelligence, marketplace, all wired into forge-node HTTP API (Rust workspace, 12 crates) |
+| `clearclown/forge` (this) | Rust | Active (337 tests) | L1-L4 | Protocol core + finance, intelligence, marketplace + persistence + reputation gossip + collusion detection + NIP-90 relay publish (Rust workspace, 12 crates) |
 | `nm-arealnormalman/mesh-llm` | Rust | Active (43 tests) | L0 | mesh-llm + Forge economy = production runtime |
 | `clearclown/forge-bank` | Python (archived) | Scaffold v0.1 (45 tests) | — | Superseded by `crates/forge-bank/` in this repo |
 | `clearclown/forge-mind` | Python (archived) | Scaffold v0.1 (40 tests) | — | Superseded by `crates/forge-mind/` in this repo |
@@ -32,8 +32,8 @@ L1: Economy       crates/forge-ledger et al.  — CU ledger, trades, lending, sa
 L0: Inference     nm-arealnormalman/mesh-llm  — Distributed LLM inference + forge-economy port
 ```
 
-**Total tests across the ecosystem:** 315 (forge workspace) + 43 (forge-mesh)
-+ 16 (forge-economics SPEC-AUDIT) = **374 passing**.
+**Total tests across the ecosystem:** 337 (forge workspace) + 641 (forge-mesh after Phase 9 A1 sync)
++ 16 (forge-economics SPEC-AUDIT) + 27 (forge-sdk pytest) = **1,021 passing**.
 
 Phase 7 (2026-04-07) rewrote L2/L3/L4 from Python scaffolds into Rust
 workspace crates. Phase 8 (2026-04-08) wired them into forge-node with
@@ -51,7 +51,7 @@ The integrated fork at `/Users/ablaze/Projects/forge-mesh` contains mesh-llm's f
 
 ```bash
 cargo build --release          # Full build
-cargo test --workspace         # All tests (315 across 12 crates)
+cargo test --workspace         # All tests (337 across 12 crates)
 cargo check --workspace        # Fast type check
 cargo clippy --workspace       # Lint
 ```
@@ -177,6 +177,16 @@ Inference Layer (mesh-llm-derived)  ← This is inherited
 All `/v1/forge/*` endpoints are rate-limited (token bucket, 30 req/sec).
 
 ## What's Implemented vs Planned
+
+### Phase 9 — Production hardening (DONE 2026-04-08, 337 tests)
+- **Theory audit**: 3 drifts + 1 missing + 2 implicit constants fixed; Rust now 1:1 with forge-economics §1-§12 (43 match / 0 drift). See `docs/THEORY-AUDIT.md`.
+- **A1 forge-mesh sync**: full Phase 7+8 port into nm-arealnormalman/mesh-llm; 45 new /api/forge/* endpoints + 3 L2/L3/L4 crates + 3 missing forge-ledger modules (agentnet, agora, safety). forge-mesh test count: 393 → 641.
+- **A2 Persistent L2/L3/L4 state**: BankServices / Marketplace / ForgeMindAgent survive node restarts via JSON snapshots. Trait-object fields (Strategy, MetaOptimizer, Benchmark) handled via kind-enum snapshots + re-attachment on load. New `state_persist.rs` module, `POST /v1/forge/admin/save-state` admin endpoint.
+- **A3 Reputation gossip**: `ReputationObservation` wire message + `broadcast_reputation`/`handle_reputation_gossip` + `consensus_reputation()` weighted-median merge on ComputeLedger. Decentralized reputation consensus resistant to single-observer bias.
+- **A4 NIP-90 relay publish**: tokio-tungstenite WebSocket publisher in `forge_ledger::agora_relay`. `Nip90Publisher::publish_advertisement()` actually reaches wss://relay.damus.io.
+- **A5 Collusion resistance**: `forge_ledger::collusion::CollusionDetector` with tight-cluster + volume-spike + round-robin Tarjan-SCC detection. `ComputeLedger::effective_reputation()` subtracts the trust penalty. New `/v1/forge/collusion/{hex}` debug endpoint.
+- **B1 forge-sdk v0.3.0**: 20 new Python methods (bank 8 + agora 7 + mind 5) + 27 pytest tests.
+- **B2 forge-cu-mcp v0.3.0**: 20 new MCP tools exposing L2/L3/L4 to Claude Code / Cursor / ChatGPT desktop.
 
 ### Phase 8 — L2/L3/L4 wired into forge-node (DONE 2026-04-08, 315 tests)
 - **forge-bank as a service**: PortfolioManager owned by ForgeNode, fed live PoolSnapshot from ComputeLedger via `bank_adapter::pool_snapshot_from_ledger()`. 8 HTTP endpoints under `/v1/forge/bank/*`.

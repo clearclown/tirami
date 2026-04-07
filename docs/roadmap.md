@@ -103,20 +103,39 @@ over HTTP, real CU is consumed by the self-improvement loop.
 | Workspace tests | ✅ 315 passing (was 291) |
 | verify-impl.sh | ✅ 57 / 57 GREEN |
 
-## Phase 9: Production hardening (planned)
+## Phase 9: Production hardening ✅ (2026-04-08)
 
-**Goal:** Make Phase 8 production-grade and propagate to forge-mesh.
+**Goal achieved:** Phase 8 is now production-grade and fully propagated to forge-mesh.
+
+| Deliverable | Status | Notes |
+|---|---|---|
+| Theory ↔ impl audit | ✅ | 43 match / 0 drift / 1 minor missing; `docs/THEORY-AUDIT.md` |
+| forge-mesh Phase 7+8 sync | ✅ | 45 new /api/forge/* endpoints; 393 → 641 tests |
+| forge-sdk Phase 8 wrappers | ✅ | 20 new Python methods, v0.3.0, 27 pytest tests |
+| forge-cu-mcp Phase 8 tools | ✅ | 20 new MCP tools, v0.3.0 |
+| Reputation gossip | ✅ | ReputationObservation wire msg + weighted-median consensus |
+| NIP-90 relay publish | ✅ | tokio-tungstenite WebSocket publisher in forge_ledger::agora_relay |
+| Persistent L2/L3/L4 state | ✅ | BankServices / Marketplace / ForgeMindAgent survive restarts |
+| Collusion resistance | ✅ | Tight cluster + volume spike + round-robin Tarjan SCC detection |
+| Workspace tests | ✅ | 315 → **337** (+22) |
+| verify-impl.sh | ✅ | 57 → **72/72 GREEN** |
+
+## Phase 10: v0.3 productization (planned)
+
+**Goal:** Publish forge-sdk/MCP, sign reputation gossip, run forge-mesh CI, write the Compute Standard paper.
 
 | Deliverable | Description |
 |---|---|
-| forge-mesh Phase 7+8 sync | Port L2/L3/L4 crates to nm-arealnormalman/mesh-llm forge-economy/ |
-| forge-sdk (Python) wrappers | Expose /v1/forge/{bank,mind,agora}/* to PyPI users |
-| forge-cu-mcp tools | MCP tool exposure of L2/L3/L4 for Claude Code / Cursor |
-| Reputation gossip | Wire message in forge-proto, broadcast across mesh |
-| Nostr NIP-90 relay publish | Real WebSocket publish from forge_ledger::agora::Nip90Publisher |
-| Persistent L2/L3/L4 state | BankServices / Marketplace / ForgeMindAgent survive node restarts |
-| Collusion resistance | Statistical anomaly detection on trade patterns |
+| forge-sdk 0.3.0 PyPI publish | `twine upload` + GitHub release tag |
+| forge-cu-mcp 0.3.0 PyPI publish | Same as SDK |
+| Ed25519-signed ReputationObservation | Replace empty-sig placeholder with real signing in forge-mind/node |
+| forge-mesh CI workflow | Run cargo test on every push via GitHub Actions |
+| Persistent forge-mesh L2/L3/L4 state | Port A2 state_persist to forge-mesh |
+| Collusion detection metric export | Prometheus / OpenMetrics endpoint for trust penalty stats |
 | A2A payment extension | CU payment headers for Google A2A protocol |
+| Merkle tree of trade history | Efficient state comparison for reputation audit |
+| Bitcoin OP_RETURN anchoring | Optional merkle root anchor to BTC chain |
+| Compute Standard academic paper | forge-economics theory v0.3 + empirical results |
 
 ## Long-term
 

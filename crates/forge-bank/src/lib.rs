@@ -9,4 +9,23 @@
 
 #![allow(dead_code)]
 
-// Stub — full implementation lands in Batch 1.
+pub mod errors;
+pub mod futures;
+pub mod insurance;
+pub mod portfolio;
+pub mod risk;
+pub mod strategies;
+pub mod types;
+pub mod yield_optimizer;
+
+// Public re-exports
+pub use errors::BankError;
+pub use futures::{futures_pnl, mark_to_market, required_margin, FuturesContract};
+pub use insurance::{premium_for, InsurancePolicy};
+pub use portfolio::PortfolioManager;
+pub use risk::{RiskAssessment, RiskModel};
+pub use strategies::{BalancedStrategy, ConservativeStrategy, HighYieldStrategy, Strategy};
+pub use types::{
+    ActionKind, Decision, PoolSnapshot, Portfolio, Position, PositionKind, RiskTolerance,
+};
+pub use yield_optimizer::YieldOptimizer;

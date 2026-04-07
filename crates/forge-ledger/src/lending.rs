@@ -143,6 +143,19 @@ pub const INACTIVITY_BURN_PER_MONTH: f64 = 0.01;
 pub const AVAILABILITY_YIELD_RATE_PER_HOUR: f64 = 0.001;
 
 // ===========================================================================
+// §9 — Reputation gossip (parameters.md §9 / Phase 9 A3)
+// ===========================================================================
+
+/// Maximum remote observations retained per subject for consensus reputation.
+/// Oldest observations are evicted when this limit is exceeded.
+pub const MAX_REMOTE_OBSERVATIONS_PER_NODE: usize = 32;
+
+/// Minimum trade_count for an observation to influence the weighted median.
+/// Observers with fewer than this many trades involving the subject are ignored
+/// to prevent low-confidence noise from swaying the score.
+pub const MIN_OBSERVATION_WEIGHT: u64 = 5;
+
+// ===========================================================================
 // LoanRecord types
 // ===========================================================================
 

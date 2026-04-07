@@ -9,6 +9,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::api::{AppState, check_forge_rate_limit, now_millis_pub};
 use crate::agora_adapter::refresh_marketplace_from_ledger;
+// forge_core::NodeId used for anti-collusion reputation lookup (Phase 9 A5)
+use forge_core;
 
 // ---------------------------------------------------------------------------
 // Request/response types
@@ -53,6 +55,9 @@ pub(crate) async fn agora_list_agents(
 }
 
 /// GET /v1/forge/agora/reputation/:hex
+///
+/// Returns the forge-agora `ReputationScore` for a registered agent, with the
+/// `economic_reputation` field adjusted for collusion (Phase 9 A5).
 pub(crate) async fn agora_reputation(
     State(state): State<AppState>,
     Path(hex): Path<String>,
@@ -60,7 +65,16 @@ pub(crate) async fn agora_reputation(
     check_forge_rate_limit(&state).await?;
     refresh_marketplace_from_ledger(&state.ledger, &state.marketplace, &state.agora_last_seen).await;
     let mp = state.marketplace.lock().await;
-    let score = mp.reputation_of(&hex, now_millis_pub());
+    let mut score = mp.reputation_of(&hex, now_millis_pub());
+    // Apply anti-collusion penalty from the ComputeLedger (Phase 9 A5).
+    // Adjust the overall score by the effective (penalty-adjusted) reputation.
+    if let Ok(node_id) = forge_core::NodeId::from_hex(&hex) {
+        let ledger = state.ledger.lock().await;
+        let effective = ledger.effective_reputation(&node_id, now_millis_pub());
+        // Blend the agora-computed overall with the ledger effective_reputation.
+        // Using minimum ensures collusion penalty always reduces the visible score.
+        score.overall = score.overall.min(effective);
+    }
     Ok(Json(score))
 }
 

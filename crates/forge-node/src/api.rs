@@ -246,6 +246,10 @@ pub fn create_router_with_services(
         .route("/v1/forge/mind/stats", get(crate::handlers::mind::mind_stats))
         // Admin: manual state persistence trigger (Phase 9)
         .route("/v1/forge/admin/save-state", post(admin_save_state))
+        // Phase 9 A3 — Reputation gossip debug endpoints
+        .route("/v1/forge/reputation-gossip-status", get(forge_reputation_gossip_status))
+        // Phase 9 A5 — Collusion resistance debug endpoint
+        .route("/v1/forge/collusion/{hex}", get(forge_collusion_report))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             require_bearer_auth,
@@ -2063,6 +2067,73 @@ pub struct InvoiceResponse {
 /// POST /v1/forge/admin/save-state — manually trigger L2/L3/L4 state persistence.
 ///
 /// Useful for tests, manual backups, and graceful-shutdown scripts.
+// ---------------------------------------------------------------------------
+// Phase 9 A3 — Reputation gossip status (debug endpoint)
+// ---------------------------------------------------------------------------
+
+/// GET /v1/forge/reputation-gossip-status — debug endpoint showing observed
+/// reputation history per node, keyed by hex node ID.
+async fn forge_reputation_gossip_status(
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    check_forge_rate_limit(&state).await?;
+    let ledger = state.ledger.lock().await;
+    let summary: serde_json::Value = ledger
+        .remote_reputation
+        .iter()
+        .map(|(node, obs)| {
+            let node_hex = node.to_hex();
+            let observations: Vec<serde_json::Value> = obs
+                .iter()
+                .map(|o| {
+                    serde_json::json!({
+                        "observer": o.observer.to_hex(),
+                        "reputation": o.reputation,
+                        "trade_count": o.trade_count,
+                        "total_cu_volume": o.total_cu_volume,
+                        "timestamp_ms": o.timestamp_ms,
+                    })
+                })
+                .collect();
+            (node_hex, serde_json::Value::Array(observations))
+        })
+        .collect::<serde_json::Map<_, _>>()
+        .into();
+    Ok(Json(serde_json::json!({
+        "subjects": summary,
+        "total_subjects": ledger.remote_reputation.len(),
+    })))
+}
+
+// ---------------------------------------------------------------------------
+// Phase 9 A5 — Collusion report (debug endpoint)
+// ---------------------------------------------------------------------------
+
+/// GET /v1/forge/collusion/:hex — returns the CollusionReport for a node.
+async fn forge_collusion_report(
+    State(state): State<AppState>,
+    axum::extract::Path(hex): axum::extract::Path<String>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    check_forge_rate_limit(&state).await?;
+    let node_id = forge_core::NodeId::from_hex(&hex)
+        .map_err(|e| (StatusCode::BAD_REQUEST, format!("invalid node id: {e}")))?;
+    let ledger = state.ledger.lock().await;
+    let now_ms = now_millis();
+    let trades = ledger.recent_trades(10_000);
+    drop(ledger);
+    let report = forge_ledger::CollusionDetector::analyze_node(&trades, &node_id, now_ms);
+    Ok(Json(serde_json::json!({
+        "subject": hex,
+        "trades_in_window": report.trades_in_window,
+        "unique_counterparties": report.unique_counterparties,
+        "tight_cluster_score": report.tight_cluster_score,
+        "volume_spike_score": report.volume_spike_score,
+        "round_robin_score": report.round_robin_score,
+        "trust_penalty": report.trust_penalty,
+        "flags": report.flags,
+    })))
+}
+
 async fn admin_save_state(
     State(state): State<AppState>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {

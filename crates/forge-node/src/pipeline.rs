@@ -5,6 +5,7 @@ use forge_proto::{
     Envelope, ErrorCode, ErrorMsg, InferenceRequest, LoanAccept, Payload, PipelineTopologyMsg,
     RpcServerFailed, RpcServerReady, TokenStreamMsg, TradeAccept, TradeProposal, Welcome,
 };
+use forge_net::gossip::handle_reputation_gossip;
 use std::sync::Arc;
 use tokio::sync::{Mutex, Semaphore};
 
@@ -396,6 +397,19 @@ impl PipelineCoordinator {
                                     }
                                 }
                             }
+                        });
+                    }
+                    Payload::ReputationGossip(obs) => {
+                        let ledger = ledger.clone();
+                        let gossip = gossip.clone();
+                        let transport = self.transport.clone();
+                        tokio::spawn(async move {
+                            handle_reputation_gossip(
+                                obs,
+                                &ledger,
+                                &gossip,
+                                Some(&transport),
+                            ).await;
                         });
                     }
                     _ => {}

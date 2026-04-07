@@ -187,6 +187,40 @@ assert "#P8-handlers-agora"  "handlers/agora.rs exists" \
 assert "#P8-handlers-mind"   "handlers/mind.rs exists" \
   "test -f crates/forge-node/src/handlers/mind.rs"
 
+# === Phase 9 A3: Reputation gossip ===
+assert "#A3-proto"          "ReputationObservation in Payload enum" \
+  "grep -q 'ReputationGossip' crates/forge-proto/src/messages.rs && grep -q 'pub struct ReputationObservation' crates/forge-proto/src/messages.rs"
+assert "#A3-canonical"      "ReputationObservation::canonical_bytes / verify / dedup_key" \
+  "grep -q 'fn canonical_bytes' crates/forge-proto/src/messages.rs && grep -q 'fn verify' crates/forge-proto/src/messages.rs && grep -q 'fn dedup_key' crates/forge-proto/src/messages.rs"
+assert "#A3-net-broadcast"  "broadcast_reputation in forge-net gossip" \
+  "grep -q 'pub async fn broadcast_reputation' crates/forge-net/src/gossip.rs"
+assert "#A3-net-handle"     "handle_reputation_gossip in forge-net gossip" \
+  "grep -q 'pub async fn handle_reputation_gossip' crates/forge-net/src/gossip.rs"
+assert "#A3-ledger-merge"   "merge_remote_reputation / consensus_reputation on ComputeLedger" \
+  "grep -q 'fn merge_remote_reputation' crates/forge-ledger/src/ledger.rs && grep -q 'fn consensus_reputation' crates/forge-ledger/src/ledger.rs"
+assert "#A3-remote-field"   "remote_reputation field on ComputeLedger" \
+  "grep -q 'remote_reputation' crates/forge-ledger/src/ledger.rs"
+assert "#A3-pipeline"       "ReputationGossip dispatch in pipeline.rs" \
+  "grep -q 'ReputationGossip' crates/forge-node/src/pipeline.rs"
+assert "#A3-endpoint"       "/v1/forge/reputation-gossip-status endpoint registered" \
+  "grep -q 'reputation-gossip-status' crates/forge-node/src/api.rs"
+
+# === Phase 9 A5: Collusion resistance ===
+assert "#A5-module"         "collusion.rs module exists" \
+  "test -f crates/forge-ledger/src/collusion.rs"
+assert "#A5-detector"       "CollusionDetector + CollusionReport in collusion.rs" \
+  "grep -q 'pub struct CollusionDetector' crates/forge-ledger/src/collusion.rs && grep -q 'pub struct CollusionReport' crates/forge-ledger/src/collusion.rs"
+assert "#A5-algorithms"     "tight_cluster + volume_spike + round_robin in collusion.rs" \
+  "grep -q 'tight_cluster_score' crates/forge-ledger/src/collusion.rs && grep -q 'volume_spike_score' crates/forge-ledger/src/collusion.rs && grep -q 'round_robin_score' crates/forge-ledger/src/collusion.rs"
+assert "#A5-tarjan"         "Tarjan SCC implementation present" \
+  "grep -q 'tarjan\|Tarjan\|lowlink' crates/forge-ledger/src/collusion.rs"
+assert "#A5-effective-rep"  "effective_reputation method on ComputeLedger" \
+  "grep -q 'fn effective_reputation' crates/forge-ledger/src/ledger.rs"
+assert "#A5-endpoint"       "/v1/forge/collusion endpoint registered" \
+  "grep -q '/v1/forge/collusion' crates/forge-node/src/api.rs"
+assert "#A5-constants"      "MAX_REMOTE_OBSERVATIONS_PER_NODE + MIN_OBSERVATION_WEIGHT constants" \
+  "grep -q 'MAX_REMOTE_OBSERVATIONS_PER_NODE' crates/forge-ledger/src/lending.rs && grep -q 'MIN_OBSERVATION_WEIGHT' crates/forge-ledger/src/lending.rs"
+
 # === Build & test ===
 assert "BUILD" "cargo check --workspace passes" \
   "cargo check --workspace --quiet 2>&1 | grep -qv 'error'"

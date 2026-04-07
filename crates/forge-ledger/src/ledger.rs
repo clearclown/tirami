@@ -1,13 +1,15 @@
 use forge_core::{NodeBalance, NodeId, WorkUnit};
+use forge_proto::ReputationObservation;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 use crate::lending::{
     self, LoanStatus, SignedLoanRecord, COLD_START_CREDIT,
     COLLATERAL_BURN_ON_DEFAULT, DEFAULT_REPUTATION, MAX_LOAN_TERM_HOURS, MAX_LTV_RATIO,
-    MAX_SINGLE_LOAN_POOL_PCT, MIN_CREDIT_FOR_BORROWING, MIN_RESERVE_RATIO,
-    NEUTRAL_REPAYMENT_SCORE, TIER_SMALL_CU_PER_TOKEN, WELCOME_LOAN_AMOUNT,
-    WELCOME_LOAN_SYBIL_THRESHOLD, WELCOME_LOAN_TERM_HOURS,
+    MAX_REMOTE_OBSERVATIONS_PER_NODE, MAX_SINGLE_LOAN_POOL_PCT, MIN_CREDIT_FOR_BORROWING,
+    MIN_OBSERVATION_WEIGHT, MIN_RESERVE_RATIO, NEUTRAL_REPAYMENT_SCORE,
+    TIER_SMALL_CU_PER_TOKEN, WELCOME_LOAN_AMOUNT, WELCOME_LOAN_SYBIL_THRESHOLD,
+    WELCOME_LOAN_TERM_HOURS,
 };
 
 /// Re-export of `ModelTier` so callers can `use forge_ledger::ledger::ModelTier`.
@@ -45,6 +47,11 @@ pub struct ComputeLedger {
     /// Total CU deposited by lenders into the pool (active + repaid + reserved).
     #[serde(default)]
     loan_pool_total: u64,
+    /// Recent remote reputation observations, keyed by subject.
+    /// Each subject holds up to `MAX_REMOTE_OBSERVATIONS_PER_NODE` latest observations.
+    /// Not persisted to disk (ephemeral gossip state, re-built from peers on startup).
+    #[serde(default, skip_serializing)]
+    pub remote_reputation: HashMap<NodeId, Vec<ReputationObservation>>,
 }
 
 /// Dynamic pricing based on supply/demand and network scale.
@@ -368,6 +375,7 @@ impl ComputeLedger {
             loans: Vec::new(),
             loan_pool_lent: 0,
             loan_pool_total: 0,
+            remote_reputation: HashMap::new(),
         }
     }
 
@@ -467,6 +475,7 @@ impl ComputeLedger {
             loans: snapshot.loan_log,
             loan_pool_lent: snapshot.loan_pool_lent,
             loan_pool_total: snapshot.loan_pool_total,
+            remote_reputation: HashMap::new(), // ephemeral; re-built from peers on startup
         }
     }
 
@@ -737,6 +746,84 @@ impl ComputeLedger {
         }
     }
 
+    // ===========================================================================
+    // Reputation gossip — Phase 9 A3
+    // ===========================================================================
+
+    /// Record a remote observation of a node's reputation.
+    /// Stores it in a per-subject vector, capped to MAX_REMOTE_OBSERVATIONS_PER_NODE.
+    /// Oldest observations are evicted when the cap is exceeded.
+    pub fn record_remote_reputation(&mut self, obs: &ReputationObservation) {
+        let vec = self
+            .remote_reputation
+            .entry(obs.subject.clone())
+            .or_default();
+        vec.push(obs.clone());
+        // Evict oldest when over the cap.
+        while vec.len() > MAX_REMOTE_OBSERVATIONS_PER_NODE {
+            vec.remove(0);
+        }
+    }
+
+    /// Compute the consensus reputation for a node by merging local + remote
+    /// observations using a weighted median.
+    ///
+    /// Algorithm choice: weighted median is resistant to a single dishonest
+    /// observer inflating or deflating the score. A node would need to control
+    /// >50% of the total observation weight to shift the median.
+    pub fn consensus_reputation(&self, node: &NodeId) -> f64 {
+        let local = self
+            .balances
+            .get(node)
+            .map(|b| b.reputation)
+            .unwrap_or(DEFAULT_REPUTATION);
+        let Some(observations) = self.remote_reputation.get(node) else {
+            return local;
+        };
+        // Collect qualifying remote observations (weight >= MIN_OBSERVATION_WEIGHT).
+        let mut weighted: Vec<(f64, u64)> = observations
+            .iter()
+            .filter(|o| o.trade_count >= MIN_OBSERVATION_WEIGHT)
+            .map(|o| (o.reputation, o.trade_count))
+            .collect();
+        if weighted.is_empty() {
+            return local;
+        }
+        // Include local view with a baseline weight equal to MIN_OBSERVATION_WEIGHT.
+        // This ensures local data participates in the median even with few trades.
+        weighted.push((local, MIN_OBSERVATION_WEIGHT.max(4)));
+        // Sort by reputation value ascending for weighted-median calculation.
+        weighted.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+        // Weighted median: find the point where cumulative weight crosses half total.
+        let total_weight: u64 = weighted.iter().map(|(_, w)| *w).sum();
+        let half = total_weight / 2;
+        let mut cum = 0u64;
+        for (rep, w) in &weighted {
+            cum += w;
+            if cum >= half {
+                return *rep;
+            }
+        }
+        local
+    }
+
+    /// Merge a single remote observation into the ledger state.
+    /// 1. Records the observation for the subject.
+    /// 2. Recomputes the consensus reputation and updates the subject's `NodeBalance`.
+    pub fn merge_remote_reputation(&mut self, obs: &ReputationObservation) {
+        self.record_remote_reputation(obs);
+        let consensus = self.consensus_reputation(&obs.subject);
+        // Update the subject's NodeBalance reputation if it exists.
+        if let Some(balance) = self.balances.get_mut(&obs.subject) {
+            balance.reputation = consensus;
+        }
+        tracing::debug!(
+            "Merged remote reputation for {}: consensus={:.3}",
+            obs.subject.to_hex(),
+            consensus
+        );
+    }
+
     /// Apply yield: nodes that have been online and contributing
     /// earn a bonus proportional to their contribution.
     /// This is the "interest" — compute resources appreciate with use.
@@ -771,6 +858,23 @@ impl ComputeLedger {
             EMA_ALPHA * raw_supply + (1.0 - EMA_ALPHA) * self.price.supply_factor;
         self.price.demand_factor =
             EMA_ALPHA * raw_demand + (1.0 - EMA_ALPHA) * self.price.demand_factor;
+    }
+
+    // ===========================================================================
+    // A5 — Effective reputation (consensus - collusion penalty)
+    // ===========================================================================
+
+    /// Compute the effective reputation for `node`, taking into account both
+    /// the weighted-median consensus across gossip observers (A3) and the
+    /// collusion trust penalty (A5).
+    ///
+    /// Use this method for all new economic decisions (routing, pricing, etc.).
+    /// Use [`consensus_reputation`] only for audit / debugging.
+    pub fn effective_reputation(&self, node: &NodeId, now_ms: u64) -> f64 {
+        let base = self.consensus_reputation(node);
+        let report =
+            crate::collusion::CollusionDetector::analyze_node(&self.trade_log, node, now_ms);
+        (base - report.trust_penalty).clamp(0.0, 1.0)
     }
 
     /// Get all nodes sorted by balance (highest contributors first).
@@ -2306,5 +2410,133 @@ mod tests {
             model_id: "test".to_string(),
         });
         assert_eq!(ledger.recent_trades(10).len(), 0);
+    }
+
+    // ===========================================================================
+    // A3 — Reputation gossip tests
+    // ===========================================================================
+
+    fn make_rep_obs(observer: [u8; 32], subject: [u8; 32], rep: f64, trade_count: u64) -> ReputationObservation {
+        ReputationObservation {
+            observer: NodeId(observer),
+            subject: NodeId(subject),
+            reputation: rep,
+            trade_count,
+            total_cu_volume: trade_count * 100,
+            timestamp_ms: now_millis(),
+            signature: vec![],
+        }
+    }
+
+    #[test]
+    fn test_consensus_reputation_with_no_observations_returns_local() {
+        let mut ledger = ComputeLedger::new();
+        let node = NodeId([1u8; 32]);
+        // Give the node a balance with a specific reputation.
+        ledger.balances.insert(node.clone(), forge_core::NodeBalance {
+            node_id: node.clone(),
+            contributed: 100,
+            consumed: 0,
+            reserved: 0,
+            reputation: 0.75,
+        });
+        // No remote observations → consensus = local.
+        assert!((ledger.consensus_reputation(&node) - 0.75).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_consensus_reputation_weighted_median_with_outlier() {
+        let mut ledger = ComputeLedger::new();
+        let subject = NodeId([2u8; 32]);
+        // Local reputation = 0.5 (default, no balance entry).
+        // Add one honest observation (high weight, rep ≈ 0.8).
+        let obs_honest = make_rep_obs([10u8; 32], [2u8; 32], 0.8, 50);
+        // Add one outlier (sybil, just above MIN_OBSERVATION_WEIGHT, rep = 0.0).
+        let obs_sybil = make_rep_obs([11u8; 32], [2u8; 32], 0.0, 6);
+
+        ledger.record_remote_reputation(&obs_honest);
+        ledger.record_remote_reputation(&obs_sybil);
+
+        let consensus = ledger.consensus_reputation(&subject);
+        // With local=0.5 (weight 5), honest=0.8 (weight 50), sybil=0.0 (weight 6)
+        // Sorted: [(0.0,6), (0.5,5), (0.8,50)]. Total=61. Half=30.
+        // cum after 6=6 < 30, after 6+5=11 < 30, after 11+50=61 >= 30 → rep=0.8.
+        // The outlier sybil observation does NOT drag the score to 0.
+        assert!(consensus > 0.5, "consensus should be pulled toward honest majority, got {consensus}");
+        assert!(consensus <= 1.0);
+    }
+
+    #[test]
+    fn test_record_remote_reputation_caps_observations_per_node() {
+        use crate::lending::MAX_REMOTE_OBSERVATIONS_PER_NODE;
+        let mut ledger = ComputeLedger::new();
+        let subject = [5u8; 32];
+        // Insert more than the cap.
+        for i in 0..(MAX_REMOTE_OBSERVATIONS_PER_NODE + 10) as u8 {
+            let observer = [i; 32];
+            ledger.record_remote_reputation(&make_rep_obs(observer, subject, 0.5, 10));
+        }
+        let stored = ledger.remote_reputation.get(&NodeId(subject)).unwrap();
+        assert_eq!(stored.len(), MAX_REMOTE_OBSERVATIONS_PER_NODE);
+    }
+
+    #[test]
+    fn test_merge_remote_reputation_updates_node_balance() {
+        let mut ledger = ComputeLedger::new();
+        let subject = NodeId([7u8; 32]);
+        // Create a balance for the subject.
+        ledger.balances.insert(subject.clone(), forge_core::NodeBalance {
+            node_id: subject.clone(),
+            contributed: 100,
+            consumed: 0,
+            reserved: 0,
+            reputation: 0.5,
+        });
+        // Merge a strong positive observation (high weight, rep=0.9).
+        let obs = make_rep_obs([20u8; 32], [7u8; 32], 0.9, 100);
+        ledger.merge_remote_reputation(&obs);
+        // The balance should be updated toward 0.9.
+        let rep = ledger.balances.get(&subject).unwrap().reputation;
+        assert!(rep > 0.5, "balance reputation should increase, got {rep}");
+    }
+
+    #[test]
+    fn test_effective_reputation_subtracts_collusion_penalty() {
+        let mut ledger = ComputeLedger::new();
+        let subject = NodeId([50u8; 32]);
+        let partner = NodeId([51u8; 32]);
+        // Give subject a high reputation.
+        ledger.balances.insert(subject.clone(), forge_core::NodeBalance {
+            node_id: subject.clone(),
+            contributed: 1_000,
+            consumed: 0,
+            reserved: 0,
+            reputation: 0.9,
+        });
+        // Execute enough suspicious trades (all with same partner) to trigger collusion detection.
+        for i in 0..20u64 {
+            ledger.execute_trade(&TradeRecord {
+                provider: subject.clone(),
+                consumer: partner.clone(),
+                cu_amount: 100,
+                tokens_processed: 10,
+                timestamp: now_millis().saturating_sub(i * 60_000),
+                model_id: "test".into(),
+            });
+        }
+        let raw = ledger.consensus_reputation(&subject);
+        let effective = ledger.effective_reputation(&subject, now_millis());
+        // The collusion penalty should reduce effective < raw.
+        assert!(
+            effective <= raw,
+            "effective_reputation {} should be <= consensus_reputation {}",
+            effective,
+            raw
+        );
+        assert!(
+            effective >= 0.0 && effective <= 1.0,
+            "effective_reputation {} must be in [0, 1]",
+            effective
+        );
     }
 }

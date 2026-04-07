@@ -6,8 +6,8 @@
 //! eventually-consistent view of trade history across the network.
 
 use crate::transport::ForgeTransport;
-use forge_ledger::{LoanRecord, LoanStatus, SignedLoanRecord, SignedTradeRecord};
-use forge_proto::{Envelope, LoanGossip, Payload, TradeGossip};
+use forge_ledger::{ComputeLedger, LoanRecord, LoanStatus, SignedLoanRecord, SignedTradeRecord};
+use forge_proto::{Envelope, LoanGossip, Payload, ReputationObservation, TradeGossip};
 use std::collections::{HashSet, VecDeque};
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -27,6 +27,9 @@ pub struct GossipState {
     /// Separate dedup set for loans to avoid hash collision domain mixing.
     seen_loans: HashSet<[u8; 32]>,
     order_loans: VecDeque<[u8; 32]>,
+    /// Separate dedup set for reputation observations (Phase 9 A3).
+    seen_reputation: HashSet<[u8; 32]>,
+    order_reputation: VecDeque<[u8; 32]>,
     /// Rate limiting for incoming gossip (Issue #14).
     ingest_count: u32,
     ingest_window: std::time::Instant,
@@ -39,6 +42,8 @@ impl GossipState {
             order: VecDeque::new(),
             seen_loans: HashSet::new(),
             order_loans: VecDeque::new(),
+            seen_reputation: HashSet::new(),
+            order_reputation: VecDeque::new(),
             ingest_count: 0,
             ingest_window: std::time::Instant::now(),
         }
@@ -93,6 +98,25 @@ impl GossipState {
     /// Number of unique loans seen.
     pub fn seen_loan_count(&self) -> usize {
         self.seen_loans.len()
+    }
+
+    /// Check if we've already seen this reputation observation. Returns true if new.
+    pub fn mark_reputation_seen(&mut self, key: &[u8; 32]) -> bool {
+        if !self.seen_reputation.insert(*key) {
+            return false;
+        }
+        self.order_reputation.push_back(*key);
+        while self.order_reputation.len() > MAX_GOSSIP_SEEN {
+            if let Some(evicted) = self.order_reputation.pop_front() {
+                self.seen_reputation.remove(&evicted);
+            }
+        }
+        true
+    }
+
+    /// Number of unique reputation observations seen.
+    pub fn seen_reputation_count(&self) -> usize {
+        self.seen_reputation.len()
     }
 }
 
@@ -277,6 +301,109 @@ pub async fn handle_loan_gossip(
     }
 
     Some(signed)
+}
+
+/// Broadcast a reputation observation to all connected peers.
+/// Uses dedup so the same observation is not re-sent if already seen.
+pub async fn broadcast_reputation(
+    transport: &ForgeTransport,
+    gossip: &Arc<Mutex<GossipState>>,
+    observation: &ReputationObservation,
+) {
+    let key = observation.dedup_key();
+    // Mark as seen locally first; skip if already known.
+    if !gossip.lock().await.mark_reputation_seen(&key) {
+        return;
+    }
+
+    let node_id = transport.forge_node_id();
+    let peers = transport.connected_peers().await;
+
+    if peers.is_empty() {
+        return;
+    }
+
+    let msg = Envelope {
+        msg_id: rand::random(),
+        sender: node_id,
+        timestamp: now_millis(),
+        payload: Payload::ReputationGossip(observation.clone()),
+    };
+
+    for peer_id in &peers {
+        if let Err(e) = transport.send_to(peer_id, &msg).await {
+            tracing::debug!("Reputation gossip to {} failed: {}", peer_id, e);
+        }
+    }
+
+    tracing::info!(
+        "Broadcast reputation observation: observer={} subject={} rep={:.3}",
+        observation.observer.to_hex(),
+        observation.subject.to_hex(),
+        observation.reputation,
+    );
+}
+
+/// Handle an incoming reputation gossip message.
+/// Verifies the signature, checks dedup, merges into the ledger, and re-floods.
+pub async fn handle_reputation_gossip(
+    observation: ReputationObservation,
+    ledger: &Arc<Mutex<ComputeLedger>>,
+    gossip: &Arc<Mutex<GossipState>>,
+    transport: Option<&ForgeTransport>,
+) {
+    // Backpressure: reject if rate limit exceeded.
+    if !gossip.lock().await.can_ingest() {
+        tracing::debug!("Gossip rate limit exceeded, dropping reputation observation");
+        return;
+    }
+
+    // Verify signature (empty sig = MVP pass-through; real sig = ed25519 check).
+    if !observation.verify() {
+        tracing::warn!(
+            "Reputation gossip failed verification from observer={}",
+            observation.observer.to_hex()
+        );
+        return;
+    }
+
+    let key = observation.dedup_key();
+    let is_new = gossip.lock().await.mark_reputation_seen(&key);
+    if !is_new {
+        return;
+    }
+
+    // Merge into the ledger.
+    {
+        let mut ledger_guard = ledger.lock().await;
+        ledger_guard.merge_remote_reputation(&observation);
+    }
+
+    tracing::debug!(
+        "Merged reputation gossip: subject={} rep={:.3} trade_count={}",
+        observation.subject.to_hex(),
+        observation.reputation,
+        observation.trade_count,
+    );
+
+    // Re-flood to peers (gossip propagation).
+    if let Some(transport) = transport {
+        let node_id = transport.forge_node_id();
+        let peers = transport.connected_peers().await;
+        if !peers.is_empty() {
+            let msg = Envelope {
+                msg_id: rand::random(),
+                sender: node_id,
+                timestamp: now_millis(),
+                payload: Payload::ReputationGossip(observation),
+            };
+            for peer_id in &peers {
+                if let Err(e) = transport.send_to(peer_id, &msg).await {
+                    tracing::debug!("Re-flood reputation gossip to {} failed: {}", peer_id, e);
+                }
+            }
+        }
+    }
 }
 
 /// Check for network partition by comparing local Merkle root with a peer's.
@@ -518,6 +645,24 @@ mod tests {
         // Second time should be deduplicated
         let result2 = handle_loan_gossip(&gossip, &msg).await;
         assert!(result2.is_none());
+    }
+
+    #[test]
+    fn reputation_gossip_state_deduplicates() {
+        let mut state = GossipState::new();
+        let obs = ReputationObservation {
+            observer: NodeId([1u8; 32]),
+            subject: NodeId([2u8; 32]),
+            reputation: 0.7,
+            trade_count: 20,
+            total_cu_volume: 2_000,
+            timestamp_ms: now_millis(),
+            signature: vec![],
+        };
+        let key = obs.dedup_key();
+        assert!(state.mark_reputation_seen(&key)); // first time: new
+        assert!(!state.mark_reputation_seen(&key)); // second time: already seen
+        assert_eq!(state.seen_reputation_count(), 1);
     }
 
     #[test]

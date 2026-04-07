@@ -1,5 +1,6 @@
 use forge_core::{LayerRange, ModelId, NodeId, PeerCapability, PipelineStage, TensorMeta};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 pub const MAX_PROTOCOL_MESSAGE_BYTES: usize = 64 * 1024 * 1024;
 pub const MAX_PROTOCOL_PROMPT_CHARS: usize = 32 * 1024;
@@ -50,6 +51,8 @@ pub enum Payload {
     LoanAccept(LoanAccept),
     /// Gossip: broadcast a dual-signed loan to the mesh.
     LoanGossip(LoanGossip),
+    /// Gossip: broadcast a reputation observation to the mesh.
+    ReputationGossip(ReputationObservation),
 }
 
 // --- Discovery & Handshake ---
@@ -305,6 +308,83 @@ pub struct LoanGossip {
     pub due_at: u64,
     pub lender_sig: Vec<u8>,
     pub borrower_sig: Vec<u8>,
+}
+
+// --- Reputation Gossip (Phase 9 A3) ---
+
+/// Reputation observation gossip: node X announces its observation of node Y's
+/// reputation, derived from its local view of trade / repayment / uptime history.
+///
+/// Receiving nodes merge these into a weighted-median consensus so no single
+/// observer can dominate the score (A5 collusion resistance depends on this).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ReputationObservation {
+    /// Node making the observation (the broadcaster).
+    pub observer: NodeId,
+    /// Node being observed.
+    pub subject: NodeId,
+    /// Observed reputation in [0.0, 1.0], computed by the observer from its
+    /// local view of the subject's trade / repayment / uptime history.
+    pub reputation: f64,
+    /// Number of trades the observer saw involving the subject.
+    /// Used as a weight when merging observations from multiple observers.
+    pub trade_count: u64,
+    /// Total CU volume involved in observed trades.
+    pub total_cu_volume: u64,
+    /// Observer's timestamp (ms since epoch).
+    pub timestamp_ms: u64,
+    /// Ed25519 signature by the observer over canonical_bytes().
+    /// A length-0 vec is accepted in the MVP (Phase 10 will enforce real sigs).
+    pub signature: Vec<u8>,
+}
+
+impl ReputationObservation {
+    /// Deterministic bytes used for signing and deduplication.
+    /// Format: observer(32) + subject(32) + reputation(8,f64 BE) +
+    ///         trade_count(8) + total_cu_volume(8) + timestamp_ms(8).
+    pub fn canonical_bytes(&self) -> Vec<u8> {
+        let mut buf = Vec::with_capacity(32 + 32 + 8 + 8 + 8 + 8);
+        buf.extend_from_slice(&self.observer.0);
+        buf.extend_from_slice(&self.subject.0);
+        buf.extend_from_slice(&self.reputation.to_be_bytes());
+        buf.extend_from_slice(&self.trade_count.to_be_bytes());
+        buf.extend_from_slice(&self.total_cu_volume.to_be_bytes());
+        buf.extend_from_slice(&self.timestamp_ms.to_be_bytes());
+        buf
+    }
+
+    /// Verify the Ed25519 signature over canonical_bytes() using the observer's
+    /// public key (= observer.0).
+    ///
+    /// # MVP note
+    /// If `signature` is empty the check passes (Phase 10 will make it strict).
+    /// If `signature` is 64 bytes, it must be a valid Ed25519 signature.
+    pub fn verify(&self) -> bool {
+        if self.signature.is_empty() {
+            // Phase 10 TODO: remove this bypass and require real sigs
+            return true;
+        }
+        if self.signature.len() != 64 {
+            return false;
+        }
+        use ed25519_dalek::{Signature, VerifyingKey};
+        let Ok(key) = VerifyingKey::from_bytes(&self.observer.0) else {
+            return false;
+        };
+        let Ok(sig_bytes) = <[u8; 64]>::try_from(self.signature.as_slice()) else {
+            return false;
+        };
+        let sig = Signature::from_bytes(&sig_bytes);
+        key.verify_strict(&self.canonical_bytes(), &sig).is_ok()
+    }
+
+    /// SHA-256 of canonical_bytes() — used as gossip dedup key.
+    pub fn dedup_key(&self) -> [u8; 32] {
+        let mut hasher = Sha256::new();
+        hasher.update(b"rep:");
+        hasher.update(&self.canonical_bytes());
+        hasher.finalize().into()
+    }
 }
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -572,6 +652,30 @@ impl Payload {
                 }
                 Ok(())
             }
+            Payload::ReputationGossip(obs) => {
+                // Observer must match the envelope sender.
+                if obs.observer != *sender {
+                    return Err(ProtocolValidationError::SenderMismatch {
+                        expected: sender.to_hex(),
+                        actual: obs.observer.to_hex(),
+                    });
+                }
+                // Reputation must be in [0, 1].
+                if !obs.reputation.is_finite() || !(0.0..=1.0).contains(&obs.reputation) {
+                    return Err(ProtocolValidationError::InvalidLoanField {
+                        field: "reputation".into(),
+                        reason: "must be finite and within [0.0, 1.0]".into(),
+                    });
+                }
+                // Signature must be empty (MVP) or exactly 64 bytes.
+                if !obs.signature.is_empty() && obs.signature.len() != 64 {
+                    return Err(ProtocolValidationError::InvalidLoanField {
+                        field: "signature".into(),
+                        reason: "must be empty or 64 bytes (Ed25519)".into(),
+                    });
+                }
+                Ok(())
+            }
         }
     }
 }
@@ -666,6 +770,66 @@ mod tests {
         let bytes = bincode::serialize(&msg).unwrap();
         let back: LoanGossip = bincode::deserialize(&bytes).unwrap();
         assert_eq!(msg, back);
+    }
+
+    #[test]
+    fn reputation_observation_round_trips_via_bincode() {
+        let obs = ReputationObservation {
+            observer: NodeId([1u8; 32]),
+            subject: NodeId([2u8; 32]),
+            reputation: 0.75,
+            trade_count: 42,
+            total_cu_volume: 4_200,
+            timestamp_ms: 1_700_000_000_000,
+            signature: vec![],
+        };
+        let bytes = bincode::serialize(&obs).unwrap();
+        let back: ReputationObservation = bincode::deserialize(&bytes).unwrap();
+        assert_eq!(obs, back);
+    }
+
+    #[test]
+    fn reputation_observation_dedup_key_is_deterministic() {
+        let obs = ReputationObservation {
+            observer: NodeId([1u8; 32]),
+            subject: NodeId([2u8; 32]),
+            reputation: 0.5,
+            trade_count: 10,
+            total_cu_volume: 1_000,
+            timestamp_ms: 1_000,
+            signature: vec![],
+        };
+        assert_eq!(obs.dedup_key(), obs.dedup_key());
+        let obs2 = ReputationObservation { reputation: 0.6, ..obs.clone() };
+        assert_ne!(obs.dedup_key(), obs2.dedup_key());
+    }
+
+    #[test]
+    fn reputation_observation_verify_empty_sig_passes() {
+        let obs = ReputationObservation {
+            observer: NodeId([1u8; 32]),
+            subject: NodeId([2u8; 32]),
+            reputation: 0.5,
+            trade_count: 10,
+            total_cu_volume: 500,
+            timestamp_ms: 1_000,
+            signature: vec![],
+        };
+        assert!(obs.verify(), "empty signature should pass in MVP mode");
+    }
+
+    #[test]
+    fn reputation_observation_verify_wrong_length_sig_fails() {
+        let obs = ReputationObservation {
+            observer: NodeId([1u8; 32]),
+            subject: NodeId([2u8; 32]),
+            reputation: 0.5,
+            trade_count: 10,
+            total_cu_volume: 500,
+            timestamp_ms: 1_000,
+            signature: vec![0u8; 32], // wrong length
+        };
+        assert!(!obs.verify(), "wrong-length signature should fail");
     }
 
     #[test]

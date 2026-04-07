@@ -138,10 +138,17 @@ impl RiskModel {
     }
 }
 
+/// Default RiskModel parameters per forge-economics/spec/parameters.md §10.5.
+/// - `default_rate = 0.02` (2% annual)
+/// - `loss_given_default = 0.50` (50% LGD)
+/// - `var_99_multiplier = 2.33` (normal distribution 99th percentile)
+pub const DEFAULT_RATE: f64 = 0.02;
+pub const LOSS_GIVEN_DEFAULT: f64 = 0.50;
+pub const VAR_99_MULTIPLIER: f64 = 2.33;
+
 impl Default for RiskModel {
     fn default() -> Self {
-        // Python default: default_rate=0.01, loss_given_default=0.67, var_multiplier=2.33
-        Self::new(0.01, 0.67, 2.33).unwrap()
+        Self::new(DEFAULT_RATE, LOSS_GIVEN_DEFAULT, VAR_99_MULTIPLIER).unwrap()
     }
 }
 

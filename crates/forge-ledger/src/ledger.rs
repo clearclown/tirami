@@ -4,10 +4,10 @@ use std::collections::HashMap;
 
 use crate::lending::{
     self, LoanStatus, SignedLoanRecord, COLD_START_CREDIT,
-    COLLATERAL_BURN_ON_DEFAULT, MAX_LOAN_TERM_HOURS, MAX_LTV_RATIO, MAX_SINGLE_LOAN_POOL_PCT,
-    MIN_CREDIT_FOR_BORROWING, MIN_RESERVE_RATIO, NEUTRAL_REPAYMENT_SCORE,
-    TIER_SMALL_CU_PER_TOKEN, WELCOME_LOAN_AMOUNT, WELCOME_LOAN_SYBIL_THRESHOLD,
-    WELCOME_LOAN_TERM_HOURS,
+    COLLATERAL_BURN_ON_DEFAULT, DEFAULT_REPUTATION, MAX_LOAN_TERM_HOURS, MAX_LTV_RATIO,
+    MAX_SINGLE_LOAN_POOL_PCT, MIN_CREDIT_FOR_BORROWING, MIN_RESERVE_RATIO,
+    NEUTRAL_REPAYMENT_SCORE, TIER_SMALL_CU_PER_TOKEN, WELCOME_LOAN_AMOUNT,
+    WELCOME_LOAN_SYBIL_THRESHOLD, WELCOME_LOAN_TERM_HOURS,
 };
 
 /// Re-export of `ModelTier` so callers can `use forge_ledger::ledger::ModelTier`.
@@ -581,7 +581,7 @@ impl ComputeLedger {
             contributed: 0,
             consumed: 0,
             reserved: 0,
-            reputation: 0.5,
+            reputation: DEFAULT_REPUTATION,
         });
         balance.reserved += cu;
         true
@@ -604,7 +604,7 @@ impl ComputeLedger {
             contributed: 0,
             consumed: 0,
             reserved: 0,
-            reputation: 0.5,
+            reputation: DEFAULT_REPUTATION,
         });
 
         balance.contributed += cu;
@@ -618,7 +618,7 @@ impl ComputeLedger {
             contributed: 0,
             consumed: 0,
             reserved: 0,
-            reputation: 0.5,
+            reputation: DEFAULT_REPUTATION,
         });
 
         balance.consumed += cu;
@@ -654,7 +654,7 @@ impl ComputeLedger {
                 contributed: 0,
                 consumed: 0,
                 reserved: 0,
-                reputation: 0.5,
+                reputation: DEFAULT_REPUTATION,
             });
         provider.contributed += trade.cu_amount;
 
@@ -667,7 +667,7 @@ impl ComputeLedger {
                 contributed: 0,
                 consumed: 0,
                 reserved: 0,
-                reputation: 0.5,
+                reputation: DEFAULT_REPUTATION,
             });
         consumer.consumed += trade.cu_amount;
         consumer.reserved = consumer.reserved.saturating_sub(trade.cu_amount);
@@ -755,8 +755,9 @@ impl ComputeLedger {
 
     /// Update market price based on observed supply and demand.
     /// Uses exponential moving average for smoothing (Issue #11).
+    /// Alpha = `crate::lending::EMA_ALPHA` (0.3) per spec §2.
     pub fn update_price(&mut self, active_providers: usize, pending_requests: usize) {
-        const EMA_ALPHA: f64 = 0.3; // smoothing factor (0.3 = moderate responsiveness)
+        use crate::lending::EMA_ALPHA;
 
         // Adaptive divisor: scales with network size
         let supply_divisor = (self.balances.len() as f64).max(5.0);
@@ -924,7 +925,7 @@ impl ComputeLedger {
                 contributed: 0,
                 consumed: 0,
                 reserved: 0,
-                reputation: 0.5,
+                reputation: DEFAULT_REPUTATION,
             });
         // Pretend lender holds enough — this is enforced by gossip + signed
         // proposal acceptance at the daemon layer; the ledger does not gate
@@ -940,7 +941,7 @@ impl ComputeLedger {
                 contributed: 0,
                 consumed: 0,
                 reserved: 0,
-                reputation: 0.5,
+                reputation: DEFAULT_REPUTATION,
             });
         borrower_balance.contributed =
             borrower_balance.contributed.saturating_add(loan.principal_cu);
@@ -995,7 +996,7 @@ impl ComputeLedger {
                 contributed: 0,
                 consumed: 0,
                 reserved: 0,
-                reputation: 0.5,
+                reputation: DEFAULT_REPUTATION,
             });
         borrower_bal.consumed = borrower_bal.consumed.saturating_add(total_due);
 
@@ -1008,7 +1009,7 @@ impl ComputeLedger {
                 contributed: 0,
                 consumed: 0,
                 reserved: 0,
-                reputation: 0.5,
+                reputation: DEFAULT_REPUTATION,
             });
         lender_bal.contributed = lender_bal.contributed.saturating_add(total_due);
         // Counter-balance the principal we provisionally subtracted from the
@@ -1073,7 +1074,7 @@ impl ComputeLedger {
                 contributed: 0,
                 consumed: 0,
                 reserved: 0,
-                reputation: 0.5,
+                reputation: DEFAULT_REPUTATION,
             });
         // Burned CU is permanently destroyed from the borrower's books.
         borrower_bal.consumed = borrower_bal.consumed.saturating_add(collateral);
@@ -1086,7 +1087,7 @@ impl ComputeLedger {
                 contributed: 0,
                 consumed: 0,
                 reserved: 0,
-                reputation: 0.5,
+                reputation: DEFAULT_REPUTATION,
             });
         lender_bal.contributed = lender_bal.contributed.saturating_add(recovered);
         // Counter-balance the principal we provisionally subtracted from

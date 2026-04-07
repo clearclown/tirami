@@ -51,6 +51,15 @@ pub const TARGET_CREDIT_AFTER_REPAY: f64 = 0.4;
 /// Neutral repayment score for nodes with no loan history.
 pub const NEUTRAL_REPAYMENT_SCORE: f64 = 0.5;
 
+/// Default reputation for a new node (spec §7, parameters.md).
+/// Used by `NodeBalance::new_with_reputation()` and yield calculation.
+pub const DEFAULT_REPUTATION: f64 = 0.5;
+
+/// EMA smoothing factor for market price supply/demand updates (spec §2).
+/// 0.3 = moderate responsiveness; spec says 30-minute half-life, this alpha
+/// approximates that under typical update cadence.
+pub const EMA_ALPHA: f64 = 0.3;
+
 /// Trade volume cap for trade_score = 1.0 (CU).
 pub const TRADE_SCORE_CAP_CU: u64 = 100_000;
 /// Account age cap for age_score = 1.0 (days).

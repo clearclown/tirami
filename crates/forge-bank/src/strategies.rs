@@ -132,9 +132,13 @@ impl HighYieldStrategy {
     }
 }
 
+/// Default base commit fraction for HighYieldStrategy.
+/// Matches forge-economics/spec/parameters.md §10.2 `highyield_base_commit_fraction`.
+pub const DEFAULT_HIGHYIELD_COMMIT_FRACTION: f64 = 0.50;
+
 impl Default for HighYieldStrategy {
     fn default() -> Self {
-        Self::new(0.70).unwrap()
+        Self::new(DEFAULT_HIGHYIELD_COMMIT_FRACTION).unwrap()
     }
 }
 

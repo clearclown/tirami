@@ -27,6 +27,9 @@ impl ReputationCalculator {
     pub const RECENCY_HALF_LIFE_MS: u64 = 24 * 3_600_000;
     /// Number of distinct counterparties for full diversity score.
     pub const DIVERSITY_CAP: usize = 10;
+    /// Minimum trade count for consistency subscore to be non-zero
+    /// (spec §12.2 `consistency_min_trades`).
+    pub const CONSISTENCY_MIN_TRADES: usize = 2;
     /// Cold-start / new-agent reputation score.
     pub const NEW_AGENT_REPUTATION: f64 = 0.3;
 
@@ -115,7 +118,7 @@ impl ReputationCalculator {
     }
 
     fn consistency_subscore(trades: &[&TradeObservation]) -> f64 {
-        if trades.len() < 2 {
+        if trades.len() < Self::CONSISTENCY_MIN_TRADES {
             return 0.0;
         }
         let mut sorted: Vec<u64> = trades.iter().map(|t| t.timestamp_ms).collect();

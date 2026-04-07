@@ -9,7 +9,7 @@ use crate::budget::CuBudget;
 use crate::cycle::ImprovementCycleRunner;
 use crate::harness::Harness;
 use crate::meta_optimizer::MetaOptimizer;
-use crate::types::{CycleDecision, ImprovementCycle};
+use crate::types::{CycleDecision, ImprovementCycle, MindAgentSnapshot};
 
 /// A self-improving agent driven by CU-budgeted cycles.
 pub struct ForgeMindAgent {
@@ -126,6 +126,28 @@ impl ForgeMindAgent {
     /// Access the cycle runner's budget (mutable), e.g. to update limits.
     pub fn runner_budget_mut(&mut self) -> &mut CuBudget {
         self.runner.budget_mut()
+    }
+
+    /// Produce a serializable snapshot of persistent state.
+    ///
+    /// The optimizer and benchmark are NOT included — they must be re-attached
+    /// after load via `restore_from_snapshot`.
+    pub fn snapshot(&self) -> MindAgentSnapshot {
+        MindAgentSnapshot {
+            harness: self.harness.clone(),
+            history: self.history.clone(),
+            budget: self.runner.budget().clone(),
+        }
+    }
+
+    /// Restore harness, history, and budget from a previously persisted snapshot.
+    ///
+    /// The optimizer and benchmark (held by the runner) are NOT replaced; they
+    /// continue using whatever was provided at construction time.
+    pub fn restore_from_snapshot(&mut self, snap: MindAgentSnapshot) {
+        self.harness = snap.harness;
+        self.history = snap.history;
+        *self.runner.budget_mut() = snap.budget;
     }
 }
 

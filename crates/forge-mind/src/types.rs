@@ -4,6 +4,7 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
+use crate::budget::CuBudget;
 use crate::harness::Harness;
 
 /// Outcome of running a harness against a benchmark suite.
@@ -95,6 +96,22 @@ impl ImprovementCycle {
             roi_cu,
         }
     }
+}
+
+/// Serializable snapshot of a `ForgeMindAgent`'s persisted state.
+///
+/// The `optimizer` and `benchmark` fields are NOT persisted because they are
+/// trait objects (`Box<dyn MetaOptimizer>` / `Box<dyn Benchmark>`). They must
+/// be re-attached by the caller (e.g. by calling `/v1/forge/mind/init` again
+/// after a restart). Once re-attached, the handler merges the snapshot back
+/// via `ForgeMindAgent::restore_from_snapshot`.
+///
+/// Phase 10 TODO: add HMAC-SHA256 integrity check if snapshot tampering becomes a concern.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MindAgentSnapshot {
+    pub harness: Harness,
+    pub history: Vec<ImprovementCycle>,
+    pub budget: CuBudget,
 }
 
 #[cfg(test)]

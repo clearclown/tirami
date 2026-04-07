@@ -244,6 +244,8 @@ pub fn create_router_with_services(
         .route("/v1/forge/mind/improve", post(crate::handlers::mind::mind_improve))
         .route("/v1/forge/mind/budget", post(crate::handlers::mind::mind_budget))
         .route("/v1/forge/mind/stats", get(crate::handlers::mind::mind_stats))
+        // Admin: manual state persistence trigger (Phase 9)
+        .route("/v1/forge/admin/save-state", post(admin_save_state))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             require_bearer_auth,
@@ -2052,6 +2054,54 @@ pub struct InvoiceResponse {
     pub amount_sats: u64,
     pub msats_per_cu: u64,
     pub description: String,
+}
+
+// ---------------------------------------------------------------------------
+// Admin endpoints (Phase 9)
+// ---------------------------------------------------------------------------
+
+/// POST /v1/forge/admin/save-state — manually trigger L2/L3/L4 state persistence.
+///
+/// Useful for tests, manual backups, and graceful-shutdown scripts.
+async fn admin_save_state(
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    check_forge_rate_limit(&state).await?;
+
+    let mut saved: Vec<&str> = Vec::new();
+    let mut errors: Vec<String> = Vec::new();
+
+    if let Some(ref path) = state.config.bank_state_path {
+        let bank = state.bank.lock().await;
+        match crate::state_persist::save_bank(&*bank, path) {
+            Ok(()) => saved.push("bank"),
+            Err(e) => errors.push(format!("bank: {e}")),
+        }
+    }
+
+    if let Some(ref path) = state.config.marketplace_state_path {
+        let mp = state.marketplace.lock().await;
+        match crate::state_persist::save_marketplace(&*mp, path) {
+            Ok(()) => saved.push("marketplace"),
+            Err(e) => errors.push(format!("marketplace: {e}")),
+        }
+    }
+
+    if let Some(ref path) = state.config.mind_state_path {
+        let mind = state.mind_agent.lock().await;
+        if let Some(agent) = mind.as_ref() {
+            match crate::state_persist::save_mind(agent, path) {
+                Ok(()) => saved.push("mind"),
+                Err(e) => errors.push(format!("mind: {e}")),
+            }
+        }
+    }
+
+    Ok(Json(serde_json::json!({
+        "ok": errors.is_empty(),
+        "saved": saved,
+        "errors": errors,
+    })))
 }
 
 // ---------------------------------------------------------------------------

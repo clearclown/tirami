@@ -10,6 +10,15 @@ pub struct Config {
     /// Optional path to a persisted ledger snapshot.
     pub ledger_path: Option<PathBuf>,
 
+    /// Optional path to the persisted forge-bank (L2) state.
+    pub bank_state_path: Option<PathBuf>,
+
+    /// Optional path to the persisted forge-agora (L4) marketplace state.
+    pub marketplace_state_path: Option<PathBuf>,
+
+    /// Optional path to the persisted forge-mind (L3) agent snapshot.
+    pub mind_state_path: Option<PathBuf>,
+
     /// Whether to share compute with the network.
     pub share_compute: bool,
 
@@ -104,6 +113,9 @@ impl Default for Config {
         Self {
             model_path: None,
             ledger_path: None,
+            bank_state_path: None,
+            marketplace_state_path: None,
+            mind_state_path: None,
             share_compute: false,
             max_memory_gb: 4.0,
             api_port: 3000,

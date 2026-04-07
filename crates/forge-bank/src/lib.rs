@@ -24,7 +24,7 @@ pub use futures::{futures_pnl, mark_to_market, required_margin, FuturesContract}
 pub use insurance::{premium_for, InsurancePolicy};
 pub use portfolio::PortfolioManager;
 pub use risk::{RiskAssessment, RiskModel};
-pub use strategies::{BalancedStrategy, ConservativeStrategy, HighYieldStrategy, Strategy};
+pub use strategies::{BalancedStrategy, ConservativeStrategy, HighYieldStrategy, Strategy, StrategyKind};
 pub use types::{
     ActionKind, Decision, PoolSnapshot, Portfolio, Position, PositionKind, RiskTolerance,
 };

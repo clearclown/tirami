@@ -17,7 +17,7 @@ pub mod cycle;
 pub mod agent;
 
 pub use errors::MindError;
-pub use types::{BenchmarkResult, CycleDecision, ImprovementCycle, ImprovementProposal};
+pub use types::{BenchmarkResult, CycleDecision, ImprovementCycle, ImprovementProposal, MindAgentSnapshot};
 pub use harness::Harness;
 pub use budget::CuBudget;
 pub use benchmark::{Benchmark, InMemoryBenchmark};

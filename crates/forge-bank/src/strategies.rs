@@ -7,6 +7,8 @@
 //!
 //! Ported from the Python scaffold `forge_bank/strategies.py`.
 
+use serde::{Deserialize, Serialize};
+
 use crate::errors::BankError;
 use crate::types::{ActionKind, Decision, PoolSnapshot, Portfolio, RiskTolerance};
 
@@ -252,6 +254,61 @@ impl Strategy for BalancedStrategy {
 
     fn name(&self) -> &str {
         "BalancedStrategy"
+    }
+}
+
+// ---------------------------------------------------------------------------
+// StrategyKind — serializable discriminant for persistence
+// ---------------------------------------------------------------------------
+
+/// Serializable discriminant for a lending strategy.
+///
+/// Used by the persistence layer to snapshot/restore a `Box<dyn Strategy>`
+/// without requiring trait-object serialization.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum StrategyKind {
+    Conservative { max_commit_fraction: f64 },
+    HighYield { base_commit_fraction: f64 },
+    Balanced { threshold: f64 },
+}
+
+impl Default for StrategyKind {
+    fn default() -> Self {
+        Self::Balanced { threshold: 0.50 }
+    }
+}
+
+impl StrategyKind {
+    /// Reconstruct a heap-allocated strategy from this discriminant.
+    ///
+    /// Returns `Err` only if the discriminant holds an out-of-range parameter
+    /// (e.g. a fraction > 1.0 loaded from a corrupt snapshot file).
+    pub fn to_strategy(&self) -> Result<Box<dyn Strategy>, BankError> {
+        match self {
+            Self::Conservative { max_commit_fraction } => {
+                ConservativeStrategy::new(*max_commit_fraction).map(|s| Box::new(s) as Box<dyn Strategy>)
+            }
+            Self::HighYield { base_commit_fraction } => {
+                HighYieldStrategy::new(*base_commit_fraction).map(|s| Box::new(s) as Box<dyn Strategy>)
+            }
+            Self::Balanced { threshold } => {
+                Ok(Box::new(BalancedStrategy::new(*threshold)))
+            }
+        }
+    }
+
+    /// Infer the StrategyKind from a live strategy's name and current parameters.
+    pub fn from_strategy(strategy: &dyn Strategy) -> Self {
+        match strategy.name() {
+            "ConservativeStrategy" => {
+                // Downcast is not possible without Any; use the default fraction.
+                // The snapshot captures the fraction from BankServices directly.
+                Self::Conservative { max_commit_fraction: 0.30 }
+            }
+            "HighYieldStrategy" => Self::HighYield { base_commit_fraction: DEFAULT_HIGHYIELD_COMMIT_FRACTION },
+            _ => Self::default(),
+        }
     }
 }
 

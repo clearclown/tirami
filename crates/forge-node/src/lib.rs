@@ -6,6 +6,7 @@ pub mod handlers;
 pub mod mind_adapter;
 pub mod node;
 pub mod pipeline;
+pub mod state_persist;
 pub mod topology;
 
 pub use node::ForgeNode;

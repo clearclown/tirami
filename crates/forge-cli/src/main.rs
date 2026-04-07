@@ -361,14 +361,42 @@ async fn main() -> anyhow::Result<()> {
             // Install Ctrl-C handler for graceful shutdown
             let shutdown_ledger = node.ledger.clone();
             let shutdown_ledger_path = node.config.ledger_path.clone();
+            let shutdown_bank = node.bank.clone();
+            let shutdown_marketplace = node.marketplace.clone();
+            let shutdown_mind = node.mind_agent.clone();
+            let shutdown_config = node.config.clone();
             tokio::spawn(async move {
                 if tokio::signal::ctrl_c().await.is_ok() {
-                    tracing::info!("Received Ctrl-C, persisting ledger...");
+                    tracing::info!("Received Ctrl-C, persisting state...");
+                    // Persist ledger
                     if let Some(path) = shutdown_ledger_path {
                         if let Err(e) = shutdown_ledger.lock().await.save_to_path(&path) {
                             tracing::warn!("Failed to persist ledger on shutdown: {}", e);
                         } else {
                             tracing::info!("Ledger persisted to {}", path.display());
+                        }
+                    }
+                    // Persist bank state
+                    if let Some(ref path) = shutdown_config.bank_state_path {
+                        let bank = shutdown_bank.lock().await;
+                        if let Err(e) = forge_node::state_persist::save_bank(&*bank, path) {
+                            tracing::warn!("Failed to persist bank state: {}", e);
+                        }
+                    }
+                    // Persist marketplace state
+                    if let Some(ref path) = shutdown_config.marketplace_state_path {
+                        let mp = shutdown_marketplace.lock().await;
+                        if let Err(e) = forge_node::state_persist::save_marketplace(&*mp, path) {
+                            tracing::warn!("Failed to persist marketplace state: {}", e);
+                        }
+                    }
+                    // Persist mind agent state
+                    if let Some(ref path) = shutdown_config.mind_state_path {
+                        let mind = shutdown_mind.lock().await;
+                        if let Some(agent) = mind.as_ref() {
+                            if let Err(e) = forge_node::state_persist::save_mind(agent, path) {
+                                tracing::warn!("Failed to persist mind state: {}", e);
+                            }
                         }
                     }
                     std::process::exit(0);
@@ -505,14 +533,42 @@ async fn main() -> anyhow::Result<()> {
             // Install Ctrl-C handler for graceful shutdown
             let shutdown_ledger = node.ledger.clone();
             let shutdown_ledger_path = node.config.ledger_path.clone();
+            let shutdown_bank = node.bank.clone();
+            let shutdown_marketplace = node.marketplace.clone();
+            let shutdown_mind = node.mind_agent.clone();
+            let shutdown_config = node.config.clone();
             tokio::spawn(async move {
                 if tokio::signal::ctrl_c().await.is_ok() {
-                    tracing::info!("Received Ctrl-C, persisting ledger...");
+                    tracing::info!("Received Ctrl-C, persisting state...");
+                    // Persist ledger
                     if let Some(path) = shutdown_ledger_path {
                         if let Err(e) = shutdown_ledger.lock().await.save_to_path(&path) {
                             tracing::warn!("Failed to persist ledger on shutdown: {}", e);
                         } else {
                             tracing::info!("Ledger persisted to {}", path.display());
+                        }
+                    }
+                    // Persist bank state
+                    if let Some(ref path) = shutdown_config.bank_state_path {
+                        let bank = shutdown_bank.lock().await;
+                        if let Err(e) = forge_node::state_persist::save_bank(&*bank, path) {
+                            tracing::warn!("Failed to persist bank state: {}", e);
+                        }
+                    }
+                    // Persist marketplace state
+                    if let Some(ref path) = shutdown_config.marketplace_state_path {
+                        let mp = shutdown_marketplace.lock().await;
+                        if let Err(e) = forge_node::state_persist::save_marketplace(&*mp, path) {
+                            tracing::warn!("Failed to persist marketplace state: {}", e);
+                        }
+                    }
+                    // Persist mind agent state
+                    if let Some(ref path) = shutdown_config.mind_state_path {
+                        let mind = shutdown_mind.lock().await;
+                        if let Some(agent) = mind.as_ref() {
+                            if let Err(e) = forge_node::state_persist::save_mind(agent, path) {
+                                tracing::warn!("Failed to persist mind state: {}", e);
+                            }
                         }
                     }
                     std::process::exit(0);

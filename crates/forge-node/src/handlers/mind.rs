@@ -138,7 +138,24 @@ pub(crate) async fn mind_init(
         }
     };
 
-    let agent = ForgeMindAgent::new(harness, benchmark, optimizer, None);
+    let mut agent = ForgeMindAgent::new(harness, benchmark, optimizer, None);
+
+    // If a mind state path is configured and a snapshot file exists, restore
+    // the harness + history + budget from disk. The optimizer and benchmark
+    // are NOT restored (they were re-provided above by the caller).
+    if let Some(ref path) = state.config.mind_state_path {
+        match crate::state_persist::load_mind_snapshot(path) {
+            Ok(Some(snap)) => {
+                tracing::info!("Restoring mind agent snapshot from {}", path.display());
+                agent.restore_from_snapshot(snap);
+            }
+            Ok(None) => {}
+            Err(e) => {
+                tracing::warn!("Failed to load mind snapshot from {}: {}", path.display(), e);
+            }
+        }
+    }
+
     let version = agent.harness.version;
     let mut mind = state.mind_agent.lock().await;
     *mind = Some(agent);

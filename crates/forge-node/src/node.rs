@@ -1,5 +1,7 @@
 use crate::pipeline::PipelineCoordinator;
+use crate::state_persist;
 use crate::topology::{TopologySnapshot, build_local_capability, build_topology_snapshot};
+use forge_agora::Marketplace;
 use forge_core::Config;
 use forge_core::{ModelManifest, PipelineTopology};
 use forge_infer::{CandleEngine, InferenceEngine, parse_gguf_metadata};
@@ -22,6 +24,12 @@ pub struct ForgeNode {
     /// broadcast trades completed during inference). Must be a single
     /// instance so dedup across both paths is coherent.
     gossip: Arc<Mutex<GossipState>>,
+    /// forge-bank L2 services (persisted via bank_state_path).
+    pub bank: Arc<Mutex<crate::bank_adapter::BankServices>>,
+    /// forge-agora L4 marketplace (persisted via marketplace_state_path).
+    pub marketplace: Arc<Mutex<Marketplace>>,
+    /// forge-mind L3 agent (persisted via mind_state_path; None until init).
+    pub mind_agent: Arc<Mutex<Option<forge_mind::ForgeMindAgent>>>,
 }
 
 impl ForgeNode {
@@ -44,6 +52,57 @@ impl ForgeNode {
             _ => ComputeLedger::new(),
         };
 
+        // Load forge-bank L2 state if a path is configured.
+        let bank = match config.bank_state_path.as_ref() {
+            Some(path) => match state_persist::load_bank(path) {
+                Ok(Some(services)) => {
+                    tracing::info!("Loaded bank state from {}", path.display());
+                    services
+                }
+                Ok(None) => {
+                    tracing::debug!("No bank state file at {} — starting fresh", path.display());
+                    crate::bank_adapter::BankServices::new_default()
+                }
+                Err(err) => {
+                    tracing::warn!("Failed to load bank state from {}: {}", path.display(), err);
+                    crate::bank_adapter::BankServices::new_default()
+                }
+            },
+            None => crate::bank_adapter::BankServices::new_default(),
+        };
+
+        // Load forge-agora L4 marketplace state if a path is configured.
+        let marketplace = match config.marketplace_state_path.as_ref() {
+            Some(path) => match state_persist::load_marketplace(path) {
+                Ok(Some(mp)) => {
+                    tracing::info!("Loaded marketplace state from {}", path.display());
+                    mp
+                }
+                Ok(None) => {
+                    tracing::debug!(
+                        "No marketplace state file at {} — starting fresh",
+                        path.display()
+                    );
+                    Marketplace::new()
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        "Failed to load marketplace state from {}: {}",
+                        path.display(),
+                        err
+                    );
+                    Marketplace::new()
+                }
+            },
+            None => Marketplace::new(),
+        };
+
+        // forge-mind L3 agent is always None at startup.
+        // If mind_state_path is set, the saved snapshot will be merged in
+        // when the client calls POST /v1/forge/mind/init (the handler checks
+        // for a snapshot file and calls agent.restore_from_snapshot()).
+        let mind_agent: Option<forge_mind::ForgeMindAgent> = None;
+
         Self {
             config,
             engine: Arc::new(Mutex::new(CandleEngine::new())),
@@ -53,6 +112,9 @@ impl ForgeNode {
             transport: None,
             cluster: None,
             gossip: Arc::new(Mutex::new(GossipState::new())),
+            bank: Arc::new(Mutex::new(bank)),
+            marketplace: Arc::new(Mutex::new(marketplace)),
+            mind_agent: Arc::new(Mutex::new(mind_agent)),
         }
     }
 
@@ -88,7 +150,7 @@ impl ForgeNode {
 
     /// Start the HTTP API server.
     pub async fn serve_api(&self) -> Result<(), forge_core::ForgeError> {
-        let app = crate::api::create_router(
+        let app = crate::api::create_router_with_services(
             self.config.clone(),
             self.engine.clone(),
             self.ledger.clone(),
@@ -96,6 +158,10 @@ impl ForgeNode {
             self.advertised_topology.clone(),
             self.cluster.clone(),
             self.gossip.clone(),
+            self.bank.clone(),
+            self.marketplace.clone(),
+            Arc::new(Mutex::new(0usize)),
+            self.mind_agent.clone(),
         );
         let addr = self.config.api_socket_addr();
         tracing::info!("API server listening on {}", addr);
@@ -150,9 +216,12 @@ impl ForgeNode {
         let topology_api = self.advertised_topology.clone();
         let cluster_api = self.cluster.clone();
         let gossip_api = self.gossip.clone();
+        let bank_api = self.bank.clone();
+        let marketplace_api = self.marketplace.clone();
+        let mind_agent_api = self.mind_agent.clone();
         let api_config = self.config.clone();
         tokio::spawn(async move {
-            let app = crate::api::create_router(
+            let app = crate::api::create_router_with_services(
                 api_config.clone(),
                 engine_api,
                 ledger_api,
@@ -160,6 +229,10 @@ impl ForgeNode {
                 topology_api,
                 cluster_api,
                 gossip_api,
+                bank_api,
+                marketplace_api,
+                Arc::new(Mutex::new(0usize)),
+                mind_agent_api,
             );
             let addr = api_config.api_socket_addr();
             if let Ok(listener) = tokio::net::TcpListener::bind(&addr).await {
@@ -288,6 +361,49 @@ impl ForgeNode {
         build_topology_snapshot(model, local_capability, connected_peers)
     }
 
+    /// Persist L2/L3/L4 state to disk if paths are configured in the config.
+    ///
+    /// Errors are logged as warnings but do not propagate — callers should
+    /// treat partial save failures as non-fatal.
+    pub async fn save_state(&self) {
+        if let Some(path) = self.config.bank_state_path.as_ref() {
+            let bank = self.bank.lock().await;
+            if let Err(e) = state_persist::save_bank(&*bank, path) {
+                tracing::warn!("Failed to persist bank state to {}: {}", path.display(), e);
+            } else {
+                tracing::info!("Bank state persisted to {}", path.display());
+            }
+        }
+
+        if let Some(path) = self.config.marketplace_state_path.as_ref() {
+            let mp = self.marketplace.lock().await;
+            if let Err(e) = state_persist::save_marketplace(&*mp, path) {
+                tracing::warn!(
+                    "Failed to persist marketplace state to {}: {}",
+                    path.display(),
+                    e
+                );
+            } else {
+                tracing::info!("Marketplace state persisted to {}", path.display());
+            }
+        }
+
+        if let Some(path) = self.config.mind_state_path.as_ref() {
+            let mind = self.mind_agent.lock().await;
+            if let Some(agent) = mind.as_ref() {
+                if let Err(e) = state_persist::save_mind(agent, path) {
+                    tracing::warn!(
+                        "Failed to persist mind state to {}: {}",
+                        path.display(),
+                        e
+                    );
+                } else {
+                    tracing::info!("Mind agent state persisted to {}", path.display());
+                }
+            }
+        }
+    }
+
     /// Graceful shutdown: announce leaving, persist ledger, close transport.
     pub async fn shutdown(&self) {
         tracing::info!("Shutting down Forge node...");
@@ -305,6 +421,9 @@ impl ForgeNode {
         } else {
             tracing::info!("Ledger persisted");
         }
+
+        // Persist L2/L3/L4 state
+        self.save_state().await;
 
         // Close transport
         if let Some(transport) = self.transport.as_ref() {

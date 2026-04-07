@@ -7,7 +7,7 @@
 use axum::{Json, extract::State, http::StatusCode};
 use forge_bank::{
     BalancedStrategy, ConservativeStrategy, Decision, FuturesContract, HighYieldStrategy,
-    PortfolioManager, RiskModel, RiskTolerance, YieldOptimizer,
+    PortfolioManager, RiskModel, RiskTolerance, StrategyKind, YieldOptimizer,
 };
 use serde::{Deserialize, Serialize};
 
@@ -137,11 +137,17 @@ pub(crate) async fn bank_set_strategy(
         }
     };
     let strategy_name = req.strategy.clone();
+    let new_strategy_kind = match req.strategy.as_str() {
+        "conservative" => StrategyKind::Conservative { max_commit_fraction: fraction },
+        "highyield" | "high_yield" => StrategyKind::HighYield { base_commit_fraction: fraction },
+        _ => StrategyKind::Balanced { threshold: fraction },
+    };
     let mut bank = state.bank.lock().await;
     // Swap the strategy: preserve portfolio and risk, replace strategy
     let old_portfolio = bank.portfolio.portfolio.clone();
     let old_risk = bank.portfolio.risk.clone();
     bank.portfolio = PortfolioManager::new(old_portfolio, new_strategy, old_risk);
+    bank.strategy_kind = new_strategy_kind;
     Ok(Json(StrategyResponse {
         ok: true,
         strategy: strategy_name,
@@ -170,7 +176,8 @@ pub(crate) async fn bank_set_risk(
     };
     let tolerance_name = req.tolerance.clone();
     let mut bank = state.bank.lock().await;
-    bank.portfolio.risk = tolerance;
+    bank.portfolio.risk = tolerance.clone();
+    bank.risk = tolerance;
     Ok(Json(RiskToleranceResponse {
         ok: true,
         tolerance: tolerance_name,

@@ -12,6 +12,9 @@ forge-infer = { workspace = true }
 forge-proto = { workspace = true }
 forge-ledger = { workspace = true }
 forge-lightning = { workspace = true }
+forge-bank = { workspace = true }
+forge-mind = { workspace = true }
+forge-agora = { workspace = true }
 iroh = { workspace = true }
 tokio = { workspace = true }
 tokio-stream = { workspace = true }

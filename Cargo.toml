@@ -82,3 +82,6 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 
 # Pattern matching (for forge-agora CapabilityMatcher)
 glob = "0.3"
+
+# Async trait (for forge-mind MetaOptimizer with reqwest-backed CuPaidOptimizer)
+async-trait = "0.1"

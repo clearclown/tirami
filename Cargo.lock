@@ -1552,11 +1552,14 @@ dependencies = [
 name = "forge-mind"
 version = "0.2.0"
 dependencies = [
+ "async-trait",
  "forge-core",
  "forge-ledger",
+ "reqwest 0.12.28",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
+ "tokio",
  "tracing",
 ]
 
@@ -1586,10 +1589,13 @@ dependencies = [
  "anyhow",
  "axum",
  "ed25519-dalek 2.2.0",
+ "forge-agora",
+ "forge-bank",
  "forge-core",
  "forge-infer",
  "forge-ledger",
  "forge-lightning",
+ "forge-mind",
  "forge-net",
  "forge-proto",
  "forge-shard",

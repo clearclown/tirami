@@ -27,3 +27,4 @@ ed25519-dalek = { workspace = true }
 tracing = { workspace = true }
 anyhow = { workspace = true }
 hex = { workspace = true }
+sha2 = { workspace = true }

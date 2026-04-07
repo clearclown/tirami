@@ -48,6 +48,8 @@ pub(crate) struct AppState {
     pub marketplace: Arc<Mutex<Marketplace>>,
     /// Index into the ledger trade_log up to which we have already fed to the marketplace.
     pub agora_last_seen: Arc<Mutex<usize>>,
+    /// forge-mind L3 agent (optional — None until POST /v1/forge/mind/init).
+    pub mind_agent: Arc<Mutex<Option<forge_mind::ForgeMindAgent>>>,
 }
 
 /// Simple rate limiter for authentication failures.
@@ -139,6 +141,7 @@ pub fn create_router(
         Arc::new(Mutex::new(crate::bank_adapter::BankServices::new_default())),
         Arc::new(Mutex::new(Marketplace::new())),
         Arc::new(Mutex::new(0usize)),
+        Arc::new(Mutex::new(None::<forge_mind::ForgeMindAgent>)),
     )
 }
 
@@ -155,6 +158,7 @@ pub fn create_router_with_services(
     bank: Arc<Mutex<crate::bank_adapter::BankServices>>,
     marketplace: Arc<Mutex<Marketplace>>,
     agora_last_seen: Arc<Mutex<usize>>,
+    mind_agent: Arc<Mutex<Option<forge_mind::ForgeMindAgent>>>,
 ) -> Router {
     // Derive local node ID from cluster or generate a deterministic one.
     let local_node_id = cluster
@@ -178,6 +182,7 @@ pub fn create_router_with_services(
         bank,
         marketplace,
         agora_last_seen,
+        mind_agent,
     };
     let api_max_request_body_bytes = state.config.api_max_request_body_bytes;
 
@@ -233,6 +238,12 @@ pub fn create_router_with_services(
         .route("/v1/forge/agora/stats", get(crate::handlers::agora::agora_stats))
         .route("/v1/forge/agora/snapshot", get(crate::handlers::agora::agora_snapshot))
         .route("/v1/forge/agora/restore", post(crate::handlers::agora::agora_restore))
+        // forge-mind L3 routes (Phase 8 / Batch B3)
+        .route("/v1/forge/mind/init", post(crate::handlers::mind::mind_init))
+        .route("/v1/forge/mind/state", get(crate::handlers::mind::mind_state))
+        .route("/v1/forge/mind/improve", post(crate::handlers::mind::mind_improve))
+        .route("/v1/forge/mind/budget", post(crate::handlers::mind::mind_budget))
+        .route("/v1/forge/mind/stats", get(crate::handlers::mind::mind_stats))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             require_bearer_auth,
@@ -2078,8 +2089,8 @@ fn now_secs() -> u64 {
         .as_secs()
 }
 
-/// Build a test router with default BankServices and Marketplace.
-/// Used by handler unit tests in `handlers/bank.rs` and `handlers/agora.rs`.
+/// Build a test router with default BankServices, Marketplace, and no mind agent.
+/// Used by handler unit tests in `handlers/bank.rs`, `handlers/agora.rs`, and `handlers/mind.rs`.
 pub(crate) fn test_router_default(config: Config) -> Router {
     use crate::bank_adapter::BankServices;
     create_router_with_services(
@@ -2093,6 +2104,7 @@ pub(crate) fn test_router_default(config: Config) -> Router {
         Arc::new(Mutex::new(BankServices::new_default())),
         Arc::new(Mutex::new(Marketplace::new())),
         Arc::new(Mutex::new(0usize)),
+        Arc::new(Mutex::new(None::<forge_mind::ForgeMindAgent>)),
     )
 }
 

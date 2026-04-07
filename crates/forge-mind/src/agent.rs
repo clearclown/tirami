@@ -40,10 +40,10 @@ impl ForgeMindAgent {
     /// Returns the list of cycles actually executed.
     ///
     /// `now_ms` is injected for testability (no wall-clock dependency).
-    pub fn improve(&mut self, n_cycles: usize, now_ms: u64) -> Vec<ImprovementCycle> {
+    pub async fn improve(&mut self, n_cycles: usize, now_ms: u64) -> Vec<ImprovementCycle> {
         let mut executed = Vec::new();
         for _ in 0..n_cycles {
-            let cycle = self.runner.run_one(&self.harness, now_ms);
+            let cycle = self.runner.run_one(&self.harness, now_ms).await;
             let decision = cycle.decision.clone();
 
             if decision == CycleDecision::Keep {
@@ -117,6 +117,16 @@ impl ForgeMindAgent {
     pub fn history(&self) -> &[ImprovementCycle] {
         &self.history
     }
+
+    /// Access the cycle runner's budget (read-only).
+    pub fn runner_budget(&self) -> &CuBudget {
+        self.runner.budget()
+    }
+
+    /// Access the cycle runner's budget (mutable), e.g. to update limits.
+    pub fn runner_budget_mut(&mut self) -> &mut CuBudget {
+        self.runner.budget_mut()
+    }
 }
 
 /// Summary statistics for a ForgeMindAgent run.
@@ -149,8 +159,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_agent_keeps_improving_proposal() {
+    #[tokio::test]
+    async fn test_agent_keeps_improving_proposal() {
         let h = Harness::new("hello".to_string());
         let bench = InMemoryBenchmark::with_fn(|h: &Harness| {
             if h.system_prompt.contains("concise") { 0.85 } else { 0.5 }
@@ -162,15 +172,15 @@ mod tests {
             Box::new(opt),
             Some(lenient_budget()),
         );
-        agent.improve(1, 0);
+        agent.improve(1, 0).await;
         assert_eq!(agent.harness.system_prompt, "hello concise");
         assert_eq!(agent.harness.version, 2);
         assert_eq!(agent.kept_count(), 1);
         assert_eq!(agent.reverted_count(), 0);
     }
 
-    #[test]
-    fn test_agent_reverts_regressing_proposal() {
+    #[tokio::test]
+    async fn test_agent_reverts_regressing_proposal() {
         let h = Harness::new("hello".to_string());
         let bench = InMemoryBenchmark::with_fn(|h: &Harness| {
             if h.system_prompt.contains("concise") { 0.3 } else { 0.7 }
@@ -182,7 +192,7 @@ mod tests {
             Box::new(opt),
             Some(lenient_budget()),
         );
-        agent.improve(1, 0);
+        agent.improve(1, 0).await;
         // Harness unchanged (still v1)
         assert_eq!(agent.harness.system_prompt, "hello");
         assert_eq!(agent.harness.version, 1);
@@ -190,8 +200,8 @@ mod tests {
         assert_eq!(agent.reverted_count(), 1);
     }
 
-    #[test]
-    fn test_agent_runs_multiple_cycles() {
+    #[tokio::test]
+    async fn test_agent_runs_multiple_cycles() {
         let h = Harness::new("hi".to_string());
         let bench = InMemoryBenchmark::with_fn(|h: &Harness| {
             (0.5 + 0.1 * h.system_prompt.matches("good").count() as f64).min(1.0)
@@ -203,7 +213,7 @@ mod tests {
             Box::new(opt),
             Some(lenient_budget()),
         );
-        agent.improve(5, 0);
+        agent.improve(5, 0).await;
         assert_eq!(agent.harness.system_prompt.matches("good").count(), 5);
         assert_eq!(agent.harness.version, 6); // started at 1, +5
         assert_eq!(agent.kept_count(), 5);
@@ -212,8 +222,8 @@ mod tests {
         assert!(stats.score_delta >= 0.45 - 0.001);
     }
 
-    #[test]
-    fn test_agent_stops_at_budget_exhaustion() {
+    #[tokio::test]
+    async fn test_agent_stops_at_budget_exhaustion() {
         let h = Harness::new("x".to_string());
         let bench = InMemoryBenchmark::with_fn(|_| 0.5_f64);
         let opt = PromptRewriteOptimizer::with_fn(|p| format!("{}.", p));
@@ -227,7 +237,7 @@ mod tests {
             Box::new(opt),
             Some(budget),
         );
-        let cycles = agent.improve(10, 0);
+        let cycles = agent.improve(10, 0).await;
         // First 2 are real (REVERT due to no score change), third is DEFER → loop stops
         assert_eq!(cycles.len(), 3);
         assert_eq!(cycles.last().unwrap().decision, CycleDecision::Defer);
@@ -247,24 +257,24 @@ mod tests {
         assert_eq!(stats.harness_version, 1);
     }
 
-    #[test]
-    fn test_agent_total_cu_invested() {
+    #[tokio::test]
+    async fn test_agent_total_cu_invested() {
         let h = Harness::new("x".to_string());
         let bench = InMemoryBenchmark::new("test", |_| 0.5_f64, 100, 10u64);
         let opt = PromptRewriteOptimizer::new(|p: &str| p.to_string(), "local-rewrite", 50u64);
         let mut agent = ForgeMindAgent::new(h, Box::new(bench), Box::new(opt), Some(lenient_budget()));
-        agent.improve(1, 0);
+        agent.improve(1, 0).await;
         // proposal=50, baseline=10, candidate=10 → 70
         assert_eq!(agent.total_cu_invested(), 70);
     }
 
-    #[test]
-    fn test_agent_echo_optimizer_reverts() {
+    #[tokio::test]
+    async fn test_agent_echo_optimizer_reverts() {
         let h = Harness::new("test".to_string());
         let bench = InMemoryBenchmark::with_fn(|_| 0.5_f64);
         let opt = EchoMetaOptimizer;
         let mut agent = ForgeMindAgent::new(h, Box::new(bench), Box::new(opt), Some(lenient_budget()));
-        agent.improve(3, 0);
+        agent.improve(3, 0).await;
         // EchoMetaOptimizer: score never changes → all REVERT
         assert_eq!(agent.kept_count(), 0);
         assert_eq!(agent.reverted_count(), 3);

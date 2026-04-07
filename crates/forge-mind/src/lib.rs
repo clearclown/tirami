@@ -12,6 +12,7 @@ pub mod harness;
 pub mod budget;
 pub mod benchmark;
 pub mod meta_optimizer;
+pub mod cu_paid_optimizer;
 pub mod cycle;
 pub mod agent;
 
@@ -21,5 +22,6 @@ pub use harness::Harness;
 pub use budget::CuBudget;
 pub use benchmark::{Benchmark, InMemoryBenchmark};
 pub use meta_optimizer::{EchoMetaOptimizer, MetaOptimizer, PromptRewriteOptimizer};
+pub use cu_paid_optimizer::CuPaidOptimizer;
 pub use cycle::ImprovementCycleRunner;
-pub use agent::ForgeMindAgent;
+pub use agent::{ForgeMindAgent, Stats as MindStats};

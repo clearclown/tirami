@@ -62,7 +62,7 @@ impl ImprovementCycleRunner {
     /// Execute one improvement cycle on the given harness.
     ///
     /// `now_ms` is injected for testability (no wall-clock dependency).
-    pub fn run_one(&mut self, harness: &Harness, now_ms: u64) -> ImprovementCycle {
+    pub async fn run_one(&mut self, harness: &Harness, now_ms: u64) -> ImprovementCycle {
         // Day rollover check.
         self.budget.maybe_reset_day(now_ms);
 
@@ -78,7 +78,7 @@ impl ImprovementCycleRunner {
         self.record_benchmark_cost(&baseline);
 
         // 2. Meta-optimizer proposes a change
-        let proposal = self.optimizer.propose(harness, &baseline);
+        let proposal = self.optimizer.propose(harness, &baseline).await;
 
         // Gate: can we afford the proposal cost?
         if proposal.cu_cost_to_propose > 0 {
@@ -189,42 +189,42 @@ mod tests {
         )
     }
 
-    #[test]
-    fn test_no_change_proposal_results_in_revert() {
+    #[tokio::test]
+    async fn test_no_change_proposal_results_in_revert() {
         let mut runner = make_runner(|_| 0.5, EchoMetaOptimizer, 0);
-        let cycle = runner.run_one(&Harness::new("x".to_string()), 0);
+        let cycle = runner.run_one(&Harness::new("x".to_string()), 0).await;
         // Echo optimizer doesn't change anything → score is identical → REVERT
         assert_eq!(cycle.decision, CycleDecision::Revert);
         assert_eq!(cycle.delta, 0.0);
     }
 
-    #[test]
-    fn test_improving_proposal_is_kept() {
+    #[tokio::test]
+    async fn test_improving_proposal_is_kept() {
         let mut runner = make_runner(
             |h| if h.system_prompt.contains("concise") { 0.85 } else { 0.5 },
             PromptRewriteOptimizer::with_fn(|p| format!("{} concise", p)),
             0,
         );
-        let cycle = runner.run_one(&Harness::new("hello".to_string()), 0);
+        let cycle = runner.run_one(&Harness::new("hello".to_string()), 0).await;
         assert_eq!(cycle.decision, CycleDecision::Keep);
         assert!((cycle.delta - (0.85 - 0.5)).abs() < 1e-10);
         assert_eq!(cycle.proposal.proposed_harness.version, 2);
     }
 
-    #[test]
-    fn test_regressing_proposal_is_reverted() {
+    #[tokio::test]
+    async fn test_regressing_proposal_is_reverted() {
         let mut runner = make_runner(
             |h| if h.system_prompt.contains("bad") { 0.3 } else { 0.7 },
             PromptRewriteOptimizer::with_fn(|p| format!("{} bad", p)),
             0,
         );
-        let cycle = runner.run_one(&Harness::new("hello".to_string()), 0);
+        let cycle = runner.run_one(&Harness::new("hello".to_string()), 0).await;
         assert_eq!(cycle.decision, CycleDecision::Revert);
         assert!(cycle.delta < 0.0);
     }
 
-    #[test]
-    fn test_cycle_records_budget_spend() {
+    #[tokio::test]
+    async fn test_cycle_records_budget_spend() {
         let benchmark = InMemoryBenchmark::new("test", |_| 0.5_f64, 100, 10u64);
         let budget = CuBudget {
             min_score_delta: 0.001,
@@ -237,24 +237,24 @@ mod tests {
             Box::new(opt),
             budget,
         );
-        runner.run_one(&Harness::new("x".to_string()), 0);
+        runner.run_one(&Harness::new("x".to_string()), 0).await;
         assert!(runner.budget().spent_today_cu >= 100); // at least the proposal cost
         assert_eq!(runner.budget().cycles_today, 1);
     }
 
-    #[test]
-    fn test_proposal_too_expensive_is_deferred() {
+    #[tokio::test]
+    async fn test_proposal_too_expensive_is_deferred() {
         let mut runner = make_runner(
             |_| 0.5,
             PromptRewriteOptimizer::new(|p: &str| format!("{}x", p), "local-rewrite", 10_000_000u64),
             0,
         );
-        let cycle = runner.run_one(&Harness::new("x".to_string()), 0);
+        let cycle = runner.run_one(&Harness::new("x".to_string()), 0).await;
         assert_eq!(cycle.decision, CycleDecision::Defer);
     }
 
-    #[test]
-    fn test_daily_cycle_limit_defers() {
+    #[tokio::test]
+    async fn test_daily_cycle_limit_defers() {
         let benchmark = InMemoryBenchmark::with_fn(|_| 0.5_f64);
         let budget = CuBudget {
             max_cycles_per_day: 2,
@@ -265,14 +265,14 @@ mod tests {
             Box::new(EchoMetaOptimizer),
             budget,
         );
-        runner.run_one(&Harness::new("x".to_string()), 0);
-        runner.run_one(&Harness::new("x".to_string()), 0);
-        let cycle3 = runner.run_one(&Harness::new("x".to_string()), 0);
+        runner.run_one(&Harness::new("x".to_string()), 0).await;
+        runner.run_one(&Harness::new("x".to_string()), 0).await;
+        let cycle3 = runner.run_one(&Harness::new("x".to_string()), 0).await;
         assert_eq!(cycle3.decision, CycleDecision::Defer);
     }
 
-    #[test]
-    fn test_min_score_delta_gates_keep() {
+    #[tokio::test]
+    async fn test_min_score_delta_gates_keep() {
         let benchmark = InMemoryBenchmark::with_fn(|h: &Harness| {
             if h.version == 1 { 0.500 } else { 0.501 }
         });
@@ -287,7 +287,7 @@ mod tests {
             Box::new(opt),
             budget,
         );
-        let cycle = runner.run_one(&Harness::new("x".to_string()), 0);
+        let cycle = runner.run_one(&Harness::new("x".to_string()), 0).await;
         // 0.001 improvement < 0.05 threshold → REVERT
         assert_eq!(cycle.decision, CycleDecision::Revert);
     }

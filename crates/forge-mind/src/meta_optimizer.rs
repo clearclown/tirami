@@ -6,28 +6,32 @@
 //! - `EchoMetaOptimizer`: returns the input harness unchanged. Useful for tests.
 //! - `PromptRewriteOptimizer`: applies a caller-supplied transformation function
 //!   to the system prompt. Useful for testing the cycle without paying CU.
-//! - `CUPaidOptimizer` (planned, v0.2): asks a frontier model to rewrite the
-//!   harness, paying for the inference in CU via forge-sdk.
+//! - `CuPaidOptimizer` (v0.2): asks a frontier model to rewrite the harness,
+//!   paying for the inference in CU via forge-sdk.
+
+use async_trait::async_trait;
 
 use crate::harness::Harness;
 use crate::types::{BenchmarkResult, ImprovementProposal};
 
 /// Abstract interface for harness improvement proposers.
+#[async_trait]
 pub trait MetaOptimizer: Send + Sync {
     fn name(&self) -> &str;
-    fn propose(&self, current: &Harness, benchmark: &BenchmarkResult) -> ImprovementProposal;
+    async fn propose(&self, current: &Harness, benchmark: &BenchmarkResult) -> ImprovementProposal;
     fn estimated_cu_cost(&self) -> u64;
 }
 
 /// Returns the input harness unchanged (as a new version). Default and useful for tests.
 pub struct EchoMetaOptimizer;
 
+#[async_trait]
 impl MetaOptimizer for EchoMetaOptimizer {
     fn name(&self) -> &str {
         "EchoMetaOptimizer"
     }
 
-    fn propose(&self, current: &Harness, _benchmark: &BenchmarkResult) -> ImprovementProposal {
+    async fn propose(&self, current: &Harness, _benchmark: &BenchmarkResult) -> ImprovementProposal {
         // The proposed harness must be a NEW version (not an alias to current)
         // so version semantics work. We evolve with no actual changes.
         let proposed = current.evolve(
@@ -77,12 +81,13 @@ impl PromptRewriteOptimizer {
     }
 }
 
+#[async_trait]
 impl MetaOptimizer for PromptRewriteOptimizer {
     fn name(&self) -> &str {
         "PromptRewriteOptimizer"
     }
 
-    fn propose(&self, current: &Harness, _benchmark: &BenchmarkResult) -> ImprovementProposal {
+    async fn propose(&self, current: &Harness, _benchmark: &BenchmarkResult) -> ImprovementProposal {
         let new_prompt = (self.transform)(&current.system_prompt);
         let proposed = current.evolve(
             Some(new_prompt),
@@ -111,12 +116,12 @@ mod tests {
         BenchmarkResult::new(harness.version, 0.5, 1, 0, 0)
     }
 
-    #[test]
-    fn test_echo_optimizer_produces_new_version() {
+    #[tokio::test]
+    async fn test_echo_optimizer_produces_new_version() {
         let h = Harness::new("test prompt".to_string());
         let result = dummy_result(&h);
         let opt = EchoMetaOptimizer;
-        let proposal = opt.propose(&h, &result);
+        let proposal = opt.propose(&h, &result).await;
         // Echo should produce version 2 with same content
         assert_eq!(proposal.proposed_harness.version, 2);
         assert_eq!(proposal.proposed_harness.system_prompt, "test prompt");
@@ -124,31 +129,31 @@ mod tests {
         assert_eq!(proposal.cu_cost_to_propose, 0);
     }
 
-    #[test]
-    fn test_echo_optimizer_preserves_parent_version() {
+    #[tokio::test]
+    async fn test_echo_optimizer_preserves_parent_version() {
         let h = Harness::new("hello".to_string());
         let result = dummy_result(&h);
         let opt = EchoMetaOptimizer;
-        let proposal = opt.propose(&h, &result);
+        let proposal = opt.propose(&h, &result).await;
         assert_eq!(proposal.proposed_harness.parent_version, Some(1));
     }
 
-    #[test]
-    fn test_prompt_rewrite_optimizer_transforms_prompt() {
+    #[tokio::test]
+    async fn test_prompt_rewrite_optimizer_transforms_prompt() {
         let h = Harness::new("hello".to_string());
         let result = dummy_result(&h);
         let opt = PromptRewriteOptimizer::with_fn(|p| format!("{} concise", p));
-        let proposal = opt.propose(&h, &result);
+        let proposal = opt.propose(&h, &result).await;
         assert_eq!(proposal.proposed_harness.system_prompt, "hello concise");
         assert_eq!(proposal.proposed_harness.version, 2);
     }
 
-    #[test]
-    fn test_prompt_rewrite_records_cu_cost() {
+    #[tokio::test]
+    async fn test_prompt_rewrite_records_cu_cost() {
         let h = Harness::new("hello".to_string());
         let result = dummy_result(&h);
         let opt = PromptRewriteOptimizer::new(|p: &str| p.to_string(), "local-rewrite", 100);
-        let proposal = opt.propose(&h, &result);
+        let proposal = opt.propose(&h, &result).await;
         assert_eq!(proposal.cu_cost_to_propose, 100);
     }
 

@@ -70,30 +70,53 @@
 | Routing API | GET /v1/forge/route for cost/quality-optimal provider selection |
 | Provider ranking | Multi-factor scoring (reputation, price, latency, model quality) |
 
-## Phase 7: Discovery + Marketplace
+## Phase 7: L2/L3/L4 Rust rewrite ✅ (2026-04-07)
 
-**Goal:** Agent discovery and reputation aggregation without marketing.
+**Goal:** Replace the Python scaffolds for forge-bank/mind/agora with Rust
+workspace crates inside `clearclown/forge`. Bit-for-bit semantic preservation.
+
+| Deliverable | Status |
+|---|---|
+| forge-bank Rust crate (53 tests) | ✅ Strategies, portfolio, futures, insurance, RiskModel VaR, YieldOptimizer |
+| forge-mind Rust crate (53 tests) | ✅ Harness, CuBudget, Benchmark, MetaOptimizer, ImprovementCycleRunner, ForgeMindAgent |
+| forge-agora Rust crate (42 tests) | ✅ AgentRegistry, ReputationCalculator (4 sub-scores), CapabilityMatcher, Marketplace |
+| forge-economics §10/§11/§12 | ✅ All L2/L3/L4 constants centralized as single source of truth |
+| Python repos archived | ✅ Tagged v0.1.0-python-scaffold, redirect READMEs in clearclown/forge-{bank,mind,agora} |
+| Workspace tests | ✅ 291 passing (was 143) |
+
+## Phase 8: L2/L3/L4 wired into forge-node ✅ (2026-04-08)
+
+**Goal:** Make L2/L3/L4 first-class citizens of the running forge node.
+A single `forge node --port 3000` exposes the full 5-layer Forge ecosystem
+over HTTP, real CU is consumed by the self-improvement loop.
+
+| Deliverable | Status |
+|---|---|
+| `bank_adapter::pool_snapshot_from_ledger()` | ✅ Live ledger state → forge_bank::PoolSnapshot |
+| `agora_adapter::refresh_marketplace_from_ledger()` | ✅ Lazy trade-log drain via last_seen_idx cursor |
+| `mind_adapter::record_frontier_consumption()` | ✅ Frontier model = SHA-256("frontier:" + model_id) NodeId, real TradeRecord on ledger |
+| 8 `/v1/forge/bank/*` endpoints | ✅ portfolio / tick / strategy / risk / futures (×2) / risk-assessment / optimize |
+| 7 `/v1/forge/agora/*` endpoints | ✅ register / agents / reputation / find / stats / snapshot / restore |
+| 5 `/v1/forge/mind/*` endpoints | ✅ init / state / improve / budget / stats |
+| `CuPaidOptimizer` | ✅ reqwest-backed MetaOptimizer (Anthropic Messages API), graceful fallback on network error |
+| Async `MetaOptimizer` trait | ✅ #[async_trait], all 53 forge-mind tests migrated to #[tokio::test] |
+| Workspace tests | ✅ 315 passing (was 291) |
+| verify-impl.sh | ✅ 57 / 57 GREEN |
+
+## Phase 9: Production hardening (planned)
+
+**Goal:** Make Phase 8 production-grade and propagate to forge-mesh.
 
 | Deliverable | Description |
 |---|---|
-| Reputation gossip | Share reputation scores across peers |
+| forge-mesh Phase 7+8 sync | Port L2/L3/L4 crates to nm-arealnormalman/mesh-llm forge-economy/ |
+| forge-sdk (Python) wrappers | Expose /v1/forge/{bank,mind,agora}/* to PyPI users |
+| forge-cu-mcp tools | MCP tool exposure of L2/L3/L4 for Claude Code / Cursor |
+| Reputation gossip | Wire message in forge-proto, broadcast across mesh |
+| Nostr NIP-90 relay publish | Real WebSocket publish from forge_ledger::agora::Nip90Publisher |
+| Persistent L2/L3/L4 state | BankServices / Marketplace / ForgeMindAgent survive node restarts |
 | Collusion resistance | Statistical anomaly detection on trade patterns |
-| Nostr NIP-90 | Provider advertisement via Data Vending Machines |
 | A2A payment extension | CU payment headers for Google A2A protocol |
-| forge-agora | Agent marketplace: discovery, capability matching, reputation |
-
-## Phase 8: Agent Intelligence
-
-**Goal:** Agents that autonomously invest CU to improve themselves.
-
-| Deliverable | Description |
-|---|---|
-| forge-mind | AutoAgent self-improvement framework with CU budgets |
-| Meta-optimization | Agents rewrite their own prompts/tools via hill-climbing |
-| Harness marketplace | Trade optimized agent configurations for CU |
-| Multi-model routing | Agent-driven model selection based on task complexity |
-| Self-reinforcement | Autonomous capability growth: earn → improve → earn more |
-| Inter-agent economy | Agents trade specialized compute (code model vs chat model) |
 
 ## Long-term
 

@@ -13,7 +13,7 @@ Forge is a distributed LLM inference protocol where **compute is currency**. The
 
 | Repo | Language | Status | Layer | Purpose |
 |------|----------|--------|-------|---------|
-| `clearclown/forge` (this) | Rust | Active (291 tests) | L1-L4 | Protocol core + finance, intelligence, marketplace (Rust workspace, 12 crates) |
+| `clearclown/forge` (this) | Rust | Active (315 tests) | L1-L4 | Protocol core + finance, intelligence, marketplace, all wired into forge-node HTTP API (Rust workspace, 12 crates) |
 | `nm-arealnormalman/mesh-llm` | Rust | Active (43 tests) | L0 | mesh-llm + Forge economy = production runtime |
 | `clearclown/forge-bank` | Python (archived) | Scaffold v0.1 (45 tests) | — | Superseded by `crates/forge-bank/` in this repo |
 | `clearclown/forge-mind` | Python (archived) | Scaffold v0.1 (40 tests) | — | Superseded by `crates/forge-mind/` in this repo |
@@ -32,13 +32,17 @@ L1: Economy       crates/forge-ledger et al.  — CU ledger, trades, lending, sa
 L0: Inference     nm-arealnormalman/mesh-llm  — Distributed LLM inference + forge-economy port
 ```
 
-**Total tests across the ecosystem:** 291 (forge workspace) + 43 (forge-mesh)
-+ 16 (forge-economics SPEC-AUDIT) = **350 passing**.
+**Total tests across the ecosystem:** 315 (forge workspace) + 43 (forge-mesh)
++ 16 (forge-economics SPEC-AUDIT) = **374 passing**.
 
-L2/L3/L4 were rewritten from Python scaffolds into Rust workspace crates in
-Phase 7 (2026-04-07). The Python sources remain as `_legacy_python/` in the
-archived clearclown/forge-{bank,mind,agora} repos for design provenance.
-All L2/L3/L4 numeric constants now reference `forge-economics/spec/parameters.md`
+Phase 7 (2026-04-07) rewrote L2/L3/L4 from Python scaffolds into Rust
+workspace crates. Phase 8 (2026-04-08) wired them into forge-node with
+20 new HTTP endpoints (8 bank + 7 agora + 5 mind), plus a CuPaidOptimizer
+that calls a frontier LLM via reqwest and records the CU consumption as
+a real TradeRecord on the ledger. A single `forge node --port 3000` now
+exposes the full 5-layer Forge ecosystem.
+
+All L2/L3/L4 numeric constants reference `forge-economics/spec/parameters.md`
 §10/§11/§12 as the single source of truth — no re-definition in Rust code.
 
 The integrated fork at `/Users/ablaze/Projects/forge-mesh` contains mesh-llm's full distributed inference engine with Forge's economic crates (`forge-economy/`) and API routes (`/api/forge/*`).
@@ -47,7 +51,7 @@ The integrated fork at `/Users/ablaze/Projects/forge-mesh` contains mesh-llm's f
 
 ```bash
 cargo build --release          # Full build
-cargo test --workspace         # All tests (291 across 12 crates)
+cargo test --workspace         # All tests (315 across 12 crates)
 cargo check --workspace        # Fast type check
 cargo clippy --workspace       # Lint
 ```
@@ -144,9 +148,42 @@ Inference Layer (mesh-llm-derived)  ← This is inherited
 ### Forge Routing (Phase 6 — implemented)
 - `GET /v1/forge/route?model=X&max_cu=Y&mode=cost|quality|balanced` — Optimal provider selection
 
+### Forge Bank L2 (Phase 8 — implemented)
+- `GET /v1/forge/bank/portfolio` — Portfolio snapshot + cash/lent/borrowed/exposure
+- `POST /v1/forge/bank/tick` — Run PortfolioManager.tick() with live PoolSnapshot from ledger
+- `POST /v1/forge/bank/strategy` — Hot-swap strategy (conservative / highyield / balanced)
+- `POST /v1/forge/bank/risk` — Set RiskTolerance
+- `GET /v1/forge/bank/futures` — List FuturesContracts
+- `POST /v1/forge/bank/futures` — Create a FuturesContract
+- `GET /v1/forge/bank/risk-assessment` — RiskModel VaR 99% on current portfolio
+- `POST /v1/forge/bank/optimize` — YieldOptimizer with VaR cap
+
+### Forge Agora L4 (Phase 8 — implemented)
+- `POST /v1/forge/agora/register` — Register an AgentProfile
+- `GET /v1/forge/agora/agents` — List registered agents
+- `GET /v1/forge/agora/reputation/{hex}` — ReputationScore (lazy-refreshes from ledger trade log)
+- `POST /v1/forge/agora/find` — CapabilityQuery → ranked CapabilityMatches
+- `GET /v1/forge/agora/stats` — Marketplace stats
+- `GET /v1/forge/agora/snapshot` — Serialize RegistrySnapshot for backup
+- `POST /v1/forge/agora/restore` — Restore from RegistrySnapshot
+
+### Forge Mind L3 (Phase 8 — implemented)
+- `POST /v1/forge/mind/init` — Initialize ForgeMindAgent (echo / prompt_rewrite / cu_paid optimizer)
+- `GET /v1/forge/mind/state` — Harness summary + cycle history + budget remaining
+- `POST /v1/forge/mind/improve` — Run N improvement cycles; CU is deducted from ledger when CuPaidOptimizer is active
+- `POST /v1/forge/mind/budget` — Update CuBudget hard limits (per-cycle / per-day / cycles-per-day)
+- `GET /v1/forge/mind/stats` — kept / reverted / deferred counts + total CU invested
+
 All `/v1/forge/*` endpoints are rate-limited (token bucket, 30 req/sec).
 
 ## What's Implemented vs Planned
+
+### Phase 8 — L2/L3/L4 wired into forge-node (DONE 2026-04-08, 315 tests)
+- **forge-bank as a service**: PortfolioManager owned by ForgeNode, fed live PoolSnapshot from ComputeLedger via `bank_adapter::pool_snapshot_from_ledger()`. 8 HTTP endpoints under `/v1/forge/bank/*`.
+- **forge-agora as a service**: Marketplace owned by ForgeNode, lazy-refreshes from the ledger trade log on each `/agora/*` request via `agora_adapter::refresh_marketplace_from_ledger()` with a `last_seen_idx` cursor. 7 HTTP endpoints under `/v1/forge/agora/*`.
+- **forge-mind as a service**: ForgeMindAgent (opt-in) owned by ForgeNode. 5 HTTP endpoints under `/v1/forge/mind/*`.
+- **CuPaidOptimizer**: forge-mind MetaOptimizer that calls a frontier LLM via reqwest (Anthropic Messages API shape). On `/improve`, the forge-node handler records each cycle's `cu_cost_to_propose` as a real `TradeRecord` on the ledger via `mind_adapter::record_frontier_consumption()`. The frontier model is identified by `frontier_node_id(model_id) = SHA-256("frontier:" + model_id)`. CU is actually deducted.
+- **Async MetaOptimizer trait**: forge-mind migrated to `#[async_trait]` so CuPaidOptimizer can `.await` reqwest. EchoMetaOptimizer / PromptRewriteOptimizer adapted as no-op async impls. All 53 forge-mind tests migrated to `#[tokio::test]`.
 
 ### Working Now (Phase 1-6 complete, 143 tests passing)
 - CU ledger with HMAC-SHA256 persistence and tamper detection

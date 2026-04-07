@@ -106,8 +106,8 @@ assert "#MIND-optimizer"  "MetaOptimizer trait + 2 impls" \
   "grep -q 'pub trait MetaOptimizer' crates/forge-mind/src/meta_optimizer.rs && grep -q 'pub struct PromptRewriteOptimizer' crates/forge-mind/src/meta_optimizer.rs"
 assert "#MIND-cycle"      "ImprovementCycleRunner + ROI constant" \
   "grep -q 'pub struct ImprovementCycleRunner' crates/forge-mind/src/cycle.rs && grep -q '100_000\\|100000' crates/forge-mind/src/cycle.rs"
-assert "#MIND-agent"      "ForgeMindAgent improve loop" \
-  "grep -q 'pub struct ForgeMindAgent' crates/forge-mind/src/agent.rs && grep -q 'pub fn improve' crates/forge-mind/src/agent.rs"
+assert "#MIND-agent"      "ForgeMindAgent improve loop (async after Phase 8)" \
+  "grep -q 'pub struct ForgeMindAgent' crates/forge-mind/src/agent.rs && grep -qE 'pub (async )?fn improve' crates/forge-mind/src/agent.rs"
 
 # === Phase 7: L4 forge-agora (§12 of forge-economics parameters.md) ===
 assert "#AGORA-types"      "AgentProfile + TradeObservation" \
@@ -120,6 +120,72 @@ assert "#AGORA-matching"   "CapabilityMatcher composite (0.6/0.4)" \
   "grep -q 'pub struct CapabilityMatcher' crates/forge-agora/src/matching.rs && grep -q 'QUALITY_WEIGHT.*0\\.6' crates/forge-agora/src/matching.rs && grep -q 'COST_WEIGHT.*0\\.4' crates/forge-agora/src/matching.rs"
 assert "#AGORA-marketplace" "Marketplace facade" \
   "grep -q 'pub struct Marketplace' crates/forge-agora/src/marketplace.rs"
+
+# === Phase 8: L2/L3/L4 wired into forge-node ===
+
+# AppState fields
+assert "#P8-state-bank"      "AppState owns BankServices" \
+  "grep -q 'bank: Arc<Mutex<crate::bank_adapter::BankServices' crates/forge-node/src/api.rs"
+assert "#P8-state-mp"        "AppState owns Marketplace" \
+  "grep -q 'marketplace: Arc<Mutex<.*Marketplace' crates/forge-node/src/api.rs"
+assert "#P8-state-mind"      "AppState owns Option<ForgeMindAgent>" \
+  "grep -q 'mind_agent: Arc<Mutex<Option<.*ForgeMindAgent' crates/forge-node/src/api.rs"
+
+# Adapter modules
+assert "#P8-bank-adapter"    "bank_adapter::pool_snapshot_from_ledger exists" \
+  "grep -q 'pub fn pool_snapshot_from_ledger' crates/forge-node/src/bank_adapter.rs"
+assert "#P8-bank-services"   "BankServices wrapper exists" \
+  "grep -q 'pub struct BankServices' crates/forge-node/src/bank_adapter.rs"
+assert "#P8-agora-adapter"   "agora_adapter conversion + refresh exist" \
+  "grep -q 'observation_from_trade' crates/forge-node/src/agora_adapter.rs && grep -q 'refresh_marketplace_from_ledger' crates/forge-node/src/agora_adapter.rs"
+assert "#P8-mind-adapter"    "mind_adapter frontier_node_id + record_frontier_consumption" \
+  "grep -q 'pub fn frontier_node_id' crates/forge-node/src/mind_adapter.rs && grep -q 'record_frontier_consumption' crates/forge-node/src/mind_adapter.rs"
+
+# Bank endpoints (8)
+assert "#P8-bank-routes"     "All 8 /v1/forge/bank/* routes registered" \
+  "grep -q '/v1/forge/bank/portfolio' crates/forge-node/src/api.rs && \
+   grep -q '/v1/forge/bank/tick' crates/forge-node/src/api.rs && \
+   grep -q '/v1/forge/bank/strategy' crates/forge-node/src/api.rs && \
+   grep -q '/v1/forge/bank/risk' crates/forge-node/src/api.rs && \
+   grep -q '/v1/forge/bank/futures' crates/forge-node/src/api.rs && \
+   grep -q '/v1/forge/bank/risk-assessment' crates/forge-node/src/api.rs && \
+   grep -q '/v1/forge/bank/optimize' crates/forge-node/src/api.rs"
+
+# Agora endpoints (7)
+assert "#P8-agora-routes"    "All 7 /v1/forge/agora/* routes registered" \
+  "grep -q '/v1/forge/agora/register' crates/forge-node/src/api.rs && \
+   grep -q '/v1/forge/agora/agents' crates/forge-node/src/api.rs && \
+   grep -q '/v1/forge/agora/reputation' crates/forge-node/src/api.rs && \
+   grep -q '/v1/forge/agora/find' crates/forge-node/src/api.rs && \
+   grep -q '/v1/forge/agora/stats' crates/forge-node/src/api.rs && \
+   grep -q '/v1/forge/agora/snapshot' crates/forge-node/src/api.rs && \
+   grep -q '/v1/forge/agora/restore' crates/forge-node/src/api.rs"
+
+# Mind endpoints (5)
+assert "#P8-mind-routes"     "All 5 /v1/forge/mind/* routes registered" \
+  "grep -q '/v1/forge/mind/init' crates/forge-node/src/api.rs && \
+   grep -q '/v1/forge/mind/state' crates/forge-node/src/api.rs && \
+   grep -q '/v1/forge/mind/improve' crates/forge-node/src/api.rs && \
+   grep -q '/v1/forge/mind/budget' crates/forge-node/src/api.rs && \
+   grep -q '/v1/forge/mind/stats' crates/forge-node/src/api.rs"
+
+# CuPaidOptimizer
+assert "#P8-cu-paid"         "CuPaidOptimizer with reqwest exists" \
+  "grep -q 'pub struct CuPaidOptimizer' crates/forge-mind/src/cu_paid_optimizer.rs && \
+   grep -q 'reqwest' crates/forge-mind/src/cu_paid_optimizer.rs"
+
+# Async MetaOptimizer migration
+assert "#P8-async-trait"     "MetaOptimizer is async via async_trait" \
+  "grep -q 'async_trait' crates/forge-mind/src/meta_optimizer.rs && \
+   grep -qE 'async fn propose' crates/forge-mind/src/meta_optimizer.rs"
+
+# Handler files exist
+assert "#P8-handlers-bank"   "handlers/bank.rs exists" \
+  "test -f crates/forge-node/src/handlers/bank.rs"
+assert "#P8-handlers-agora"  "handlers/agora.rs exists" \
+  "test -f crates/forge-node/src/handlers/agora.rs"
+assert "#P8-handlers-mind"   "handlers/mind.rs exists" \
+  "test -f crates/forge-node/src/handlers/mind.rs"
 
 # === Build & test ===
 assert "BUILD" "cargo check --workspace passes" \

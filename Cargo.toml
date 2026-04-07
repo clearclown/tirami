@@ -9,6 +9,9 @@ members = [
     "crates/forge-node",
     "crates/forge-cli",
     "crates/forge-lightning",
+    "crates/forge-bank",
+    "crates/forge-mind",
+    "crates/forge-agora",
 ]
 resolver = "2"
 
@@ -28,6 +31,9 @@ forge-proto = { path = "crates/forge-proto" }
 forge-ledger = { path = "crates/forge-ledger" }
 forge-node = { path = "crates/forge-node" }
 forge-lightning = { path = "crates/forge-lightning" }
+forge-bank = { path = "crates/forge-bank" }
+forge-mind = { path = "crates/forge-mind" }
+forge-agora = { path = "crates/forge-agora" }
 
 # Async runtime
 tokio = { version = "1", features = ["full"] }
@@ -73,3 +79,6 @@ axum = "0.8"
 tower = "0.5"
 tokio-stream = "0.1"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
+# Pattern matching (for forge-agora CapabilityMatcher)
+glob = "0.3"

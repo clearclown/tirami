@@ -35,6 +35,13 @@ impl ClusterManager {
         &self.discovery
     }
 
+    /// Clone of the underlying transport `Arc`, for callers that need to
+    /// dispatch messages (e.g. gossip broadcast) without going through the
+    /// cluster manager itself.
+    pub fn transport_arc(&self) -> Arc<ForgeTransport> {
+        self.transport.clone()
+    }
+
     pub fn local_capability(&self) -> &PeerCapability {
         &self.local_capability
     }

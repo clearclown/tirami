@@ -9,7 +9,8 @@ use axum::{
 use forge_core::{Config, ModelManifest, NodeId, PeerCapability, PipelineTopology};
 use forge_infer::{CandleEngine, InferenceEngine};
 use forge_ledger::{AgentNet, ComputeLedger, SafetyController, SettlementStatement, TradeRecord};
-use forge_net::ClusterManager;
+use forge_net::gossip::broadcast_loan;
+use forge_net::{ClusterManager, GossipState};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -27,6 +28,9 @@ struct AppState {
     model_manifest: ModelState,
     advertised_topology: TopologyState,
     cluster: Option<Arc<ClusterManager>>,
+    /// Shared gossip state for broadcasting loans/trades from API handlers.
+    /// Same instance held by the pipeline coordinator so dedup is coherent.
+    gossip: Arc<Mutex<GossipState>>,
     /// Track recent auth failures for rate limiting.
     auth_failures: Arc<Mutex<AuthFailureTracker>>,
     /// Rate limiter for economic endpoints (Issue #5).
@@ -115,6 +119,7 @@ pub fn create_router(
     model_manifest: ModelState,
     advertised_topology: TopologyState,
     cluster: Option<Arc<ClusterManager>>,
+    gossip: Arc<Mutex<GossipState>>,
 ) -> Router {
     // Derive local node ID from cluster or generate a deterministic one.
     let local_node_id = cluster
@@ -129,6 +134,7 @@ pub fn create_router(
         model_manifest,
         advertised_topology,
         cluster,
+        gossip,
         auth_failures: Arc::new(Mutex::new(AuthFailureTracker::default())),
         forge_rate_limiter: Arc::new(Mutex::new(RateLimiter::default())),
         safety: Arc::new(Mutex::new(SafetyController::new())),
@@ -1468,12 +1474,20 @@ async fn forge_lend_to(
     }
     drop(ledger);
 
-    // Broadcast the proposed loan so peers become aware. Same caveat as
-    // forge_borrow: no cluster accessor for gossip yet, so log the intent.
-    if state.cluster.is_some() {
+    // Broadcast the proposed loan so peers become aware. Uses the shared
+    // GossipState held in AppState, so dedup stays coherent with the
+    // pipeline coordinator's own broadcasts.
+    if let Some(cluster) = state.cluster.as_ref() {
+        let transport = cluster.transport_arc();
+        let gossip = state.gossip.clone();
+        let signed_clone = signed.clone();
+        tokio::spawn(async move {
+            broadcast_loan(&transport, &gossip, &signed_clone).await;
+        });
+    } else {
         tracing::debug!(
             loan_id = %hex::encode(signed.loan.loan_id),
-            "forge_lend_to: broadcast_loan would happen here (pending batch B2 wiring)"
+            "forge_lend_to: loan broadcast skipped: cluster not initialized"
         );
     }
 
@@ -1549,15 +1563,18 @@ async fn forge_borrow(
     drop(ledger);
 
     // Broadcast the loan to peers so ledger state propagates across the mesh.
-    // `ClusterManager` does not yet expose a transport/gossip accessor (the
-    // gossip path lives inside PipelineCoordinator), so for now we just log
-    // the intent. Sibling batch B2 will wire the real gossip broadcast once
-    // `forge_net::gossip::broadcast_loan` and the ClusterManager accessors
-    // land.
-    if state.cluster.is_some() {
+    // Shared GossipState + transport accessor make this a real send now.
+    if let Some(cluster) = state.cluster.as_ref() {
+        let transport = cluster.transport_arc();
+        let gossip = state.gossip.clone();
+        let signed_clone = signed.clone();
+        tokio::spawn(async move {
+            broadcast_loan(&transport, &gossip, &signed_clone).await;
+        });
+    } else {
         tracing::debug!(
             loan_id = %hex::encode(signed.loan.loan_id),
-            "forge_borrow: broadcast_loan would happen here (pending batch B2 wiring)"
+            "forge_borrow: loan broadcast skipped: cluster not initialized"
         );
     }
 
@@ -2015,6 +2032,7 @@ mod tests {
             Arc::new(Mutex::new(None)),
             Arc::new(Mutex::new(None)),
             None,
+            Arc::new(Mutex::new(GossipState::new())),
         )
     }
 

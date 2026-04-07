@@ -37,6 +37,7 @@ impl PipelineCoordinator {
         cluster: Option<Arc<ClusterManager>>,
         config: Config,
         ledger_path: Option<std::path::PathBuf>,
+        gossip: Arc<Mutex<GossipState>>,
     ) -> anyhow::Result<()> {
         let node_id = self.transport.forge_node_id();
         tracing::info!("Pipeline seed running, waiting for requests...");
@@ -45,7 +46,6 @@ impl PipelineCoordinator {
         let request_slots = Arc::new(Semaphore::new(
             config.max_concurrent_remote_inference_requests,
         ));
-        let gossip = Arc::new(Mutex::new(GossipState::new()));
 
         loop {
             match self.transport.recv().await {
@@ -924,6 +924,7 @@ mod tests {
                             ..Config::default()
                         },
                         None,
+                        Arc::new(Mutex::new(GossipState::new())),
                     )
                     .await
                     .expect("seed loop");

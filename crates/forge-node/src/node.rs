@@ -4,7 +4,7 @@ use forge_core::Config;
 use forge_core::{ModelManifest, PipelineTopology};
 use forge_infer::{CandleEngine, InferenceEngine, parse_gguf_metadata};
 use forge_ledger::{ComputeLedger, SettlementStatement};
-use forge_net::{ClusterManager, ForgeTransport};
+use forge_net::{ClusterManager, ForgeTransport, GossipState};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
@@ -17,6 +17,11 @@ pub struct ForgeNode {
     pub advertised_topology: Arc<Mutex<Option<PipelineTopology>>>,
     transport: Option<Arc<ForgeTransport>>,
     cluster: Option<Arc<ClusterManager>>,
+    /// Shared gossip state — used by both the HTTP API (to broadcast loans
+    /// and trades from endpoint handlers) and the pipeline coordinator (to
+    /// broadcast trades completed during inference). Must be a single
+    /// instance so dedup across both paths is coherent.
+    gossip: Arc<Mutex<GossipState>>,
 }
 
 impl ForgeNode {
@@ -47,6 +52,7 @@ impl ForgeNode {
             advertised_topology: Arc::new(Mutex::new(None)),
             transport: None,
             cluster: None,
+            gossip: Arc::new(Mutex::new(GossipState::new())),
         }
     }
 
@@ -89,6 +95,7 @@ impl ForgeNode {
             self.model_manifest.clone(),
             self.advertised_topology.clone(),
             self.cluster.clone(),
+            self.gossip.clone(),
         );
         let addr = self.config.api_socket_addr();
         tracing::info!("API server listening on {}", addr);
@@ -142,6 +149,7 @@ impl ForgeNode {
         let manifest_api = self.model_manifest.clone();
         let topology_api = self.advertised_topology.clone();
         let cluster_api = self.cluster.clone();
+        let gossip_api = self.gossip.clone();
         let api_config = self.config.clone();
         tokio::spawn(async move {
             let app = crate::api::create_router(
@@ -151,6 +159,7 @@ impl ForgeNode {
                 manifest_api,
                 topology_api,
                 cluster_api,
+                gossip_api,
             );
             let addr = api_config.api_socket_addr();
             if let Ok(listener) = tokio::net::TcpListener::bind(&addr).await {
@@ -170,6 +179,7 @@ impl ForgeNode {
                 self.cluster.clone(),
                 self.config.clone(),
                 self.config.ledger_path.clone(),
+                self.gossip.clone(),
             )
             .await
             .map_err(|e| forge_core::ForgeError::NetworkError(format!("seed: {e}")))?;

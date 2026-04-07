@@ -44,6 +44,12 @@ pub enum Payload {
     TradeAccept(TradeAccept),
     /// Gossip: broadcast a dual-signed trade to the mesh.
     TradeGossip(TradeGossip),
+    /// Lender proposes a loan to a borrower, pre-signed.
+    LoanProposal(LoanProposal),
+    /// Borrower accepts the loan with counter-signature.
+    LoanAccept(LoanAccept),
+    /// Gossip: broadcast a dual-signed loan to the mesh.
+    LoanGossip(LoanGossip),
 }
 
 // --- Discovery & Handshake ---
@@ -253,6 +259,54 @@ pub struct TradeGossip {
     pub consumer_sig: Vec<u8>,
 }
 
+// --- Loan Signing (CU Lending — Phase 5.5) ---
+
+/// Loan proposal from lender to borrower.
+///
+/// Lender pre-signs the canonical bytes; borrower verifies terms and
+/// counter-signs via `LoanAccept`. Mirrors `TradeProposal`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct LoanProposal {
+    /// Correlates proposal and accept messages.
+    pub request_id: u64,
+    pub lender: NodeId,
+    pub borrower: NodeId,
+    pub principal_cu: u64,
+    pub interest_rate_per_hour: f64,
+    pub term_hours: u64,
+    pub collateral_cu: u64,
+    pub created_at: u64,
+    pub due_at: u64,
+    /// Ed25519 signature by lender over canonical loan bytes.
+    pub lender_sig: Vec<u8>,
+}
+
+/// Borrower's acceptance and counter-signature for a `LoanProposal`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct LoanAccept {
+    pub request_id: u64,
+    /// Ed25519 signature by borrower over the same canonical loan bytes.
+    pub borrower_sig: Vec<u8>,
+}
+
+/// Fully dual-signed loan record broadcast to the mesh.
+///
+/// This is the wire representation of `SignedLoanRecord` used by the gossip
+/// protocol (see `forge-net::gossip::broadcast_loan`).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct LoanGossip {
+    pub lender: NodeId,
+    pub borrower: NodeId,
+    pub principal_cu: u64,
+    pub interest_rate_per_hour: f64,
+    pub term_hours: u64,
+    pub collateral_cu: u64,
+    pub created_at: u64,
+    pub due_at: u64,
+    pub lender_sig: Vec<u8>,
+    pub borrower_sig: Vec<u8>,
+}
+
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum ProtocolValidationError {
     #[error("sender mismatch: expected {expected}, got {actual}")]
@@ -289,6 +343,8 @@ pub enum ProtocolValidationError {
     ReasonTooLarge { chars: usize, limit: usize },
     #[error("rpc port must be unprivileged and non-zero")]
     InvalidRpcPort,
+    #[error("invalid loan field {field}: {reason}")]
+    InvalidLoanField { field: String, reason: String },
 }
 
 impl Envelope {
@@ -458,6 +514,64 @@ impl Payload {
                 }
                 Ok(())
             }
+            Payload::LoanProposal(p) => {
+                // Lender must be the sender (they initiated).
+                if p.lender != *sender {
+                    return Err(ProtocolValidationError::SenderMismatch {
+                        expected: sender.to_hex(),
+                        actual: p.lender.to_hex(),
+                    });
+                }
+                if p.principal_cu == 0 {
+                    return Err(ProtocolValidationError::InvalidLoanField {
+                        field: "principal_cu".into(),
+                        reason: "must be non-zero".into(),
+                    });
+                }
+                if p.term_hours == 0 {
+                    return Err(ProtocolValidationError::InvalidLoanField {
+                        field: "term_hours".into(),
+                        reason: "must be non-zero".into(),
+                    });
+                }
+                if p.lender_sig.len() != 64 {
+                    return Err(ProtocolValidationError::InvalidLoanField {
+                        field: "lender_sig".into(),
+                        reason: "must be 64 bytes (Ed25519)".into(),
+                    });
+                }
+                Ok(())
+            }
+            Payload::LoanAccept(a) => {
+                if a.borrower_sig.len() != 64 {
+                    return Err(ProtocolValidationError::InvalidLoanField {
+                        field: "borrower_sig".into(),
+                        reason: "must be 64 bytes (Ed25519)".into(),
+                    });
+                }
+                Ok(())
+            }
+            Payload::LoanGossip(g) => {
+                if g.lender_sig.len() != 64 {
+                    return Err(ProtocolValidationError::InvalidLoanField {
+                        field: "lender_sig".into(),
+                        reason: "must be 64 bytes (Ed25519)".into(),
+                    });
+                }
+                if g.borrower_sig.len() != 64 {
+                    return Err(ProtocolValidationError::InvalidLoanField {
+                        field: "borrower_sig".into(),
+                        reason: "must be 64 bytes (Ed25519)".into(),
+                    });
+                }
+                if g.principal_cu == 0 {
+                    return Err(ProtocolValidationError::InvalidLoanField {
+                        field: "principal_cu".into(),
+                        reason: "must be non-zero".into(),
+                    });
+                }
+                Ok(())
+            }
         }
     }
 }
@@ -498,5 +612,78 @@ mod serde_bytes {
     {
         let bytes: Vec<u8> = Deserialize::deserialize(deserializer)?;
         Ok(bytes)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn loan_proposal_round_trips_via_bincode() {
+        let msg = LoanProposal {
+            request_id: 42,
+            lender: NodeId([1u8; 32]),
+            borrower: NodeId([2u8; 32]),
+            principal_cu: 1_000,
+            interest_rate_per_hour: 0.001,
+            term_hours: 72,
+            collateral_cu: 3_000,
+            created_at: 1_700_000_000_000,
+            due_at: 1_700_000_000_000 + 72 * 3_600_000,
+            lender_sig: vec![0u8; 64],
+        };
+        let bytes = bincode::serialize(&msg).unwrap();
+        let back: LoanProposal = bincode::deserialize(&bytes).unwrap();
+        assert_eq!(msg, back);
+    }
+
+    #[test]
+    fn loan_accept_round_trips() {
+        let msg = LoanAccept {
+            request_id: 42,
+            borrower_sig: vec![1u8; 64],
+        };
+        let bytes = bincode::serialize(&msg).unwrap();
+        let back: LoanAccept = bincode::deserialize(&bytes).unwrap();
+        assert_eq!(msg, back);
+    }
+
+    #[test]
+    fn loan_gossip_round_trips() {
+        let msg = LoanGossip {
+            lender: NodeId([5u8; 32]),
+            borrower: NodeId([6u8; 32]),
+            principal_cu: 5_000,
+            interest_rate_per_hour: 0.002,
+            term_hours: 48,
+            collateral_cu: 15_000,
+            created_at: 1,
+            due_at: 1 + 48 * 3_600_000,
+            lender_sig: vec![2u8; 64],
+            borrower_sig: vec![3u8; 64],
+        };
+        let bytes = bincode::serialize(&msg).unwrap();
+        let back: LoanGossip = bincode::deserialize(&bytes).unwrap();
+        assert_eq!(msg, back);
+    }
+
+    #[test]
+    fn loan_proposal_validation_rejects_zero_principal() {
+        let p = LoanProposal {
+            request_id: 1,
+            lender: NodeId([1u8; 32]),
+            borrower: NodeId([2u8; 32]),
+            principal_cu: 0,
+            interest_rate_per_hour: 0.001,
+            term_hours: 24,
+            collateral_cu: 100,
+            created_at: 0,
+            due_at: 24 * 3_600_000,
+            lender_sig: vec![0u8; 64],
+        };
+        let payload = Payload::LoanProposal(p);
+        let err = payload.validate_with_sender(&NodeId([1u8; 32]));
+        assert!(err.is_err());
     }
 }

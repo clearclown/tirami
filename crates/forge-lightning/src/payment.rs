@@ -151,6 +151,151 @@ pub fn create_settlement_invoice(
     })
 }
 
+// ---------------------------------------------------------------------------
+// BTC → CU deposit flow (Phase 5.5/6)
+// ---------------------------------------------------------------------------
+
+/// Default exchange rate: 10 millisats per CU.
+/// Matches forge-economics/spec/parameters.md cloud API anchor and the
+/// default on [`ExchangeRate`].
+pub const DEFAULT_MSATS_PER_CU: u64 = 10;
+
+/// Errors that can arise while creating or settling a CU deposit.
+#[derive(Debug, Clone)]
+pub enum LightningError {
+    /// The requested CU amount was zero.
+    ZeroAmount,
+    /// The exchange rate was zero (would make the invoice free).
+    ZeroRate,
+    /// Amount calculation overflowed u64.
+    Overflow,
+    /// Underlying Lightning backend failed.
+    Backend(String),
+}
+
+impl std::fmt::Display for LightningError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            LightningError::ZeroAmount => write!(f, "cu_amount must be greater than zero"),
+            LightningError::ZeroRate => write!(f, "msats_per_cu must be greater than zero"),
+            LightningError::Overflow => write!(f, "invoice amount overflowed u64"),
+            LightningError::Backend(msg) => write!(f, "lightning backend error: {}", msg),
+        }
+    }
+}
+
+impl std::error::Error for LightningError {}
+
+/// Record of a CU deposit created by paying a Lightning invoice.
+///
+/// When a human or agent wants to credit CU to a Forge node, they request
+/// a Lightning invoice denominated in msats; upon payment, the corresponding
+/// CU amount is credited to the recipient's balance.
+#[derive(Debug, Clone)]
+pub struct CuDeposit {
+    /// Recipient node that will be credited.
+    pub recipient: forge_core::NodeId,
+    /// Amount of CU to credit upon successful payment.
+    pub cu_amount: u64,
+    /// Millisats paid for this deposit.
+    pub msats: u64,
+    /// Exchange rate used: msats per CU.
+    pub msats_per_cu: u64,
+    /// BOLT11 invoice for the human/agent to pay.
+    pub invoice: String,
+    /// When the deposit request was created (milliseconds since epoch).
+    pub created_at: u64,
+    /// Whether payment has been confirmed and CU credited.
+    pub settled: bool,
+}
+
+/// Bidirectional exchange rate summary for display.
+#[derive(Debug, Clone)]
+pub struct ExchangeRateSummary {
+    pub msats_per_cu: u64,
+    pub cu_per_btc: u64,
+}
+
+/// Convert CU to millisats using the default rate.
+pub fn cu_to_msats(cu: u64) -> u64 {
+    cu.saturating_mul(DEFAULT_MSATS_PER_CU)
+}
+
+/// Convert millisats to CU using the default rate.
+pub fn msats_to_cu(msats: u64) -> u64 {
+    msats / DEFAULT_MSATS_PER_CU
+}
+
+/// Compute a bidirectional exchange rate summary for display.
+pub fn exchange_rate_summary() -> ExchangeRateSummary {
+    ExchangeRateSummary {
+        msats_per_cu: DEFAULT_MSATS_PER_CU,
+        // 1 BTC = 100_000_000 sats = 100_000_000_000 msats.
+        cu_per_btc: 100_000_000_000 / DEFAULT_MSATS_PER_CU,
+    }
+}
+
+/// Current unix time in milliseconds, or 0 if the clock is before the epoch.
+fn now_millis() -> u64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// Create a CU deposit request. Generates a Lightning invoice that, when
+/// paid, will credit `cu_amount` to the `recipient` node's balance.
+///
+/// This is the "BTC → CU" direction of the bridge. The counterpart is the
+/// existing settlement-invoice flow (for CU → BTC cash-out).
+///
+/// The caller is responsible for transmitting the invoice to the payer and
+/// for invoking [`credit_from_invoice`] once payment is confirmed (via the
+/// Lightning node's `payment_received` callback). The returned BOLT11 string
+/// is a placeholder in this stubbed bridge; the production implementation
+/// will delegate to an ldk-node instance.
+pub fn create_deposit(
+    recipient: forge_core::NodeId,
+    cu_amount: u64,
+    msats_per_cu: Option<u64>,
+) -> Result<CuDeposit, LightningError> {
+    if cu_amount == 0 {
+        return Err(LightningError::ZeroAmount);
+    }
+    let rate = msats_per_cu.unwrap_or(DEFAULT_MSATS_PER_CU);
+    if rate == 0 {
+        return Err(LightningError::ZeroRate);
+    }
+    let msats = cu_amount
+        .checked_mul(rate)
+        .ok_or(LightningError::Overflow)?;
+
+    // Placeholder BOLT11 invoice. The real bridge will call into ldk-node.
+    let invoice = format!("lnbc_deposit_placeholder_{}cu", cu_amount);
+
+    Ok(CuDeposit {
+        recipient,
+        cu_amount,
+        msats,
+        msats_per_cu: rate,
+        invoice,
+        created_at: now_millis(),
+        settled: false,
+    })
+}
+
+/// Mark a deposit as settled. Should be called when the Lightning node
+/// confirms that the invoice has been paid.
+///
+/// Returns the CU amount that should be credited to the recipient.
+/// Caller (forge-node daemon) is responsible for calling
+/// `ComputeLedger::credit_from_bridge(recipient, cu_amount)`.
+pub fn credit_from_invoice(deposit: &mut CuDeposit) -> u64 {
+    deposit.settled = true;
+    deposit.cu_amount
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -168,5 +313,47 @@ mod tests {
         let summary = PricingSummary::from_rate(1.0, &rate, Some(100_000.0));
         assert!((summary.sats_per_token - 0.01).abs() < 1e-6);
         assert!(summary.usd_per_token.unwrap() < 0.001);
+    }
+
+    #[test]
+    fn cu_to_msats_round_trips_at_default_rate() {
+        assert_eq!(cu_to_msats(1_000), 10_000);
+        assert_eq!(msats_to_cu(10_000), 1_000);
+    }
+
+    #[test]
+    fn create_deposit_builds_invoice() {
+        let recipient = forge_core::NodeId([1u8; 32]);
+        let deposit = create_deposit(recipient.clone(), 5_000, None).expect("deposit");
+        assert_eq!(deposit.recipient, recipient);
+        assert_eq!(deposit.cu_amount, 5_000);
+        assert_eq!(deposit.msats, 50_000);
+        assert_eq!(deposit.msats_per_cu, DEFAULT_MSATS_PER_CU);
+        assert!(!deposit.settled);
+        assert!(!deposit.invoice.is_empty());
+    }
+
+    #[test]
+    fn credit_from_invoice_marks_settled_and_returns_amount() {
+        let recipient = forge_core::NodeId([2u8; 32]);
+        let mut deposit = create_deposit(recipient, 2_500, None).expect("deposit");
+        let cu = credit_from_invoice(&mut deposit);
+        assert_eq!(cu, 2_500);
+        assert!(deposit.settled);
+    }
+
+    #[test]
+    fn exchange_rate_summary_is_consistent() {
+        let summary = exchange_rate_summary();
+        assert_eq!(summary.msats_per_cu, DEFAULT_MSATS_PER_CU);
+        assert_eq!(summary.cu_per_btc, 10_000_000_000);
+    }
+
+    #[test]
+    fn create_deposit_with_custom_rate() {
+        let recipient = forge_core::NodeId([3u8; 32]);
+        let deposit = create_deposit(recipient, 1_000, Some(20)).expect("deposit");
+        assert_eq!(deposit.msats, 20_000);
+        assert_eq!(deposit.msats_per_cu, 20);
     }
 }

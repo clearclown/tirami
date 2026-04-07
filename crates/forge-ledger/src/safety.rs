@@ -150,6 +150,86 @@ impl VelocityWindow {
     }
 }
 
+/// Global lending circuit breaker.
+///
+/// Trips when the default rate in the last hour exceeds
+/// `DEFAULT_CIRCUIT_BREAKER_THRESHOLD` (10%) or when the new-loan velocity
+/// exceeds `MAX_LENDING_VELOCITY` (10 loans/min).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct LendingCircuitState {
+    /// Timestamps (ms) of recently created loans for velocity window.
+    recent_loans: Vec<u64>,
+    /// (timestamp_ms, defaulted) entries for hourly default-rate window.
+    recent_defaults: Vec<(u64, bool)>,
+    tripped: bool,
+    tripped_at: Option<u64>,
+    trip_reason: Option<String>,
+}
+
+impl LendingCircuitState {
+    const VELOCITY_WINDOW_MS: u64 = 60_000; // 1 minute
+    const DEFAULT_WINDOW_MS: u64 = 3_600_000; // 1 hour
+    const RESET_AFTER_MS: u64 = 300_000; // 5 minutes after trip
+
+    pub fn record_loan(&mut self, now_ms: u64) {
+        self.recent_loans.push(now_ms);
+        self.prune_loans(now_ms);
+    }
+
+    pub fn record_loan_outcome(&mut self, now_ms: u64, defaulted: bool) {
+        self.recent_defaults.push((now_ms, defaulted));
+        self.prune_defaults(now_ms);
+    }
+
+    fn prune_loans(&mut self, now_ms: u64) {
+        self.recent_loans
+            .retain(|t| now_ms.saturating_sub(*t) <= Self::VELOCITY_WINDOW_MS);
+    }
+
+    fn prune_defaults(&mut self, now_ms: u64) {
+        self.recent_defaults
+            .retain(|(t, _)| now_ms.saturating_sub(*t) <= Self::DEFAULT_WINDOW_MS);
+    }
+
+    /// Number of loans created in the last minute.
+    pub fn velocity(&mut self, now_ms: u64) -> usize {
+        self.prune_loans(now_ms);
+        self.recent_loans.len()
+    }
+
+    /// Default rate in the last hour (0.0 to 1.0).
+    pub fn default_rate(&mut self, now_ms: u64) -> f64 {
+        self.prune_defaults(now_ms);
+        let total = self.recent_defaults.len();
+        if total == 0 {
+            return 0.0;
+        }
+        let defaults = self.recent_defaults.iter().filter(|(_, d)| *d).count();
+        defaults as f64 / total as f64
+    }
+
+    /// Check if tripped; auto-reset after RESET_AFTER_MS.
+    pub fn is_tripped(&mut self, now_ms: u64) -> bool {
+        if self.tripped {
+            if let Some(ts) = self.tripped_at {
+                if now_ms.saturating_sub(ts) >= Self::RESET_AFTER_MS {
+                    self.tripped = false;
+                    self.tripped_at = None;
+                    self.trip_reason = None;
+                }
+            }
+        }
+        self.tripped
+    }
+
+    pub fn trip(&mut self, now_ms: u64, reason: &str) {
+        self.tripped = true;
+        self.tripped_at = Some(now_ms);
+        self.trip_reason = Some(reason.to_string());
+        tracing::error!("LENDING CIRCUIT BREAKER TRIPPED: {}", reason);
+    }
+}
+
 /// The safety controller — coordinates all safety mechanisms.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SafetyController {
@@ -160,6 +240,8 @@ pub struct SafetyController {
     #[serde(skip)]
     velocity: HashMap<NodeId, VelocityWindow>,
     policies: HashMap<String, BudgetPolicy>, // node_id hex → policy
+    #[serde(default)]
+    lending: LendingCircuitState,
 }
 
 impl Default for SafetyController {
@@ -176,6 +258,7 @@ impl SafetyController {
             circuits: HashMap::new(),
             velocity: HashMap::new(),
             policies: HashMap::new(),
+            lending: LendingCircuitState::default(),
         }
     }
 
@@ -323,6 +406,124 @@ impl SafetyController {
             policy: self.policy_for(node_id).clone(),
         }
     }
+
+    /// Validate that a new loan can be created given current lending state.
+    ///
+    /// Returns `Ok(())` if the loan is permitted, `Err(LoanDenied)` otherwise.
+    ///
+    /// Parameters:
+    /// * `principal_cu` — amount being lent
+    /// * `collateral_cu` — collateral locked from borrower
+    /// * `term_hours` — loan duration
+    /// * `borrower_credit` — computed credit score (0.0-1.0)
+    /// * `pool_total_cu` — total CU in lending pool
+    /// * `pool_available_cu` — CU currently unlent
+    pub fn check_loan_creation(
+        &mut self,
+        principal_cu: u64,
+        collateral_cu: u64,
+        term_hours: u64,
+        borrower_credit: f64,
+        pool_total_cu: u64,
+        pool_available_cu: u64,
+    ) -> Result<(), LoanDenied> {
+        use crate::lending::{
+            DEFAULT_CIRCUIT_BREAKER_THRESHOLD, MAX_LENDING_VELOCITY, MAX_LOAN_TERM_HOURS,
+            MAX_LTV_RATIO, MAX_SINGLE_LOAN_POOL_PCT, MIN_CREDIT_FOR_BORROWING, MIN_RESERVE_RATIO,
+        };
+
+        let now_ms = now_millis();
+
+        // Gate 1: kill switch
+        if self.kill_switch.active {
+            return Err(LoanDenied::KillSwitchActive);
+        }
+
+        // Gate 2: global default-rate circuit breaker
+        if self.lending.is_tripped(now_ms) {
+            return Err(LoanDenied::DefaultRateCircuitTripped);
+        }
+        let default_rate = self.lending.default_rate(now_ms);
+        if default_rate > DEFAULT_CIRCUIT_BREAKER_THRESHOLD {
+            self.lending
+                .trip(now_ms, "default rate exceeded threshold");
+            return Err(LoanDenied::DefaultRateCircuitTripped);
+        }
+
+        // Gate 3: velocity limit (10 new loans / minute)
+        let velocity = self.lending.velocity(now_ms);
+        if velocity >= MAX_LENDING_VELOCITY {
+            return Err(LoanDenied::VelocityLimitExceeded);
+        }
+
+        // Gate 4: borrower credit
+        if borrower_credit < MIN_CREDIT_FOR_BORROWING {
+            return Err(LoanDenied::InsufficientCredit {
+                score: borrower_credit,
+                minimum: MIN_CREDIT_FOR_BORROWING,
+            });
+        }
+
+        // Gate 5: loan-to-collateral ratio
+        if collateral_cu == 0 {
+            return Err(LoanDenied::ExcessiveLtv {
+                ratio: f64::INFINITY,
+                maximum: MAX_LTV_RATIO,
+            });
+        }
+        let ltv = principal_cu as f64 / collateral_cu as f64;
+        if ltv > MAX_LTV_RATIO {
+            return Err(LoanDenied::ExcessiveLtv {
+                ratio: ltv,
+                maximum: MAX_LTV_RATIO,
+            });
+        }
+
+        // Gate 6: term
+        if term_hours > MAX_LOAN_TERM_HOURS {
+            return Err(LoanDenied::ExcessiveTerm {
+                hours: term_hours,
+                maximum: MAX_LOAN_TERM_HOURS,
+            });
+        }
+
+        // Gate 7: single-loan pool cap
+        let max_single = (pool_total_cu as f64 * MAX_SINGLE_LOAN_POOL_PCT) as u64;
+        if principal_cu > max_single {
+            return Err(LoanDenied::SingleLoanExceedsPool {
+                amount: principal_cu,
+                maximum: max_single,
+            });
+        }
+
+        // Gate 8: reserve ratio would be violated
+        let reserved_after = pool_available_cu.saturating_sub(principal_cu);
+        let ratio_after = if pool_total_cu == 0 {
+            1.0
+        } else {
+            reserved_after as f64 / pool_total_cu as f64
+        };
+        if ratio_after < MIN_RESERVE_RATIO {
+            return Err(LoanDenied::PoolReserveViolation {
+                after_ratio: ratio_after,
+                minimum: MIN_RESERVE_RATIO,
+            });
+        }
+
+        Ok(())
+    }
+
+    /// Record that a new loan was successfully created (updates velocity window).
+    pub fn record_loan_created(&mut self) {
+        let now_ms = now_millis();
+        self.lending.record_loan(now_ms);
+    }
+
+    /// Record the outcome of a loan (repaid or defaulted) for default-rate tracking.
+    pub fn record_loan_outcome(&mut self, defaulted: bool) {
+        let now_ms = now_millis();
+        self.lending.record_loan_outcome(now_ms, defaulted);
+    }
 }
 
 /// Why a spend was denied.
@@ -342,6 +543,19 @@ pub enum SpendDenied {
     VelocityAnomaly { spends_per_minute: u32 },
     #[error("human approval required: {amount} CU exceeds threshold {threshold} CU")]
     HumanApprovalRequired { amount: u64, threshold: u64 },
+}
+
+/// Reasons why a loan may be denied by the safety layer.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum LoanDenied {
+    KillSwitchActive,
+    InsufficientCredit { score: f64, minimum: f64 },
+    ExcessiveLtv { ratio: f64, maximum: f64 },
+    ExcessiveTerm { hours: u64, maximum: u64 },
+    SingleLoanExceedsPool { amount: u64, maximum: u64 },
+    PoolReserveViolation { after_ratio: f64, minimum: f64 },
+    VelocityLimitExceeded,
+    DefaultRateCircuitTripped,
 }
 
 /// Snapshot of safety status for a node.
@@ -494,6 +708,96 @@ mod tests {
         assert!(matches!(
             result.unwrap_err(),
             SpendDenied::LifetimeCapReached { .. }
+        ));
+    }
+
+    #[test]
+    fn loan_denied_when_kill_switch_active() {
+        let mut safety = SafetyController::new();
+        safety.kill_switch.activate("test", "admin");
+        let result = safety.check_loan_creation(1_000, 3_000, 24, 0.5, 1_000_000, 1_000_000);
+        assert!(matches!(result, Err(LoanDenied::KillSwitchActive)));
+    }
+
+    #[test]
+    fn loan_denied_for_low_credit() {
+        let mut safety = SafetyController::new();
+        let result = safety.check_loan_creation(1_000, 3_000, 24, 0.1, 1_000_000, 1_000_000);
+        assert!(matches!(result, Err(LoanDenied::InsufficientCredit { .. })));
+    }
+
+    #[test]
+    fn loan_denied_for_excessive_ltv() {
+        let mut safety = SafetyController::new();
+        // principal 10_000 / collateral 1_000 = 10.0 ratio >> 3.0
+        let result = safety.check_loan_creation(10_000, 1_000, 24, 0.9, 10_000_000, 10_000_000);
+        assert!(matches!(result, Err(LoanDenied::ExcessiveLtv { .. })));
+    }
+
+    #[test]
+    fn loan_denied_for_excessive_term() {
+        let mut safety = SafetyController::new();
+        // 200 hours > MAX_LOAN_TERM_HOURS (168)
+        let result = safety.check_loan_creation(1_000, 3_000, 200, 0.9, 10_000_000, 10_000_000);
+        assert!(matches!(result, Err(LoanDenied::ExcessiveTerm { .. })));
+    }
+
+    #[test]
+    fn loan_denied_when_single_loan_exceeds_pool_cap() {
+        let mut safety = SafetyController::new();
+        // 25% of 1_000_000 pool = 250_000, above 20% cap (200_000)
+        let result = safety.check_loan_creation(250_000, 750_000, 24, 0.9, 1_000_000, 1_000_000);
+        assert!(matches!(
+            result,
+            Err(LoanDenied::SingleLoanExceedsPool { .. })
+        ));
+    }
+
+    #[test]
+    fn loan_denied_when_reserve_ratio_would_fall_below_30pct() {
+        let mut safety = SafetyController::new();
+        // pool 1_000_000, available 400_000 (60% already lent)
+        // lending 150_000 more would leave 250_000 available = 25% < 30%
+        // but first, 150_000 < 20% cap (200_000), so reserve is the only gate
+        let result = safety.check_loan_creation(150_000, 450_000, 24, 0.9, 1_000_000, 400_000);
+        assert!(matches!(
+            result,
+            Err(LoanDenied::PoolReserveViolation { .. })
+        ));
+    }
+
+    #[test]
+    fn loan_permitted_under_all_constraints() {
+        let mut safety = SafetyController::new();
+        let result = safety.check_loan_creation(10_000, 30_000, 24, 0.7, 1_000_000, 1_000_000);
+        assert!(result.is_ok(), "loan should be permitted: {:?}", result);
+    }
+
+    #[test]
+    fn velocity_limit_trips_after_many_loans() {
+        let mut safety = SafetyController::new();
+        // Create 10 loans rapidly — 11th should fail
+        for _ in 0..10 {
+            safety.record_loan_created();
+        }
+        let result = safety.check_loan_creation(1_000, 3_000, 24, 0.9, 10_000_000, 10_000_000);
+        assert!(matches!(result, Err(LoanDenied::VelocityLimitExceeded)));
+    }
+
+    #[test]
+    fn default_rate_tracking_works() {
+        let mut safety = SafetyController::new();
+        // 9 repaid, 2 defaulted = 2/11 = 18% > 10% threshold
+        for _ in 0..9 {
+            safety.record_loan_outcome(false);
+        }
+        for _ in 0..2 {
+            safety.record_loan_outcome(true);
+        }
+        let result = safety.check_loan_creation(1_000, 3_000, 24, 0.9, 10_000_000, 10_000_000);
+        assert!(matches!(
+            result,
+            Err(LoanDenied::DefaultRateCircuitTripped)
         ));
     }
 }

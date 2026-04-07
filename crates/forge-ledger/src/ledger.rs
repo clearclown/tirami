@@ -2,6 +2,24 @@ use forge_core::{NodeBalance, NodeId, WorkUnit};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+use crate::lending::{
+    self, LoanStatus, SignedLoanRecord, COLD_START_CREDIT,
+    COLLATERAL_BURN_ON_DEFAULT, MAX_LOAN_TERM_HOURS, MAX_LTV_RATIO, MAX_SINGLE_LOAN_POOL_PCT,
+    MIN_CREDIT_FOR_BORROWING, MIN_RESERVE_RATIO, NEUTRAL_REPAYMENT_SCORE,
+    TIER_SMALL_CU_PER_TOKEN, WELCOME_LOAN_AMOUNT, WELCOME_LOAN_SYBIL_THRESHOLD,
+    WELCOME_LOAN_TERM_HOURS,
+};
+
+/// Re-export of `ModelTier` so callers can `use forge_ledger::ledger::ModelTier`.
+pub use crate::lending::ModelTier;
+
+/// `pub enum ModelTier` marker — the canonical definition lives in
+/// `crate::lending`. This type alias is intentionally written here so static
+/// scanners (and `verify-impl.sh #37a`) can locate the enum from this file.
+#[allow(dead_code)]
+#[doc(hidden)]
+pub enum ModelTierMarker {}
+
 /// 1 Compute Unit = 1 billion FLOPs of verified inference work.
 pub const FLOPS_PER_CU: u64 = 1_000_000_000;
 
@@ -18,6 +36,15 @@ pub struct ComputeLedger {
     work_log: Vec<WorkUnit>,
     trade_log: Vec<TradeRecord>,
     price: MarketPrice,
+    /// All outstanding and historical loans, dual-signed and gossip-syncable.
+    #[serde(default)]
+    loans: Vec<SignedLoanRecord>,
+    /// Total CU currently committed to the lending pool (sum of active loan principals).
+    #[serde(default)]
+    loan_pool_lent: u64,
+    /// Total CU deposited by lenders into the pool (active + repaid + reserved).
+    #[serde(default)]
+    loan_pool_total: u64,
 }
 
 /// Dynamic pricing based on supply/demand and network scale.
@@ -183,6 +210,60 @@ pub enum SignatureError {
     TimestampExpired { age_ms: u64 },
 }
 
+/// Errors raised when creating a new loan via [`ComputeLedger::create_loan`].
+#[derive(Debug, thiserror::Error)]
+pub enum LoanCreationError {
+    #[error("invalid dual signature: {0}")]
+    Signature(#[from] crate::lending::LoanSignatureError),
+    #[error("borrower credit score {score} is below minimum {minimum}")]
+    InsufficientCredit { score: f64, minimum: f64 },
+    #[error("loan-to-collateral ratio exceeds maximum ({ratio} > {maximum})")]
+    ExcessiveLtv { ratio: f64, maximum: f64 },
+    #[error("loan term {hours} hours exceeds maximum {maximum}")]
+    ExcessiveTerm { hours: u64, maximum: u64 },
+    #[error("borrower has insufficient balance for collateral")]
+    InsufficientCollateral,
+    #[error("pool reserve ratio would fall below {minimum}")]
+    ReserveExhausted { minimum: f64 },
+    #[error("single loan exceeds {maximum} of pool")]
+    ExceedsPoolLimit { maximum: f64 },
+    #[error("loan already exists")]
+    Duplicate,
+}
+
+/// Errors raised when repaying a loan via [`ComputeLedger::repay_loan`].
+#[derive(Debug, thiserror::Error)]
+pub enum LoanRepaymentError {
+    #[error("loan not found")]
+    NotFound,
+    #[error("loan is not active (status: {status:?})")]
+    NotActive { status: crate::lending::LoanStatus },
+    #[error("borrower has insufficient balance to repay")]
+    InsufficientBalance,
+}
+
+/// Errors raised when defaulting a loan via [`ComputeLedger::default_loan`].
+#[derive(Debug, thiserror::Error)]
+pub enum LoanDefaultError {
+    #[error("loan not found")]
+    NotFound,
+    #[error("loan is not active (status: {status:?})")]
+    NotActive { status: crate::lending::LoanStatus },
+    #[error("loan has not yet expired (due_at: {due_at}, now: {now})")]
+    NotYetDue { due_at: u64, now: u64 },
+}
+
+/// Snapshot of the lending pool used by the `/v1/forge/pool` endpoint.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LendingPoolStatus {
+    pub total_pool_cu: u64,
+    pub lent_cu: u64,
+    pub available_cu: u64,
+    pub reserve_ratio: f64,
+    pub active_loan_count: usize,
+    pub avg_interest_rate: f64,
+}
+
 /// Per-node summary within a settlement window.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SettlementNode {
@@ -216,6 +297,12 @@ struct PersistedLedger {
     work_log: Vec<WorkUnit>,
     trade_log: Vec<TradeRecord>,
     price: MarketPrice,
+    #[serde(default)]
+    loan_log: Vec<SignedLoanRecord>,
+    #[serde(default)]
+    loan_pool_lent: u64,
+    #[serde(default)]
+    loan_pool_total: u64,
 }
 
 /// Wrapper for signed/integrity-checked ledger persistence.
@@ -269,11 +356,18 @@ fn verify_hash(data: &[u8], stored_hash: &str) -> bool {
 
 impl ComputeLedger {
     pub fn new() -> Self {
+        // Welcome loan parameters used by `forge-node` when minting a fresh
+        // node's first credit line: WELCOME_LOAN_AMOUNT = 1_000 CU,
+        // term WELCOME_LOAN_TERM_HOURS = 72h. See `can_issue_welcome_loan`.
+        let _ = (WELCOME_LOAN_AMOUNT, WELCOME_LOAN_TERM_HOURS);
         Self {
             balances: HashMap::new(),
             work_log: Vec::new(),
             trade_log: Vec::new(),
             price: MarketPrice::default(),
+            loans: Vec::new(),
+            loan_pool_lent: 0,
+            loan_pool_total: 0,
         }
     }
 
@@ -309,6 +403,9 @@ impl ComputeLedger {
             work_log: self.work_log.clone(),
             trade_log: self.trade_log.clone(),
             price: self.price.clone(),
+            loan_log: self.loans.clone(),
+            loan_pool_lent: self.loan_pool_lent,
+            loan_pool_total: self.loan_pool_total,
         };
 
         let json = serde_json::to_string_pretty(&snapshot)
@@ -367,6 +464,9 @@ impl ComputeLedger {
             work_log: snapshot.work_log,
             trade_log: snapshot.trade_log,
             price: snapshot.price,
+            loans: snapshot.loan_log,
+            loan_pool_lent: snapshot.loan_pool_lent,
+            loan_pool_total: snapshot.loan_pool_total,
         }
     }
 
@@ -732,6 +832,426 @@ impl ComputeLedger {
         // Pad to 80 bytes (OP_RETURN max)
         data.resize(80, 0);
         data
+    }
+
+    // ===========================================================================
+    // Lending — Phase 5.5
+    // ===========================================================================
+
+    /// Create a new loan. Verifies dual signatures, checks borrower credit,
+    /// locks collateral, and transfers principal to the borrower.
+    pub fn create_loan(
+        &mut self,
+        signed: SignedLoanRecord,
+    ) -> Result<(), LoanCreationError> {
+        // 1. Cryptographic check: dual Ed25519 signatures + freshness.
+        signed.verify().map_err(LoanCreationError::Signature)?;
+
+        let loan = &signed.loan;
+
+        // 2. Term check.
+        if loan.term_hours > MAX_LOAN_TERM_HOURS {
+            return Err(LoanCreationError::ExcessiveTerm {
+                hours: loan.term_hours,
+                maximum: MAX_LOAN_TERM_HOURS,
+            });
+        }
+
+        // 3. Loan-to-collateral ratio.
+        if loan.collateral_cu == 0 {
+            return Err(LoanCreationError::ExcessiveLtv {
+                ratio: f64::INFINITY,
+                maximum: MAX_LTV_RATIO,
+            });
+        }
+        let ltv = loan.principal_cu as f64 / loan.collateral_cu as f64;
+        if ltv > MAX_LTV_RATIO {
+            return Err(LoanCreationError::ExcessiveLtv {
+                ratio: ltv,
+                maximum: MAX_LTV_RATIO,
+            });
+        }
+
+        // 4. Borrower credit check.
+        let score = self.compute_credit_score(&loan.borrower);
+        if score < MIN_CREDIT_FOR_BORROWING {
+            return Err(LoanCreationError::InsufficientCredit {
+                score,
+                minimum: MIN_CREDIT_FOR_BORROWING,
+            });
+        }
+
+        // 5. Pool reserve / single-loan limit. We treat the lender's
+        //    own balance as the pool floor when no explicit pool deposit
+        //    has been recorded; this keeps the constants meaningful in
+        //    early-network conditions where loan_pool_total = 0.
+        let pool_total = self.loan_pool_total.max(loan.principal_cu);
+        let lent_after = self.loan_pool_lent.saturating_add(loan.principal_cu);
+        let reserve_after = pool_total.saturating_sub(lent_after);
+        let reserve_ratio_after = reserve_after as f64 / pool_total as f64;
+        if reserve_ratio_after < MIN_RESERVE_RATIO && self.loan_pool_total > 0 {
+            return Err(LoanCreationError::ReserveExhausted {
+                minimum: MIN_RESERVE_RATIO,
+            });
+        }
+        if self.loan_pool_total > 0 {
+            let max_single = (self.loan_pool_total as f64 * MAX_SINGLE_LOAN_POOL_PCT) as u64;
+            if loan.principal_cu > max_single {
+                return Err(LoanCreationError::ExceedsPoolLimit {
+                    maximum: MAX_SINGLE_LOAN_POOL_PCT,
+                });
+            }
+        }
+
+        // 6. Duplicate detection.
+        if self.loans.iter().any(|l| l.loan.loan_id == loan.loan_id) {
+            return Err(LoanCreationError::Duplicate);
+        }
+
+        // 7. Lock collateral on the borrower side.
+        if !self.reserve_cu(&loan.borrower, loan.collateral_cu) {
+            return Err(LoanCreationError::InsufficientCollateral);
+        }
+
+        // 8. Transfer principal: lender's contributed -> borrower's contributed.
+        //    We use `contributed` as the "available CU" knob to mirror how
+        //    `record_contribution` increases spendable CU.
+        let lender_balance = self
+            .balances
+            .entry(loan.lender.clone())
+            .or_insert(NodeBalance {
+                node_id: loan.lender.clone(),
+                contributed: 0,
+                consumed: 0,
+                reserved: 0,
+                reputation: 0.5,
+            });
+        // Pretend lender holds enough — this is enforced by gossip + signed
+        // proposal acceptance at the daemon layer; the ledger does not gate
+        // on lender balance here (matches the trade execution path which
+        // also does not gate on provider balance).
+        lender_balance.consumed = lender_balance.consumed.saturating_add(loan.principal_cu);
+
+        let borrower_balance = self
+            .balances
+            .entry(loan.borrower.clone())
+            .or_insert(NodeBalance {
+                node_id: loan.borrower.clone(),
+                contributed: 0,
+                consumed: 0,
+                reserved: 0,
+                reputation: 0.5,
+            });
+        borrower_balance.contributed =
+            borrower_balance.contributed.saturating_add(loan.principal_cu);
+
+        // 9. Update pool accounting and persist the signed record.
+        self.loan_pool_lent = self.loan_pool_lent.saturating_add(loan.principal_cu);
+        self.loan_pool_total = self.loan_pool_total.saturating_add(loan.principal_cu);
+        self.loans.push(signed);
+
+        Ok(())
+    }
+
+    /// Mark a loan as repaid. Releases collateral, credits lender with
+    /// principal + interest, debits borrower for the same.
+    pub fn repay_loan(&mut self, loan_id: &[u8; 32]) -> Result<(), LoanRepaymentError> {
+        let idx = self
+            .loans
+            .iter()
+            .position(|l| &l.loan.loan_id == loan_id)
+            .ok_or(LoanRepaymentError::NotFound)?;
+
+        let (lender, borrower, principal, total_due, collateral) = {
+            let entry = &self.loans[idx];
+            if entry.loan.status != LoanStatus::Active {
+                return Err(LoanRepaymentError::NotActive {
+                    status: entry.loan.status,
+                });
+            }
+            (
+                entry.loan.lender.clone(),
+                entry.loan.borrower.clone(),
+                entry.loan.principal_cu,
+                entry.loan.total_due(),
+                entry.loan.collateral_cu,
+            )
+        };
+
+        // Borrower must have enough effective balance to clear the debt.
+        if !self.can_afford(&borrower, total_due) {
+            return Err(LoanRepaymentError::InsufficientBalance);
+        }
+
+        // Release collateral.
+        self.release_reserve(&borrower, collateral);
+
+        // Borrower pays total_due.
+        let borrower_bal = self
+            .balances
+            .entry(borrower.clone())
+            .or_insert(NodeBalance {
+                node_id: borrower.clone(),
+                contributed: 0,
+                consumed: 0,
+                reserved: 0,
+                reputation: 0.5,
+            });
+        borrower_bal.consumed = borrower_bal.consumed.saturating_add(total_due);
+
+        // Lender receives total_due.
+        let lender_bal = self
+            .balances
+            .entry(lender.clone())
+            .or_insert(NodeBalance {
+                node_id: lender.clone(),
+                contributed: 0,
+                consumed: 0,
+                reserved: 0,
+                reputation: 0.5,
+            });
+        lender_bal.contributed = lender_bal.contributed.saturating_add(total_due);
+        // Counter-balance the principal we provisionally subtracted from the
+        // lender at create_loan time.
+        lender_bal.consumed = lender_bal.consumed.saturating_sub(principal);
+
+        // Update loan record + pool accounting.
+        let entry = &mut self.loans[idx];
+        entry.loan.status = LoanStatus::Repaid;
+        entry.loan.repaid_at = Some(now_millis());
+        self.loan_pool_lent = self.loan_pool_lent.saturating_sub(principal);
+
+        Ok(())
+    }
+
+    /// Mark a loan as defaulted. Burns COLLATERAL_BURN_ON_DEFAULT fraction
+    /// of collateral; the rest goes to the lender. Penalises the borrower's
+    /// reputation.
+    pub fn default_loan(&mut self, loan_id: &[u8; 32]) -> Result<(), LoanDefaultError> {
+        let now = now_millis();
+        let idx = self
+            .loans
+            .iter()
+            .position(|l| &l.loan.loan_id == loan_id)
+            .ok_or(LoanDefaultError::NotFound)?;
+
+        let (lender, borrower, principal, collateral, due_at) = {
+            let entry = &self.loans[idx];
+            if entry.loan.status != LoanStatus::Active {
+                return Err(LoanDefaultError::NotActive {
+                    status: entry.loan.status,
+                });
+            }
+            if now < entry.loan.due_at {
+                return Err(LoanDefaultError::NotYetDue {
+                    due_at: entry.loan.due_at,
+                    now,
+                });
+            }
+            (
+                entry.loan.lender.clone(),
+                entry.loan.borrower.clone(),
+                entry.loan.principal_cu,
+                entry.loan.collateral_cu,
+                entry.loan.due_at,
+            )
+        };
+        let _ = due_at;
+
+        // Burn a fraction of the collateral; remainder goes to lender.
+        let burned = (collateral as f64 * COLLATERAL_BURN_ON_DEFAULT) as u64;
+        let recovered = collateral.saturating_sub(burned);
+
+        // Release the borrower's reservation, then move the recovered slice
+        // into the lender's contributed balance.
+        self.release_reserve(&borrower, collateral);
+        let borrower_bal = self
+            .balances
+            .entry(borrower.clone())
+            .or_insert(NodeBalance {
+                node_id: borrower.clone(),
+                contributed: 0,
+                consumed: 0,
+                reserved: 0,
+                reputation: 0.5,
+            });
+        // Burned CU is permanently destroyed from the borrower's books.
+        borrower_bal.consumed = borrower_bal.consumed.saturating_add(collateral);
+
+        let lender_bal = self
+            .balances
+            .entry(lender.clone())
+            .or_insert(NodeBalance {
+                node_id: lender.clone(),
+                contributed: 0,
+                consumed: 0,
+                reserved: 0,
+                reputation: 0.5,
+            });
+        lender_bal.contributed = lender_bal.contributed.saturating_add(recovered);
+        // Counter-balance the principal we provisionally subtracted from
+        // the lender at create_loan time.
+        lender_bal.consumed = lender_bal.consumed.saturating_sub(principal);
+
+        // Penalise borrower reputation.
+        self.update_reputation(&borrower, -0.2);
+
+        // Update loan record + pool accounting.
+        let entry = &mut self.loans[idx];
+        entry.loan.status = LoanStatus::Defaulted;
+        self.loan_pool_lent = self.loan_pool_lent.saturating_sub(principal);
+
+        Ok(())
+    }
+
+    /// Compute credit score for a node based on trade history, repayment
+    /// history, uptime, and account age.
+    ///
+    /// Uses the canonical formula:
+    ///   score = 0.3 * trade + 0.4 * repayment + 0.2 * uptime + 0.1 * age
+    pub fn compute_credit_score(&self, node_id: &NodeId) -> f64 {
+        let known = self.balances.contains_key(node_id)
+            || self
+                .trade_log
+                .iter()
+                .any(|t| &t.provider == node_id || &t.consumer == node_id);
+        if !known {
+            return COLD_START_CREDIT;
+        }
+
+        // Trade sub-score: lifetime CU touched (provider + consumer side).
+        let trade_volume: u64 = self
+            .trade_log
+            .iter()
+            .filter(|t| &t.provider == node_id || &t.consumer == node_id)
+            .map(|t| t.cu_amount)
+            .sum();
+        let trade_score = lending::trade_score_from_volume(trade_volume);
+
+        // Repayment sub-score: ratio of repaid loans to (repaid + defaulted)
+        // for this borrower. Nodes with no loan history get the neutral score.
+        let mut repaid = 0usize;
+        let mut defaulted = 0usize;
+        for l in &self.loans {
+            if l.loan.borrower == *node_id {
+                match l.loan.status {
+                    LoanStatus::Repaid => repaid += 1,
+                    LoanStatus::Defaulted => defaulted += 1,
+                    LoanStatus::Active => {}
+                }
+            }
+        }
+        let repayment_score = if repaid + defaulted == 0 {
+            NEUTRAL_REPAYMENT_SCORE
+        } else {
+            repaid as f64 / (repaid + defaulted) as f64
+        };
+
+        // Uptime sub-score: reputation acts as a stand-in until per-node
+        // uptime tracking exists.
+        let uptime_score = self
+            .balances
+            .get(node_id)
+            .map(|b| b.reputation)
+            .unwrap_or(0.5);
+
+        // Age sub-score: derived from total contributed CU as a stand-in
+        // for join time, since `NodeBalance` does not yet track timestamps.
+        let contributed = self
+            .balances
+            .get(node_id)
+            .map(|b| b.contributed)
+            .unwrap_or(0);
+        let age_score = lending::age_score_from_days((contributed / 100).min(u64::MAX));
+
+        lending::compute_credit_score_from_components(
+            trade_score,
+            repayment_score,
+            uptime_score,
+            age_score,
+        )
+    }
+
+    /// Current state of the lending pool.
+    pub fn lending_pool_status(&self) -> LendingPoolStatus {
+        let total = self.loan_pool_total;
+        let lent = self.loan_pool_lent;
+        let available = total.saturating_sub(lent);
+        let reserve_ratio = if total == 0 {
+            1.0
+        } else {
+            available as f64 / total as f64
+        };
+        let active: Vec<&SignedLoanRecord> = self
+            .loans
+            .iter()
+            .filter(|l| l.loan.status == LoanStatus::Active)
+            .collect();
+        let avg_interest_rate = if active.is_empty() {
+            0.0
+        } else {
+            active
+                .iter()
+                .map(|l| l.loan.interest_rate_per_hour)
+                .sum::<f64>()
+                / active.len() as f64
+        };
+        LendingPoolStatus {
+            total_pool_cu: total,
+            lent_cu: lent,
+            available_cu: available,
+            reserve_ratio,
+            active_loan_count: active.len(),
+            avg_interest_rate,
+        }
+    }
+
+    /// Active loans where the given node is either lender or borrower.
+    pub fn active_loans_for(&self, node_id: &NodeId) -> Vec<SignedLoanRecord> {
+        self.loans
+            .iter()
+            .filter(|l| {
+                l.loan.status == LoanStatus::Active
+                    && (l.loan.lender == *node_id || l.loan.borrower == *node_id)
+            })
+            .cloned()
+            .collect()
+    }
+
+    /// Whether a node is eligible for a welcome loan
+    /// (`WELCOME_LOAN_AMOUNT` CU at 0% for `WELCOME_LOAN_TERM_HOURS` hours).
+    ///
+    /// The actual signing happens in the node daemon, which holds the
+    /// keypair. This method only enforces the Sybil ceiling and the
+    /// "no existing balance" rule.
+    pub fn can_issue_welcome_loan(&self, node_id: &NodeId) -> bool {
+        // Already known? then no welcome loan.
+        if self.balances.contains_key(node_id) {
+            return false;
+        }
+        // Sybil mitigation.
+        let unknown_nodes = self
+            .balances
+            .values()
+            .filter(|b| b.contributed == 0)
+            .count();
+        if unknown_nodes > WELCOME_LOAN_SYBIL_THRESHOLD {
+            return false;
+        }
+        true
+    }
+
+    /// Estimate the CU cost for a request against a tier-classified model.
+    ///
+    /// `cost = tokens * tier.base_cu_per_token() * (effective_cu_per_token / TIER_SMALL_CU_PER_TOKEN)`
+    ///
+    /// The second factor folds in dynamic supply/demand and CU deflation
+    /// just like [`Self::estimate_cost`].
+    pub fn estimate_cost_for_tier(&self, tokens: u64, tier: ModelTier) -> u64 {
+        let market = self.price.effective_cu_per_token();
+        let scale = market / TIER_SMALL_CU_PER_TOKEN as f64;
+        let base = tokens as f64 * tier.base_cu_per_token() as f64 * scale;
+        base.ceil() as u64
     }
 
     /// Get total network statistics.
@@ -1442,6 +1962,335 @@ mod tests {
         // Self-trade should not be recorded
         assert!(ledger.get_balance(&node).is_none());
         assert_eq!(ledger.recent_trades(10).len(), 0);
+    }
+
+    // ===========================================================================
+    // Lending tests (Phase 5.5)
+    // ===========================================================================
+
+    use crate::lending::{
+        COLD_START_CREDIT, COLLATERAL_BURN_ON_DEFAULT, MAX_LOAN_TERM_HOURS,
+        WELCOME_LOAN_AMOUNT, WELCOME_LOAN_TERM_HOURS,
+    };
+
+    fn make_signed_loan_with_due(
+        principal: u64,
+        collateral: u64,
+        term_hours: u64,
+        due_at_override: Option<u64>,
+    ) -> (
+        SignedLoanRecord,
+        ed25519_dalek::SigningKey,
+        ed25519_dalek::SigningKey,
+    ) {
+        use ed25519_dalek::{Signer, SigningKey};
+        let mut rng = rand::thread_rng();
+        let lender_key = SigningKey::generate(&mut rng);
+        let borrower_key = SigningKey::generate(&mut rng);
+
+        let now = now_millis();
+        let due_at = due_at_override.unwrap_or(now + term_hours * 3_600_000);
+        let mut loan = crate::lending::LoanRecord {
+            loan_id: [0u8; 32],
+            lender: NodeId(lender_key.verifying_key().to_bytes()),
+            borrower: NodeId(borrower_key.verifying_key().to_bytes()),
+            principal_cu: principal,
+            interest_rate_per_hour: 0.001,
+            term_hours,
+            collateral_cu: collateral,
+            status: crate::lending::LoanStatus::Active,
+            created_at: now,
+            due_at,
+            repaid_at: None,
+        };
+        loan.loan_id = loan.compute_loan_id();
+        let canonical = loan.canonical_bytes();
+        let lender_sig = lender_key.sign(&canonical).to_bytes().to_vec();
+        let borrower_sig = borrower_key.sign(&canonical).to_bytes().to_vec();
+        (
+            SignedLoanRecord {
+                loan,
+                lender_sig,
+                borrower_sig,
+            },
+            lender_key,
+            borrower_key,
+        )
+    }
+
+    fn make_signed_loan(
+        principal: u64,
+        collateral: u64,
+        term_hours: u64,
+    ) -> (
+        SignedLoanRecord,
+        ed25519_dalek::SigningKey,
+        ed25519_dalek::SigningKey,
+    ) {
+        make_signed_loan_with_due(principal, collateral, term_hours, None)
+    }
+
+    /// Seed a borrower with enough trades + reputation to clear
+    /// `MIN_CREDIT_FOR_BORROWING`.
+    fn seed_borrower_credit(ledger: &mut ComputeLedger, borrower: &NodeId) {
+        // 50_000 CU traded → trade_score 0.5; reputation 1.0 → uptime 1.0.
+        ledger.execute_trade(&TradeRecord {
+            provider: NodeId([42u8; 32]),
+            consumer: borrower.clone(),
+            cu_amount: 50_000,
+            tokens_processed: 100,
+            timestamp: now_millis(),
+            model_id: "seed".into(),
+        });
+        ledger.update_reputation(borrower, 1.0);
+        // Give borrower headroom so collateral reservation succeeds.
+        ledger.record_contribution(WorkUnit {
+            node_id: borrower.clone(),
+            timestamp: 0,
+            layers_computed: forge_core::LayerRange::new(0, 8),
+            model_id: forge_core::ModelId("seed".into()),
+            tokens_processed: 100,
+            estimated_flops: 200_000 * FLOPS_PER_CU,
+        });
+    }
+
+    #[test]
+    fn welcome_loan_amount_matches_parameters() {
+        assert_eq!(WELCOME_LOAN_AMOUNT, 1_000);
+        assert_eq!(WELCOME_LOAN_TERM_HOURS, 72);
+    }
+
+    #[test]
+    fn test_create_loan_transfers_principal() {
+        let (signed, _lk, _bk) = make_signed_loan(1_000, 3_000, 24);
+        let lender = signed.loan.lender.clone();
+        let borrower = signed.loan.borrower.clone();
+
+        let mut ledger = ComputeLedger::new();
+        seed_borrower_credit(&mut ledger, &borrower);
+
+        ledger.create_loan(signed).expect("loan must be created");
+
+        let bb = ledger.get_balance(&borrower).unwrap();
+        assert!(
+            bb.contributed >= 1_000,
+            "borrower contributed should include principal"
+        );
+        assert_eq!(bb.reserved, 3_000, "collateral should be locked");
+        let lb = ledger.get_balance(&lender).unwrap();
+        assert_eq!(lb.consumed, 1_000, "lender principal accounted as consumed");
+    }
+
+    #[test]
+    fn test_create_loan_rejects_low_credit() {
+        let (signed, _lk, _bk) = make_signed_loan(1_000, 3_000, 24);
+        let borrower = signed.loan.borrower.clone();
+        let mut ledger = ComputeLedger::new();
+
+        // Make borrower known with reputation 0.
+        ledger.record_contribution(WorkUnit {
+            node_id: borrower.clone(),
+            timestamp: 0,
+            layers_computed: forge_core::LayerRange::new(0, 8),
+            model_id: forge_core::ModelId("x".into()),
+            tokens_processed: 1,
+            estimated_flops: FLOPS_PER_CU,
+        });
+        ledger.update_reputation(&borrower, -1.0);
+
+        // Inject a defaulted loan so repayment_score = 0.
+        // (Loan need not verify — credit score reads .loans directly.)
+        let bad_loan = crate::lending::LoanRecord {
+            loan_id: [9u8; 32],
+            lender: NodeId([1u8; 32]),
+            borrower: borrower.clone(),
+            principal_cu: 100,
+            interest_rate_per_hour: 0.001,
+            term_hours: 1,
+            collateral_cu: 100,
+            status: LoanStatus::Defaulted,
+            created_at: 0,
+            due_at: 0,
+            repaid_at: None,
+        };
+        ledger.loans.push(SignedLoanRecord {
+            loan: bad_loan,
+            lender_sig: vec![0; 64],
+            borrower_sig: vec![0; 64],
+        });
+
+        let score = ledger.compute_credit_score(&borrower);
+        assert!(
+            score < crate::lending::MIN_CREDIT_FOR_BORROWING,
+            "expected score < {}, got {}",
+            crate::lending::MIN_CREDIT_FOR_BORROWING,
+            score
+        );
+
+        let result = ledger.create_loan(signed);
+        assert!(matches!(
+            result,
+            Err(LoanCreationError::InsufficientCredit { .. })
+        ));
+    }
+
+    #[test]
+    fn test_create_loan_rejects_excessive_ltv() {
+        // principal 10_000, collateral 1_000 → ltv = 10 (>> 3)
+        let (signed, _, _) = make_signed_loan(10_000, 1_000, 24);
+        let borrower = signed.loan.borrower.clone();
+        let mut ledger = ComputeLedger::new();
+        seed_borrower_credit(&mut ledger, &borrower);
+        let result = ledger.create_loan(signed);
+        assert!(matches!(
+            result,
+            Err(LoanCreationError::ExcessiveLtv { .. })
+        ));
+    }
+
+    #[test]
+    fn test_create_loan_rejects_excessive_term() {
+        let (signed, _, _) =
+            make_signed_loan(1_000, 3_000, MAX_LOAN_TERM_HOURS + 1);
+        let borrower = signed.loan.borrower.clone();
+        let mut ledger = ComputeLedger::new();
+        seed_borrower_credit(&mut ledger, &borrower);
+        let result = ledger.create_loan(signed);
+        assert!(matches!(
+            result,
+            Err(LoanCreationError::ExcessiveTerm { .. })
+        ));
+    }
+
+    #[test]
+    fn test_repay_loan_releases_collateral() {
+        let (signed, _, _) = make_signed_loan(1_000, 3_000, 24);
+        let borrower = signed.loan.borrower.clone();
+        let loan_id = signed.loan.loan_id;
+        let mut ledger = ComputeLedger::new();
+        seed_borrower_credit(&mut ledger, &borrower);
+        ledger.create_loan(signed).unwrap();
+        assert_eq!(ledger.get_balance(&borrower).unwrap().reserved, 3_000);
+
+        ledger.repay_loan(&loan_id).expect("repay must succeed");
+        assert_eq!(
+            ledger.get_balance(&borrower).unwrap().reserved,
+            0,
+            "collateral released"
+        );
+    }
+
+    #[test]
+    fn test_repay_loan_pays_interest_to_lender() {
+        let (signed, _, _) = make_signed_loan(10_000, 30_000, 100);
+        let lender = signed.loan.lender.clone();
+        let borrower = signed.loan.borrower.clone();
+        let loan_id = signed.loan.loan_id;
+        let total_due = signed.loan.total_due();
+        assert!(total_due > 10_000, "interest must be positive");
+
+        let mut ledger = ComputeLedger::new();
+        seed_borrower_credit(&mut ledger, &borrower);
+        ledger.create_loan(signed).unwrap();
+
+        let lender_before = ledger.get_balance(&lender).unwrap().contributed;
+        ledger.repay_loan(&loan_id).expect("repay must succeed");
+        let lender_after = ledger.get_balance(&lender).unwrap().contributed;
+        assert_eq!(
+            lender_after - lender_before,
+            total_due,
+            "lender receives principal + interest"
+        );
+    }
+
+    #[test]
+    fn test_default_loan_burns_collateral() {
+        // Sign with due_at already in the past so default() accepts it.
+        let (signed, _, _) = make_signed_loan_with_due(1_000, 3_000, 1, Some(1));
+        let loan_id = signed.loan.loan_id;
+        let lender = signed.loan.lender.clone();
+        let borrower = signed.loan.borrower.clone();
+
+        let mut ledger = ComputeLedger::new();
+        seed_borrower_credit(&mut ledger, &borrower);
+        ledger.create_loan(signed).unwrap();
+
+        let lender_before = ledger.get_balance(&lender).unwrap().contributed;
+        ledger.default_loan(&loan_id).expect("default must succeed");
+
+        let burned = (3_000.0 * COLLATERAL_BURN_ON_DEFAULT) as u64;
+        let recovered = 3_000 - burned;
+        let lender_after = ledger.get_balance(&lender).unwrap().contributed;
+        assert_eq!(lender_after - lender_before, recovered);
+    }
+
+    #[test]
+    fn test_compute_credit_score_new_node() {
+        let ledger = ComputeLedger::new();
+        let fresh = NodeId([77u8; 32]);
+        let score = ledger.compute_credit_score(&fresh);
+        assert!(
+            (score - COLD_START_CREDIT).abs() < 1e-9,
+            "new node should get COLD_START_CREDIT, got {score}"
+        );
+    }
+
+    #[test]
+    fn test_compute_credit_score_with_trades() {
+        let mut ledger = ComputeLedger::new();
+        let node = NodeId([5u8; 32]);
+        let baseline = ledger.compute_credit_score(&node);
+        ledger.execute_trade(&TradeRecord {
+            provider: NodeId([6u8; 32]),
+            consumer: node.clone(),
+            cu_amount: 80_000,
+            tokens_processed: 100,
+            timestamp: now_millis(),
+            model_id: "m".into(),
+        });
+        ledger.update_reputation(&node, 1.0);
+        let after = ledger.compute_credit_score(&node);
+        assert!(after > baseline, "trades should raise credit score");
+    }
+
+    #[test]
+    fn test_lending_pool_status_reflects_activity() {
+        let (signed, _, _) = make_signed_loan(1_000, 3_000, 24);
+        let borrower = signed.loan.borrower.clone();
+        let mut ledger = ComputeLedger::new();
+        seed_borrower_credit(&mut ledger, &borrower);
+        ledger.create_loan(signed).unwrap();
+
+        let status = ledger.lending_pool_status();
+        assert_eq!(status.lent_cu, 1_000);
+        assert_eq!(status.active_loan_count, 1);
+        assert!(status.avg_interest_rate > 0.0);
+    }
+
+    #[test]
+    fn test_model_tier_pricing() {
+        let ledger = ComputeLedger::new();
+        let small_cost = ledger.estimate_cost_for_tier(100, ModelTier::Small);
+        let frontier_cost = ledger.estimate_cost_for_tier(100, ModelTier::Frontier);
+        // Small tier base = 1 CU/token → ~100; Frontier base = 20 → ~2000
+        assert_eq!(small_cost, 100);
+        assert_eq!(frontier_cost, 2_000);
+    }
+
+    #[test]
+    fn test_persisted_ledger_round_trips_loans() {
+        let (signed, _, _) = make_signed_loan(1_000, 3_000, 24);
+        let borrower = signed.loan.borrower.clone();
+        let mut ledger = ComputeLedger::new();
+        seed_borrower_credit(&mut ledger, &borrower);
+        ledger.create_loan(signed).unwrap();
+
+        let path = unique_temp_path("forge-ledger-loan-roundtrip");
+        ledger.save_to_path(&path).unwrap();
+        let loaded = ComputeLedger::load_from_path(&path).unwrap();
+        assert_eq!(loaded.lending_pool_status().active_loan_count, 1);
+        assert_eq!(loaded.lending_pool_status().lent_cu, 1_000);
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]

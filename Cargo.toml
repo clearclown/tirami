@@ -85,3 +85,7 @@ glob = "0.3"
 
 # Async trait (for forge-mind MetaOptimizer with reqwest-backed CuPaidOptimizer)
 async-trait = "0.1"
+
+# WebSocket client for Nostr relay publishing
+tokio-tungstenite = { version = "0.24", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
+futures-util = "0.3"

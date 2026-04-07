@@ -124,6 +124,8 @@ pub enum AgoraError {
     InvalidPubkey,
     #[error("serialization failed: {0}")]
     Serialization(String),
+    #[error("nostr relay error: {0}")]
+    RelayError(String),
 }
 
 /// Builds NIP-90 event payloads for publication to Nostr relays.
@@ -190,6 +192,66 @@ impl Nip90Publisher {
         });
 
         serde_json::to_string(&event).map_err(|e| AgoraError::Serialization(e.to_string()))
+    }
+
+    /// Build a NIP-90 kind 31990 handler advertisement event as a `serde_json::Value`.
+    ///
+    /// This is the typed-value variant used by `agora_relay::publish_event`. The event
+    /// is unsigned — callers are responsible for adding `id`, `pubkey`, and `sig` before
+    /// publishing if Nostr signature verification is required by the relay.
+    pub fn build_advertisement_event(
+        &self,
+        ad: &ProviderAdvertisement,
+    ) -> Result<serde_json::Value, AgoraError> {
+        if ad.node_pubkey_hex.len() != 64 {
+            return Err(AgoraError::InvalidPubkey);
+        }
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+
+        let mut tags: Vec<Vec<String>> = vec![
+            vec!["d".into(), "forge-handler".into()],
+            vec!["k".into(), kinds::JOB_REQUEST_TEXT.to_string()],
+            vec!["cu_per_token".into(), ad.cu_per_token.to_string()],
+            vec!["reputation".into(), format!("{:.3}", ad.reputation)],
+        ];
+        for model in &ad.models {
+            tags.push(vec!["model".into(), model.clone()]);
+        }
+        for relay in &ad.relays {
+            tags.push(vec!["relay".into(), relay.clone()]);
+        }
+
+        let content = serde_json::json!({
+            "tier": tier_label(ad.tier),
+            "accepted_payment": ad.accepted_payment,
+        });
+
+        Ok(serde_json::json!({
+            "kind": kinds::HANDLER_ADVERTISEMENT,
+            "pubkey": ad.node_pubkey_hex,
+            "created_at": now,
+            "tags": tags,
+            "content": content.to_string(),
+        }))
+    }
+
+    /// Build a NIP-90 kind 31990 advertisement event and publish it to a Nostr relay.
+    ///
+    /// `relay_url` defaults to `agora_relay::DEFAULT_RELAY_URL` if `None`.
+    /// Returns `Ok(())` on relay acceptance, or `Err(AgoraError::RelayError(...))` on
+    /// connection failure, timeout, or relay rejection.
+    pub async fn publish_advertisement(
+        &self,
+        advertisement: &ProviderAdvertisement,
+        relay_url: Option<&str>,
+        timeout_sec: u64,
+    ) -> Result<(), AgoraError> {
+        let event = self.build_advertisement_event(advertisement)?;
+        let url = relay_url.unwrap_or(crate::agora_relay::DEFAULT_RELAY_URL);
+        crate::agora_relay::publish_event(url, &event, timeout_sec).await
     }
 
     /// Build a NIP-90 kind 5050 job request event.

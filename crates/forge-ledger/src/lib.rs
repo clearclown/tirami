@@ -1,5 +1,6 @@
 pub mod agentnet;
 pub mod agora;
+pub mod agora_relay;
 pub mod ledger;
 pub mod lending;
 pub mod safety;

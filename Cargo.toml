@@ -89,3 +89,9 @@ async-trait = "0.1"
 # WebSocket client for Nostr relay publishing
 tokio-tungstenite = { version = "0.24", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
 futures-util = "0.3"
+
+# Phase 10 — Prometheus metrics export for CollusionReport + ledger telemetry
+prometheus = { version = "0.13", default-features = false }
+
+# Phase 10 — Bitcoin OP_RETURN anchoring of trade Merkle root
+bitcoin = { version = "0.32", default-features = false, features = ["std", "secp-recovery"] }

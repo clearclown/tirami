@@ -34,9 +34,9 @@ pub const FLOPS_PER_CU: u64 = 1_000_000_000;
 /// Each node maintains its own view of the ledger based on observed behavior.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ComputeLedger {
-    balances: HashMap<NodeId, NodeBalance>,
+    pub(crate) balances: HashMap<NodeId, NodeBalance>,
     work_log: Vec<WorkUnit>,
-    trade_log: Vec<TradeRecord>,
+    pub(crate) trade_log: Vec<TradeRecord>,
     price: MarketPrice,
     /// All outstanding and historical loans, dual-signed and gossip-syncable.
     #[serde(default)]
@@ -808,9 +808,22 @@ impl ComputeLedger {
     }
 
     /// Merge a single remote observation into the ledger state.
-    /// 1. Records the observation for the subject.
-    /// 2. Recomputes the consensus reputation and updates the subject's `NodeBalance`.
+    ///
+    /// Phase 10 strict mode: the observation must carry a valid Ed25519
+    /// signature from the declared observer before it is accepted.
+    /// Unsigned or tampered observations are silently discarded.
+    ///
+    /// 1. Verifies the Ed25519 signature.
+    /// 2. Records the observation for the subject.
+    /// 3. Recomputes the consensus reputation and updates the subject's `NodeBalance`.
     pub fn merge_remote_reputation(&mut self, obs: &ReputationObservation) {
+        if !obs.verify() {
+            tracing::warn!(
+                "merge_remote_reputation: rejected unsigned/invalid observation from {}",
+                obs.observer.to_hex()
+            );
+            return;
+        }
         self.record_remote_reputation(obs);
         let consensus = self.consensus_reputation(&obs.subject);
         // Update the subject's NodeBalance reputation if it exists.
@@ -2416,6 +2429,8 @@ mod tests {
     // A3 — Reputation gossip tests
     // ===========================================================================
 
+    /// Create an UNSIGNED reputation observation (for tests that call
+    /// `record_remote_reputation` directly — no sig verification there).
     fn make_rep_obs(observer: [u8; 32], subject: [u8; 32], rep: f64, trade_count: u64) -> ReputationObservation {
         ReputationObservation {
             observer: NodeId(observer),
@@ -2426,6 +2441,21 @@ mod tests {
             timestamp_ms: now_millis(),
             signature: vec![],
         }
+    }
+
+    /// Create a SIGNED reputation observation using a freshly generated key.
+    /// The observer NodeId is derived from the signing key's verifying key.
+    fn make_signed_rep_obs(subject: [u8; 32], rep: f64, trade_count: u64) -> ReputationObservation {
+        use ed25519_dalek::SigningKey;
+        let key = SigningKey::generate(&mut rand::thread_rng());
+        ReputationObservation::new_signed(
+            NodeId(subject),
+            rep,
+            trade_count,
+            trade_count * 100,
+            now_millis(),
+            &key,
+        )
     }
 
     #[test]
@@ -2492,12 +2522,34 @@ mod tests {
             reserved: 0,
             reputation: 0.5,
         });
-        // Merge a strong positive observation (high weight, rep=0.9).
-        let obs = make_rep_obs([20u8; 32], [7u8; 32], 0.9, 100);
+        // Merge a strong positive signed observation (high weight, rep=0.9).
+        let obs = make_signed_rep_obs([7u8; 32], 0.9, 100);
         ledger.merge_remote_reputation(&obs);
         // The balance should be updated toward 0.9.
         let rep = ledger.balances.get(&subject).unwrap().reputation;
         assert!(rep > 0.5, "balance reputation should increase, got {rep}");
+    }
+
+    #[test]
+    fn test_merge_remote_reputation_rejects_unsigned_observation() {
+        let mut ledger = ComputeLedger::new();
+        let subject = NodeId([42u8; 32]);
+        let obs = ReputationObservation {
+            observer: NodeId([1u8; 32]),
+            subject: subject.clone(),
+            reputation: 0.9,
+            trade_count: 50,
+            total_cu_volume: 50_000,
+            timestamp_ms: 0,
+            signature: vec![], // unsigned
+        };
+        ledger.merge_remote_reputation(&obs);
+        // The subject's reputation should NOT have been updated
+        assert!(
+            !ledger.remote_reputation.contains_key(&subject)
+                || ledger.remote_reputation[&subject].is_empty(),
+            "unsigned observation must not update remote_reputation"
+        );
     }
 
     #[test]

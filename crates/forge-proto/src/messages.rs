@@ -1,3 +1,4 @@
+use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use forge_core::{LayerRange, ModelId, NodeId, PeerCapability, PipelineStage, TensorMeta};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -334,11 +335,40 @@ pub struct ReputationObservation {
     /// Observer's timestamp (ms since epoch).
     pub timestamp_ms: u64,
     /// Ed25519 signature by the observer over canonical_bytes().
-    /// A length-0 vec is accepted in the MVP (Phase 10 will enforce real sigs).
+    /// Must be exactly 64 bytes (Phase 10 strict mode — empty sig is rejected).
     pub signature: Vec<u8>,
 }
 
 impl ReputationObservation {
+    /// Create a new signed observation.
+    ///
+    /// The caller provides the observer's Ed25519 signing key; the observation
+    /// fields are hashed canonically and signed.  The resulting 64-byte
+    /// signature is stored in `signature`.
+    pub fn new_signed(
+        subject: NodeId,
+        reputation: f64,
+        trade_count: u64,
+        total_cu_volume: u64,
+        timestamp_ms: u64,
+        signing_key: &SigningKey,
+    ) -> Self {
+        let observer = NodeId(signing_key.verifying_key().to_bytes());
+        let mut obs = Self {
+            observer,
+            subject,
+            reputation,
+            trade_count,
+            total_cu_volume,
+            timestamp_ms,
+            signature: Vec::new(),
+        };
+        let canonical = obs.canonical_bytes();
+        let sig: Signature = signing_key.sign(&canonical);
+        obs.signature = sig.to_bytes().to_vec();
+        obs
+    }
+
     /// Deterministic bytes used for signing and deduplication.
     /// Format: observer(32) + subject(32) + reputation(8,f64 BE) +
     ///         trade_count(8) + total_cu_volume(8) + timestamp_ms(8).
@@ -356,26 +386,23 @@ impl ReputationObservation {
     /// Verify the Ed25519 signature over canonical_bytes() using the observer's
     /// public key (= observer.0).
     ///
-    /// # MVP note
-    /// If `signature` is empty the check passes (Phase 10 will make it strict).
-    /// If `signature` is 64 bytes, it must be a valid Ed25519 signature.
+    /// # Phase 10 strict mode
+    /// Empty or wrong-length signatures are rejected.  Only a valid 64-byte
+    /// Ed25519 signature from the declared observer key passes.
     pub fn verify(&self) -> bool {
-        if self.signature.is_empty() {
-            // Phase 10 TODO: remove this bypass and require real sigs
-            return true;
-        }
+        // Empty sig is rejected in strict Phase 10 mode.
         if self.signature.len() != 64 {
             return false;
         }
-        use ed25519_dalek::{Signature, VerifyingKey};
-        let Ok(key) = VerifyingKey::from_bytes(&self.observer.0) else {
-            return false;
-        };
-        let Ok(sig_bytes) = <[u8; 64]>::try_from(self.signature.as_slice()) else {
-            return false;
+        let sig_bytes: [u8; 64] = match self.signature.as_slice().try_into() {
+            Ok(b) => b,
+            Err(_) => return false,
         };
         let sig = Signature::from_bytes(&sig_bytes);
-        key.verify_strict(&self.canonical_bytes(), &sig).is_ok()
+        let Ok(vk) = VerifyingKey::from_bytes(&self.observer.0) else {
+            return false;
+        };
+        vk.verify(&self.canonical_bytes(), &sig).is_ok()
     }
 
     /// SHA-256 of canonical_bytes() — used as gossip dedup key.
@@ -667,11 +694,11 @@ impl Payload {
                         reason: "must be finite and within [0.0, 1.0]".into(),
                     });
                 }
-                // Signature must be empty (MVP) or exactly 64 bytes.
-                if !obs.signature.is_empty() && obs.signature.len() != 64 {
+                // Signature must be exactly 64 bytes (Phase 10 strict mode).
+                if obs.signature.len() != 64 {
                     return Err(ProtocolValidationError::InvalidLoanField {
                         field: "signature".into(),
-                        reason: "must be empty or 64 bytes (Ed25519)".into(),
+                        reason: "must be 64 bytes (Ed25519)".into(),
                     });
                 }
                 Ok(())
@@ -722,6 +749,7 @@ mod serde_bytes {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ed25519_dalek::SigningKey;
 
     #[test]
     fn loan_proposal_round_trips_via_bincode() {
@@ -805,7 +833,8 @@ mod tests {
     }
 
     #[test]
-    fn reputation_observation_verify_empty_sig_passes() {
+    fn reputation_observation_verify_empty_sig_fails_strict() {
+        // Phase 10: empty signature is no longer accepted.
         let obs = ReputationObservation {
             observer: NodeId([1u8; 32]),
             subject: NodeId([2u8; 32]),
@@ -815,7 +844,7 @@ mod tests {
             timestamp_ms: 1_000,
             signature: vec![],
         };
-        assert!(obs.verify(), "empty signature should pass in MVP mode");
+        assert!(!obs.verify(), "empty signature must be rejected in Phase 10 strict mode");
     }
 
     #[test]
@@ -830,6 +859,50 @@ mod tests {
             signature: vec![0u8; 32], // wrong length
         };
         assert!(!obs.verify(), "wrong-length signature should fail");
+    }
+
+    // === Phase 10 P2: Ed25519 signing tests ===
+
+    fn make_observation_signed(key: &SigningKey) -> ReputationObservation {
+        ReputationObservation::new_signed(
+            NodeId([2u8; 32]),
+            0.8,
+            10,
+            1_000,
+            1_700_000_000_000,
+            key,
+        )
+    }
+
+    #[test]
+    fn test_new_signed_produces_64_byte_signature() {
+        let key = SigningKey::generate(&mut rand::rngs::OsRng);
+        let obs = make_observation_signed(&key);
+        assert_eq!(obs.signature.len(), 64, "signature must be 64 bytes");
+    }
+
+    #[test]
+    fn test_signed_observation_verifies_successfully() {
+        let key = SigningKey::generate(&mut rand::rngs::OsRng);
+        let obs = make_observation_signed(&key);
+        assert!(obs.verify(), "fresh signed observation must verify");
+    }
+
+    #[test]
+    fn test_observation_verification_fails_for_wrong_pubkey() {
+        // Sign with one key, tamper observer to a different key — must fail.
+        let key = SigningKey::generate(&mut rand::rngs::OsRng);
+        let mut obs = make_observation_signed(&key);
+        obs.observer = NodeId([0xab; 32]); // different public key
+        assert!(!obs.verify(), "tampered observer key must fail verification");
+    }
+
+    #[test]
+    fn test_observation_verification_fails_for_tampered_reputation() {
+        let key = SigningKey::generate(&mut rand::rngs::OsRng);
+        let mut obs = make_observation_signed(&key);
+        obs.reputation = 1.0; // tamper field after signing
+        assert!(!obs.verify(), "tampered reputation field must fail verification");
     }
 
     #[test]

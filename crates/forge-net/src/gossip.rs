@@ -665,6 +665,31 @@ mod tests {
         assert_eq!(state.seen_reputation_count(), 1);
     }
 
+    #[tokio::test]
+    async fn test_handle_reputation_gossip_rejects_invalid_sig() {
+        // Observation with an empty signature must NOT be merged into the ledger.
+        let ledger = Arc::new(Mutex::new(forge_ledger::ComputeLedger::new()));
+        let gossip = Arc::new(Mutex::new(GossipState::new()));
+        let subject = NodeId([42u8; 32]);
+        let obs = ReputationObservation {
+            observer: NodeId([1u8; 32]),
+            subject: subject.clone(),
+            reputation: 0.9,
+            trade_count: 20,
+            total_cu_volume: 2_000,
+            timestamp_ms: now_millis(),
+            signature: vec![], // unsigned — must be rejected
+        };
+        handle_reputation_gossip(obs, &ledger, &gossip, None).await;
+        // Nothing should have been merged.
+        let ledger_guard = ledger.lock().await;
+        assert!(
+            !ledger_guard.remote_reputation.contains_key(&subject)
+                || ledger_guard.remote_reputation[&subject].is_empty(),
+            "invalid-sig observation must not update ledger"
+        );
+    }
+
     #[test]
     fn gossip_bounded_eviction() {
         let mut state = GossipState::new();

@@ -258,25 +258,13 @@ async fn main() -> anyhow::Result<()> {
             let config = Config::default();
             let node = forge_node::ForgeNode::new(config);
 
-            // Resolve model: either a registry name or a file path
-            let (model_path, tokenizer_path) = if PathBuf::from(&model).exists() {
-                // User provided a file path
-                let tp = tokenizer
-                    .map(PathBuf::from)
-                    .ok_or_else(|| anyhow::anyhow!(
-                        "when using a model file path, --tokenizer is required"
-                    ))?;
-                (PathBuf::from(&model), tp)
-            } else {
-                // Try to resolve from model registry (auto-download)
-                let spec = forge_infer::model_registry::find_model(&model)
-                    .ok_or_else(|| anyhow::anyhow!(
-                        "unknown model '{}'. Run 'forge models' to see available models.",
-                        model
-                    ))?;
-                let resolved = forge_infer::model_registry::resolve_model(&spec)?;
-                (resolved.model_path, resolved.tokenizer_path)
-            };
+            // Resolve model via the unified dispatcher (local path, HF URL, shorthand, catalog)
+            let resolved = forge_infer::model_registry::resolve(&model)?;
+            let tokenizer_path = resolved.tokenizer_path.or_else(|| tokenizer.map(PathBuf::from))
+                .ok_or_else(|| anyhow::anyhow!(
+                    "tokenizer path required for this model source — use --tokenizer"
+                ))?;
+            let model_path = resolved.model_path;
 
             node.load_model(&model_path, &tokenizer_path).await?;
 
@@ -336,23 +324,13 @@ async fn main() -> anyhow::Result<()> {
             };
             let mut node = forge_node::ForgeNode::new(config);
 
-            // Resolve model: either a registry name or a file path
-            let (model_path, tokenizer_path) = if PathBuf::from(&model).exists() {
-                let tp = tokenizer
-                    .map(PathBuf::from)
-                    .ok_or_else(|| anyhow::anyhow!(
-                        "when using a model file path, --tokenizer is required"
-                    ))?;
-                (PathBuf::from(&model), tp)
-            } else {
-                let spec = forge_infer::model_registry::find_model(&model)
-                    .ok_or_else(|| anyhow::anyhow!(
-                        "unknown model '{}'. Run 'forge models' to see available models.",
-                        model
-                    ))?;
-                let resolved = forge_infer::model_registry::resolve_model(&spec)?;
-                (resolved.model_path, resolved.tokenizer_path)
-            };
+            // Resolve model via the unified dispatcher (local path, HF URL, shorthand, catalog)
+            let resolved = forge_infer::model_registry::resolve(&model)?;
+            let tokenizer_path = resolved.tokenizer_path.or_else(|| tokenizer.map(PathBuf::from))
+                .ok_or_else(|| anyhow::anyhow!(
+                    "tokenizer path required for this model source — use --tokenizer"
+                ))?;
+            let model_path = resolved.model_path;
 
             node.load_model(&model_path, &tokenizer_path).await?;
 
@@ -522,27 +500,16 @@ async fn main() -> anyhow::Result<()> {
             };
             let node = forge_node::ForgeNode::new(config);
 
-            // Resolve model spec: either a registry name (auto-download via hf-hub)
-            // OR a local file path. Mirrors `forge chat` behavior so users can run
-            // `forge node -m smollm2:135m` without manually specifying tokenizer.
+            // Resolve model spec via the unified dispatcher — handles local path,
+            // HF URL, HF shorthand, catalog name, and ~/.models scan.
             if let Some(model) = model {
-                let (model_path, tokenizer_path) = if PathBuf::from(&model).exists() {
-                    let tp = tokenizer
-                        .map(PathBuf::from)
-                        .ok_or_else(|| anyhow::anyhow!(
-                            "when using a model file path, --tokenizer is required"
-                        ))?;
-                    (PathBuf::from(&model), tp)
-                } else {
-                    let spec = forge_infer::model_registry::find_model(&model)
-                        .ok_or_else(|| anyhow::anyhow!(
-                            "unknown model '{}'. Run 'forge models' to see available models.",
-                            model
-                        ))?;
-                    let resolved = forge_infer::model_registry::resolve_model(&spec)?;
-                    (resolved.model_path, resolved.tokenizer_path)
-                };
-                node.load_model(&model_path, &tokenizer_path).await?;
+                let resolved = forge_infer::model_registry::resolve(&model)?;
+                let tokenizer_path = resolved.tokenizer_path
+                    .or_else(|| tokenizer.map(PathBuf::from))
+                    .ok_or_else(|| anyhow::anyhow!(
+                        "tokenizer path required for this model source — use --tokenizer"
+                    ))?;
+                node.load_model(&resolved.model_path, &tokenizer_path).await?;
             }
 
             tracing::info!("Starting local API server on port {}", port);

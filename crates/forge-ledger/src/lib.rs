@@ -24,3 +24,8 @@ pub use agentnet::{AgentNet, AgentPost, AgentProfile};
 pub use agora::{AgoraError, JobRequest, JobResult, Nip90Publisher, ProviderAdvertisement};
 // Re-export ReputationObservation from forge-proto for convenience.
 pub use forge_proto::ReputationObservation;
+pub use bitvm::{
+    BitVmError, FraudProof, FraudProofVerifier, FraudType, MockFraudProofVerifier,
+    StakedClaim,
+};
+pub use zk::{MockVerifier, ProofOfInference, ProofVerifier, VerifierRegistry, ZkError};

@@ -22,7 +22,37 @@ pub trait InferenceEngine: Send + Sync {
         max_tokens: u32,
         temperature: f32,
         top_p: Option<f64>,
+        top_k: Option<i32>,
     ) -> Result<Vec<String>, forge_core::ForgeError>;
+
+    /// Generate tokens one at a time, sending each decoded fragment through the
+    /// supplied callback.  The callback returns `true` to continue or `false` to
+    /// stop early (e.g. because the client disconnected).
+    ///
+    /// Returns the total number of tokens generated.
+    ///
+    /// Default implementation buffers the full `generate()` output and calls
+    /// the callback once per fragment — existing engine implementations get this
+    /// for free without any changes.  `LlamaCppEngine` overrides it with a true
+    /// token-by-token streaming path.
+    fn generate_streaming(
+        &mut self,
+        prompt: &str,
+        max_tokens: u32,
+        temperature: f32,
+        top_p: Option<f64>,
+        top_k: Option<i32>,
+        mut on_token: Box<dyn FnMut(&str) -> bool + Send>,
+    ) -> Result<u32, forge_core::ForgeError> {
+        let tokens = self.generate(prompt, max_tokens, temperature, top_p, top_k)?;
+        let count = tokens.len() as u32;
+        for fragment in &tokens {
+            if !on_token(fragment) {
+                break;
+            }
+        }
+        Ok(count)
+    }
 
     /// Tokenize a prompt and return token IDs.
     fn tokenize(&self, prompt: &str) -> Result<Vec<u32>, forge_core::ForgeError>;

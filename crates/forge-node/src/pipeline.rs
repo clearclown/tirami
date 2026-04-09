@@ -604,6 +604,7 @@ async fn handle_inference(
             req.max_tokens,
             req.temperature,
             Some(req.top_p as f64),
+            None,
         )
     } {
         Ok(tokens) => tokens,

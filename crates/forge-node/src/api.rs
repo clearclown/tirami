@@ -341,6 +341,10 @@ pub struct OpenAIChatRequest {
     pub temperature: Option<f32>,
     #[serde(default)]
     pub top_p: Option<f64>,
+    /// Top-k sampling: restrict sampling to the k most likely tokens.
+    /// Consistent with llama-server / Ollama API extension.
+    #[serde(default)]
+    pub top_k: Option<i32>,
     #[serde(default)]
     pub stream: Option<bool>,
 }
@@ -540,13 +544,14 @@ fn gen_request_id() -> String {
 }
 
 /// Get model name from manifest or fallback.
+/// Returns the actual loaded model name, or "forge-no-model" if none is loaded.
 async fn model_name(manifest: &ModelState) -> String {
     manifest
         .lock()
         .await
         .as_ref()
         .map(|m| m.id.0.clone())
-        .unwrap_or_else(|| "forge-model".to_string())
+        .unwrap_or_else(|| "forge-no-model".to_string())
 }
 
 /// Record a trade in the ledger after inference.
@@ -682,7 +687,7 @@ async fn chat(
     }
 
     let tokens = engine
-        .generate(&req.prompt, req.max_tokens, req.temperature, None)
+        .generate(&req.prompt, req.max_tokens, req.temperature, None, None)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     let text = tokens.join("");
@@ -715,7 +720,7 @@ async fn chat_stream(
 
     // Generate all tokens (blocking in the lock, then stream out)
     let tokens = engine_guard
-        .generate(&req.prompt, req.max_tokens, req.temperature, None)
+        .generate(&req.prompt, req.max_tokens, req.temperature, None, None)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     drop(engine_guard);
@@ -754,6 +759,7 @@ async fn openai_chat_completions(
     let max_tokens = req.max_tokens.unwrap_or(default_max_tokens());
     let temperature = req.temperature.unwrap_or(default_temperature());
     let top_p = req.top_p.map(|v| v as f32);
+    let top_k = req.top_k;
 
     // Validate request parameters
     state
@@ -773,9 +779,9 @@ async fn openai_chat_completions(
     let stream = req.stream.unwrap_or(false);
 
     if stream {
-        openai_stream_response(state, prompt, max_tokens, temperature, top_p, model).await
+        openai_stream_response(state, prompt, max_tokens, temperature, top_p, top_k, model).await
     } else {
-        openai_sync_response(state, prompt, max_tokens, temperature, top_p, model)
+        openai_sync_response(state, prompt, max_tokens, temperature, top_p, top_k, model)
             .await
             .map(|json| json.into_response())
     }
@@ -788,6 +794,7 @@ async fn openai_sync_response(
     max_tokens: u32,
     temperature: f32,
     top_p: Option<f32>,
+    top_k: Option<i32>,
     model: String,
 ) -> Result<Json<OpenAIChatResponse>, (StatusCode, String)> {
     let mut engine = state.engine.lock().await;
@@ -801,8 +808,11 @@ async fn openai_sync_response(
         ));
     }
 
-    // Estimate prompt tokens (rough: chars / 4)
-    let prompt_tokens = (prompt.len() / 4).max(1) as u32;
+    // Use the engine's tokenizer for accurate prompt token count (#P11-prompt-tokens).
+    let prompt_tokens = engine
+        .tokenize(&prompt)
+        .map(|toks| toks.len() as u32)
+        .unwrap_or(1);
 
     let tokens = engine
         .generate(
@@ -810,6 +820,7 @@ async fn openai_sync_response(
             max_tokens,
             temperature,
             top_p.map(|v| v as f64),
+            top_k,
         )
         .map_err(|e| {
             (
@@ -857,101 +868,121 @@ async fn openai_sync_response(
 }
 
 /// Streaming SSE response in OpenAI format.
+///
+/// Uses `InferenceEngine::generate_streaming` so tokens are emitted to the
+/// client as they are sampled, not after all generation is complete.  The SSE
+/// stream has the structure:
+///   1. Role chunk  — `{"delta":{"role":"assistant"}}`
+///   2. N content chunks  — `{"delta":{"content":"<fragment>"}}`
+///   3. Stop chunk  — `{"delta":{},"finish_reason":"stop"}`
+///   4. `[DONE]` sentinel
 async fn openai_stream_response(
     state: AppState,
     prompt: String,
     max_tokens: u32,
     temperature: f32,
     top_p: Option<f32>,
+    top_k: Option<i32>,
     model: String,
 ) -> Result<Response, (StatusCode, String)> {
     use axum::response::IntoResponse;
+    use tokio_stream::wrappers::UnboundedReceiverStream;
 
-    let mut engine = state.engine.lock().await;
-    if !engine.is_loaded() {
-        return Err((
-            StatusCode::SERVICE_UNAVAILABLE,
-            serde_json::json!({
-                "error": {"message": "model not loaded", "type": "server_error"}
-            })
-            .to_string(),
-        ));
-    }
-
-    let tokens = engine
-        .generate(
-            &prompt,
-            max_tokens,
-            temperature,
-            top_p.map(|v| v as f64),
-        )
-        .map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
+    {
+        let engine = state.engine.lock().await;
+        if !engine.is_loaded() {
+            return Err((
+                StatusCode::SERVICE_UNAVAILABLE,
                 serde_json::json!({
-                    "error": {"message": e.to_string(), "type": "server_error"}
+                    "error": {"message": "model not loaded", "type": "server_error"}
                 })
                 .to_string(),
-            )
-        })?;
-
-    drop(engine);
+            ));
+        }
+    } // release lock before blocking
 
     let request_id = gen_request_id();
     let created = now_secs();
-    let completion_count = tokens.len() as u32;
-    let model_clone = model.clone();
+    let model_for_stream = model.clone();
+    let model_for_trade = model.clone();
 
-    // Build SSE events: one per token, then a final [DONE]
-    let mut events: Vec<Result<Event, std::convert::Infallible>> = Vec::new();
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Result<Event, std::convert::Infallible>>();
 
-    // First chunk with role
-    events.push(Ok(Event::default().data(
-        serde_json::to_string(&OpenAIStreamChunk {
-            id: request_id.clone(),
-            object: "chat.completion.chunk".to_string(),
-            created,
-            model: model_clone.clone(),
-            choices: vec![OpenAIStreamChoice {
-                index: 0,
-                delta: OpenAIStreamDelta {
-                    role: Some("assistant".to_string()),
-                    content: None,
-                },
-                finish_reason: None,
-            }],
-        })
-        .unwrap_or_default(),
-    )));
+    // Send the role chunk immediately (no inference needed for this).
+    let role_chunk = serde_json::to_string(&OpenAIStreamChunk {
+        id: request_id.clone(),
+        object: "chat.completion.chunk".to_string(),
+        created,
+        model: model_for_stream.clone(),
+        choices: vec![OpenAIStreamChoice {
+            index: 0,
+            delta: OpenAIStreamDelta {
+                role: Some("assistant".to_string()),
+                content: None,
+            },
+            finish_reason: None,
+        }],
+    })
+    .unwrap_or_default();
+    let _ = tx.send(Ok(Event::default().data(role_chunk)));
 
-    // Content chunks
-    for token in &tokens {
-        events.push(Ok(Event::default().data(
-            serde_json::to_string(&OpenAIStreamChunk {
-                id: request_id.clone(),
-                object: "chat.completion.chunk".to_string(),
-                created,
-                model: model_clone.clone(),
-                choices: vec![OpenAIStreamChoice {
-                    index: 0,
-                    delta: OpenAIStreamDelta {
-                        role: None,
-                        content: Some(token.clone()),
-                    },
-                    finish_reason: None,
-                }],
+    // Clone state handles needed inside the blocking task.
+    let engine_arc = state.engine.clone();
+    let ledger_arc = state.ledger.clone();
+    let provider_id = state.local_node_id.clone();
+    let tx_content = tx.clone();
+    let req_id_clone = request_id.clone();
+    let model_stream_clone = model_for_stream.clone();
+
+    // Spawn a blocking task so the inference loop doesn't block the async executor.
+    tokio::task::spawn_blocking(move || {
+        // Acquire the engine lock on the blocking thread.
+        let rt = tokio::runtime::Handle::current();
+        let mut engine = rt.block_on(engine_arc.lock());
+
+        let on_token = {
+            let tx = tx_content.clone();
+            let req_id = req_id_clone.clone();
+            let model_name = model_stream_clone.clone();
+            Box::new(move |chunk: &str| -> bool {
+                let event_data = serde_json::to_string(&OpenAIStreamChunk {
+                    id: req_id.clone(),
+                    object: "chat.completion.chunk".to_string(),
+                    created,
+                    model: model_name.clone(),
+                    choices: vec![OpenAIStreamChoice {
+                        index: 0,
+                        delta: OpenAIStreamDelta {
+                            role: None,
+                            content: Some(chunk.to_string()),
+                        },
+                        finish_reason: None,
+                    }],
+                })
+                .unwrap_or_default();
+                tx.send(Ok(Event::default().data(event_data))).is_ok()
             })
-            .unwrap_or_default(),
-        )));
-    }
+        };
 
-    // Final chunk with finish_reason
-    events.push(Ok(Event::default().data(
-        serde_json::to_string(&OpenAIStreamChunk {
-            id: request_id.clone(),
+        let count = engine
+            .generate_streaming(
+                &prompt,
+                max_tokens,
+                temperature,
+                top_p.map(|v| v as f64),
+                top_k,
+                on_token,
+            )
+            .unwrap_or(0);
+
+        drop(engine); // release lock before async work
+
+        // Stop chunk
+        let stop_data = serde_json::to_string(&OpenAIStreamChunk {
+            id: req_id_clone.clone(),
             object: "chat.completion.chunk".to_string(),
             created,
-            model: model_clone.clone(),
+            model: model_stream_clone.clone(),
             choices: vec![OpenAIStreamChoice {
                 index: 0,
                 delta: OpenAIStreamDelta {
@@ -961,20 +992,19 @@ async fn openai_stream_response(
                 finish_reason: Some("stop".to_string()),
             }],
         })
-        .unwrap_or_default(),
-    )));
+        .unwrap_or_default();
+        let _ = tx_content.send(Ok(Event::default().data(stop_data)));
 
-    // [DONE] marker
-    events.push(Ok(Event::default().data("[DONE]")));
+        // [DONE] sentinel
+        let _ = tx_content.send(Ok(Event::default().data("[DONE]")));
 
-    // Record trade
-    let ledger = state.ledger.clone();
-    let provider = state.local_node_id.clone();
-    tokio::spawn(async move {
-        record_api_trade(&ledger, &provider, completion_count, &model).await;
+        // Record trade in ledger asynchronously after streaming finishes.
+        rt.spawn(async move {
+            record_api_trade(&ledger_arc, &provider_id, count, &model_for_trade).await;
+        });
     });
 
-    let stream = tokio_stream::iter(events);
+    let stream = UnboundedReceiverStream::new(rx);
     Ok(Sse::new(stream).into_response())
 }
 
@@ -2493,5 +2523,172 @@ mod tests {
         assert!(prompt.contains("You are helpful."));
         assert!(prompt.contains("User: Hello"));
         assert!(prompt.ends_with("Assistant: "));
+    }
+
+    // -------------------------------------------------------------------------
+    // P11 tests: top_p / top_k deserialization (#P11-top-p, #P11-top-k)
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_request_top_p_top_k_deserialize() {
+        // Verify OpenAIChatRequest correctly parses top_p and top_k fields.
+        let json = serde_json::json!({
+            "messages": [{"role": "user", "content": "hi"}],
+            "top_p": 0.9,
+            "top_k": 40
+        });
+        let req: OpenAIChatRequest = serde_json::from_value(json).expect("deserialize");
+        assert_eq!(req.top_p, Some(0.9));
+        assert_eq!(req.top_k, Some(40));
+    }
+
+    #[test]
+    fn test_request_top_p_defaults_to_none() {
+        let json = serde_json::json!({
+            "messages": [{"role": "user", "content": "hi"}]
+        });
+        let req: OpenAIChatRequest = serde_json::from_value(json).expect("deserialize");
+        assert_eq!(req.top_p, None);
+        assert_eq!(req.top_k, None);
+    }
+
+    // -------------------------------------------------------------------------
+    // P11 test: model name in response (#P11-model-name)
+    // -------------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_model_name_fallback_when_no_model_loaded() {
+        // When no manifest is set, model_name() should return "forge-no-model"
+        // (not the old "forge-model" hardcoded string).
+        let manifest_state: ModelState = Arc::new(Mutex::new(None));
+        let name = model_name(&manifest_state).await;
+        assert_eq!(name, "forge-no-model");
+    }
+
+    // -------------------------------------------------------------------------
+    // P11 test: streaming response structure (#P11-real-streaming)
+    // -------------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_openai_completions_rejects_no_model_with_503() {
+        // When no model is loaded, completions should return 503.
+        // This exercises the non-streaming path without needing a real model.
+        let config = Config::default();
+        let app = test_router(config);
+
+        let body = serde_json::json!({
+            "messages": [{"role": "user", "content": "hello"}],
+            "max_tokens": 10
+        })
+        .to_string();
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/chat/completions")
+                    .header("content-type", "application/json")
+                    .body(Body::from(body))
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+
+        // No model loaded → SERVICE_UNAVAILABLE
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[tokio::test]
+    async fn test_streaming_request_returns_503_when_no_model() {
+        // Streaming path should also return 503 when no model is loaded.
+        let config = Config::default();
+        let app = test_router(config);
+
+        let body = serde_json::json!({
+            "messages": [{"role": "user", "content": "hello"}],
+            "max_tokens": 10,
+            "stream": true
+        })
+        .to_string();
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/chat/completions")
+                    .header("content-type", "application/json")
+                    .body(Body::from(body))
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    // -------------------------------------------------------------------------
+    // P11 test: generate_streaming default impl (#P11-real-streaming)
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_generate_streaming_default_impl_collects_tokens() {
+        use forge_infer::InferenceEngine;
+        use forge_core::{ForgeError, LayerRange};
+        use std::path::Path;
+
+        /// Minimal mock engine that returns a fixed set of tokens from generate().
+        struct MockEngine {
+            tokens: Vec<String>,
+        }
+
+        impl InferenceEngine for MockEngine {
+            fn load(&mut self, _: &Path, _: &Path, _: Option<LayerRange>) -> Result<(), ForgeError> {
+                Ok(())
+            }
+            fn is_loaded(&self) -> bool { true }
+            fn generate(
+                &mut self,
+                _prompt: &str,
+                _max_tokens: u32,
+                _temperature: f32,
+                _top_p: Option<f64>,
+                _top_k: Option<i32>,
+            ) -> Result<Vec<String>, ForgeError> {
+                Ok(self.tokens.clone())
+            }
+            fn tokenize(&self, _prompt: &str) -> Result<Vec<u32>, ForgeError> {
+                Ok(vec![1, 2, 3])
+            }
+            fn decode(&self, _tokens: &[u32]) -> Result<String, ForgeError> {
+                Ok("decoded".to_string())
+            }
+            fn forward_tokens(&mut self, _: &[u32], _: usize) -> Result<Vec<f32>, ForgeError> {
+                Err(ForgeError::InferenceError("not impl".to_string()))
+            }
+            fn sample_token(&mut self, _: &[f32], _: f32, _: Option<f64>) -> Result<u32, ForgeError> {
+                Err(ForgeError::InferenceError("not impl".to_string()))
+            }
+        }
+
+        let mut engine = MockEngine {
+            tokens: vec!["Hello".to_string(), " ".to_string(), "world".to_string()],
+        };
+
+        // Use a channel to collect tokens from the 'static closure.
+        let (collect_tx, collect_rx) = std::sync::mpsc::channel::<String>();
+        let count = engine
+            .generate_streaming(
+                "test prompt",
+                10,
+                0.7,
+                None,
+                None,
+                Box::new(move |chunk: &str| { let _ = collect_tx.send(chunk.to_string()); true }),
+            )
+            .expect("generate_streaming");
+
+        let collected: Vec<String> = collect_rx.try_iter().collect();
+        assert_eq!(count, 3, "should report 3 tokens generated");
+        assert_eq!(collected, vec!["Hello", " ", "world"]);
     }
 }

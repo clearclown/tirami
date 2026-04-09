@@ -243,6 +243,14 @@ assert "#P10-signed"        "ReputationObservation::new_signed exists" \
 assert "#P10-strict-verify" "verify() rejects empty/invalid signatures" \
   "grep -q 'signature.len() != 64' crates/forge-proto/src/messages.rs"
 
+# === Phase 11: llama-server compatibility fixes ===
+assert "#P11-top-p" "top_p passed through to engine.generate() (not ignored)" \
+  "grep -q 'top_p' crates/forge-infer/src/llama_engine.rs && grep -q 'top_p' crates/forge-infer/src/engine.rs"
+assert "#P11-top-k" "top_k field in OpenAIChatRequest + engine trait" \
+  "grep -q 'pub top_k: Option<i32>' crates/forge-node/src/api.rs && grep -q 'top_k: Option<i32>' crates/forge-infer/src/engine.rs"
+assert "#P11-real-streaming" "generate_streaming method on InferenceEngine trait" \
+  "grep -q 'fn generate_streaming' crates/forge-infer/src/engine.rs && grep -q 'GenerateStreaming' crates/forge-infer/src/llama_engine.rs && grep -q 'generate_streaming' crates/forge-node/src/api.rs"
+
 # === Build & test ===
 assert "BUILD" "cargo check --workspace passes" \
   "cargo check --workspace --quiet 2>&1 | grep -qv 'error'"

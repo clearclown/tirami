@@ -144,7 +144,7 @@ impl ForgeNode {
         self.config
             .validate_inference_request(prompt, max_tokens, temperature, None)?;
         let mut engine = self.engine.lock().await;
-        let tokens = engine.generate(prompt, max_tokens, temperature, None)?;
+        let tokens = engine.generate(prompt, max_tokens, temperature, None, None)?;
         Ok(tokens.join(""))
     }
 

@@ -5,7 +5,7 @@
 Forge has two bootstrap paths:
 
 - the **current reference flow**, which is explicit and operator-driven
-- the **target flow**, where a mesh-llm-based node joins a mesh and starts earning CU automatically
+- the **target flow**, where a mesh-llm-based node joins a mesh and starts earning TRM automatically
 
 ## Current Reference Flow
 
@@ -14,7 +14,7 @@ Forge has two bootstrap paths:
 2. Copy the printed public key
 3. Connect a requester: forge worker --seed <seed_public_key>
 4. Check status: forge status --url http://127.0.0.1:3000
-5. Check CU balance: curl http://127.0.0.1:3000/v1/forge/balance
+5. Check TRM balance: curl http://127.0.0.1:3000/v1/tirami/balance
 ```
 
 The HTTP API binds to `127.0.0.1` by default. If exposed, set `--api-token`.
@@ -38,16 +38,16 @@ Every inference served earns CU. Every inference consumed spends CU. The economi
 
 ```text
 1. Node joins mesh
-2. Free tier: 1,000 CU available immediately
+2. Free tier: 1,000 TRM available immediately
 3. Node serves first inference request → earns CU
-4. CU balance grows with each request served
-5. Node can now spend CU on other nodes' inference
+4. TRM balance grows with each request served
+5. Node can now spend TRM on other nodes' inference
 ```
 
 ### Existing Node (Has Balance)
 
 ```text
-1. Node restarts, loads persisted ledger (forge-ledger.json)
+1. Node restarts, loads persisted ledger (tirami-ledger.json)
 2. HMAC-SHA256 integrity verified
 3. Previous balance, trades, and reputation restored
 4. Node resumes earning and spending CU
@@ -57,19 +57,19 @@ Every inference served earns CU. Every inference consumed spends CU. The economi
 
 | Event | Economic Impact | Inference Impact |
 |---|---|---|
-| 1 remote node disconnects | Remaining nodes absorb work, CU flow continues | Brief pause, model rebalanced |
-| All remote nodes disconnect | CU economy pauses, local-only mode | Fall back to local small model |
+| 1 remote node disconnects | Remaining nodes absorb work, TRM flow continues | Brief pause, model rebalanced |
+| All remote nodes disconnect | TRM economy pauses, local-only mode | Fall back to local small model |
 | Node low battery (<20%) | Stop serving (earning pauses), can still consume | Offload layers to remote |
 | Node regains network | Resume earning CU, reputation recovers | Re-discover peers, re-expand |
 
-**Key invariant**: A node's CU balance persists across restarts and disconnections. Earned CU is never lost.
+**Key invariant**: A node's TRM balance persists across restarts and disconnections. Earned TRM is never lost.
 
 ## Node Contribution Model
 
 - **Contributors**: Devices serving inference earn CU
 - **Consumers**: Devices requesting inference spend CU
-- **Balance**: More contribution → more CU → more access to others' compute
-- **Free tier**: 1,000 CU for new nodes, consumed from first request
+- **Balance**: More contribution → more TRM → more access to others' compute
+- **Free tier**: 1,000 TRM for new nodes, consumed from first request
 - **Yield**: Online nodes earn 0.1% yield per hour (reputation-weighted)
 - **No mandatory payment**: The protocol runs on CU. External bridges (Lightning, fiat) are optional.
 
@@ -78,5 +78,5 @@ Every inference served earns CU. Every inference consumed spends CU. The economi
 - Ed25519 identity created before any network activity
 - All connections encrypted via QUIC + Noise
 - In the current seed/worker flow, the seed sees prompt text (explicit trust boundary)
-- CU trades are recorded locally with HMAC-SHA256 integrity
+- TRM trades are recorded locally with HMAC-SHA256 integrity
 - Target: dual-signed trades gossip-synced across the mesh

@@ -22,7 +22,7 @@ feature. This keeps the report confidential until a fix is ready.
 If GitHub Security Advisories are unavailable, email the maintainers
 privately. Include:
 
-- Affected component (e.g. `forge-ledger::collusion`, `/v1/forge/anchor`)
+- Affected component (e.g. `tirami-ledger::collusion`, `/v1/tirami/anchor`)
 - Affected version (`git rev-parse HEAD` if you build from source)
 - Reproduction steps or proof-of-concept code
 - Your disclosure timeline expectations
@@ -44,7 +44,7 @@ code execution, ledger corruption, signature bypass) may fast-track.
 - Cryptographic primitives: Ed25519 signatures, HMAC-SHA256 ledger
   integrity, SHA-256 Merkle trees, reputation gossip signatures
 - Economic safety: lending pool circuit breakers, collusion detection,
-  welcome-loan Sybil resistance, CU accounting invariants
+  welcome-loan Sybil resistance, TRM accounting invariants
 - HTTP API authentication: bearer token handling, rate limiting
 - Persistence integrity: ledger.json HMAC verification, state snapshots
 - Model loading: GGUF file parsing, tokenizer deserialization
@@ -68,7 +68,7 @@ code execution, ledger corruption, signature bypass) may fast-track.
 Run a Forge node in a dedicated user account with minimal privileges.
 Do not expose the P2P QUIC port to the public internet without a
 reverse proxy or WAF. Keep the `api_bearer_token` secret and rotate
-periodically. Back up `forge-ledger.json` and the L2/L3/L4 state
+periodically. Back up `tirami-ledger.json` and the L2/L3/L4 state
 snapshots off-host.
 
 For production deployments see `docs/operator-guide.md` (security
@@ -79,20 +79,20 @@ checklist section).
 These are documented design trade-offs, not undisclosed vulnerabilities:
 
 1. **No on-chain settlement finality** — the Merkle root anchor to
-   Bitcoin (`forge_ledger::anchor`) is published but disputes require
+   Bitcoin (`tirami_ledger::anchor`) is published but disputes require
    the forthcoming BitVM fraud-proof path (Phase 13, currently only
-   a scaffold in `forge-ledger::bitvm`).
+   a scaffold in `tirami-ledger::bitvm`).
 2. **Reputation gossip is trust-on-first-use** — signed observations
    prevent forgery but do not prevent a malicious node from flooding
    their own low-quality observations. Collusion detection
-   (`forge-ledger::collusion`) mitigates but does not eliminate this.
+   (`tirami-ledger::collusion`) mitigates but does not eliminate this.
 3. **CU lending uses ephemeral signing keys** in single-node mode
-   (see `/v1/forge/lend-to` notes in `crates/forge-node/src/api.rs`).
+   (see `/v1/tirami/lend-to` notes in `crates/tirami-node/src/api.rs`).
    Real P2P dual-signing is wired but not yet end-to-end verified in
    multi-node deployments. Do not use for real value without manual
    verification.
 4. **zkML verification is mock-only** in v0.3. See
-   `forge-ledger::zk::MockVerifier`. Real backends (ezkl, risc0) are
+   `tirami-ledger::zk::MockVerifier`. Real backends (ezkl, risc0) are
    Phase 13+ work. Do not rely on proof-of-inference for trust
    decisions until a real backend lands.
 

@@ -14,7 +14,7 @@
 
 ## Hardware requirements
 
-**CPU**: x86_64 or aarch64. AVX2 recommended for x86_64; NEON is used automatically on ARM. The protocol runs on anything from a Raspberry Pi to a workstation, but inference throughput (and therefore CU earnings) scales with compute capacity.
+**CPU**: x86_64 or aarch64. AVX2 recommended for x86_64; NEON is used automatically on ARM. The protocol runs on anything from a Raspberry Pi to a workstation, but inference throughput (and therefore TRM earnings) scales with compute capacity.
 
 **GPU** (optional but recommended):
 - Apple Silicon: Metal acceleration is **enabled by default** when building on macOS (`--features metal` is included in the default feature set). All inference layers run on-chip.
@@ -24,7 +24,7 @@
 
 **Disk**:
 - Model files (GGUF): SmolLM2-135M ≈ 100 MB, Qwen2.5-0.5B ≈ 491 MB, Qwen2.5-1.5B ≈ 1.1 GB, Qwen2.5-3B ≈ 2.0 GB, Qwen2.5-7B ≈ 4.7 GB.
-- Ledger: stored as JSON at `forge-ledger.json` by default. Grows approximately 1 KB per trade (one trade ≈ one inference request). A node processing 100 requests/day accumulates roughly 36 MB/year.
+- Ledger: stored as JSON at `tirami-ledger.json` by default. Grows approximately 1 KB per trade (one trade ≈ one inference request). A node processing 100 requests/day accumulates roughly 36 MB/year.
 - L2/L3/L4 state: each state file (`bank_state.json`, `marketplace_state.json`, `mind_state.json`) is typically under 1 MB unless you have thousands of registered agents.
 
 **RAM**: 2–4 GB for small models (< 3B params), 8+ GB for 7B models. Metal and CUDA offload most weights to GPU memory; CPU-only runs require system RAM to hold the full model.
@@ -49,7 +49,7 @@ Cold build on Apple Silicon M-series: 2–3 minutes. Incremental rebuild after a
 **Install to PATH**:
 
 ```bash
-cargo install --path crates/forge-cli
+cargo install --path crates/tirami-cli
 # Now available as: forge
 ```
 
@@ -62,25 +62,25 @@ cargo install --path crates/forge-cli
 | `FORGE_URL` | Base URL of a running node (default `http://127.0.0.1:3000`) |
 | `FORGE_API_TOKEN` | Bearer token for protected endpoints |
 | `FORGE_MODELS_DIR` | Directory to search for local GGUF files (overrides default HF cache path) |
-| `FORGE_BANK_STATE_PATH` | Path for forge-bank (L2) state persistence |
-| `FORGE_MARKETPLACE_STATE_PATH` | Path for forge-agora (L4) marketplace state |
-| `FORGE_MIND_STATE_PATH` | Path for forge-mind (L3) agent snapshot |
+| `FORGE_BANK_STATE_PATH` | Path for tirami-bank (L2) state persistence |
+| `FORGE_MARKETPLACE_STATE_PATH` | Path for tirami-agora (L4) marketplace state |
+| `FORGE_MIND_STATE_PATH` | Path for tirami-mind (L3) agent snapshot |
 
 ---
 
 ## Configure
 
-All configuration fields come from `crates/forge-core/src/config.rs`. The daemon resolves them in order: CLI flags → config file → `Config::default()`.
+All configuration fields come from `crates/tirami-core/src/config.rs`. The daemon resolves them in order: CLI flags → config file → `Config::default()`.
 
 | Field | Default | Impact |
 |---|---|---|
 | `api_port` | `3000` | Port the HTTP API binds to. Change with `--port`. |
 | `api_bind_addr` | `"127.0.0.1"` | Bind address. Set to `0.0.0.0` to accept external connections (requires `--api-token`). |
-| `api_bearer_token` | `None` | When set, all `/v1/forge/*` and `/v1/chat/*` routes require `Authorization: Bearer <token>`. `/metrics` and `/health` are always unauthenticated. |
-| `ledger_path` | `None` | Path to `forge-ledger.json`. If `None`, ledger is in-memory only and lost on restart. Always set this in production. |
-| `bank_state_path` | `None` | Path for L2 forge-bank strategy/portfolio state. Survives restarts if set. |
-| `marketplace_state_path` | `None` | Path for L4 forge-agora marketplace snapshot. Survives restarts if set. |
-| `mind_state_path` | `None` | Path for L3 forge-mind agent snapshot. Survives restarts if set. |
+| `api_bearer_token` | `None` | When set, all `/v1/tirami/*` and `/v1/chat/*` routes require `Authorization: Bearer <token>`. `/metrics` and `/health` are always unauthenticated. |
+| `ledger_path` | `None` | Path to `tirami-ledger.json`. If `None`, ledger is in-memory only and lost on restart. Always set this in production. |
+| `bank_state_path` | `None` | Path for L2 tirami-bank strategy/portfolio state. Survives restarts if set. |
+| `marketplace_state_path` | `None` | Path for L4 tirami-agora marketplace snapshot. Survives restarts if set. |
+| `mind_state_path` | `None` | Path for L3 tirami-mind agent snapshot. Survives restarts if set. |
 | `settlement_window_hours` | `24` | Default time window for the `GET /settlement` export. `0` = manual only. |
 | `max_memory_gb` | `4.0` | Soft cap on memory dedicated to inference. Does not OOM-kill — inference layer may exceed this under load. |
 | `max_prompt_chars` | `8192` | Maximum prompt length accepted. Requests exceeding this are rejected with 400. |
@@ -107,7 +107,7 @@ On first start with a model shortname, the GGUF is downloaded from HuggingFace i
 
 ### P2P seed node (`forge seed`)
 
-Holds a model, earns CU by serving inference requests from worker nodes. Requires public reachability on the QUIC port (or a relay address configured via `--relay`).
+Holds a model, earns TRM by serving inference requests from worker nodes. Requires public reachability on the QUIC port (or a relay address configured via `--relay`).
 
 ```bash
 ./target/release/forge seed \
@@ -121,7 +121,7 @@ The public key printed at startup is what workers use to connect. Keep it stable
 
 ### P2P worker node (`forge worker`)
 
-Connects to a seed, offloads inference, spends CU from its own ledger to pay the seed.
+Connects to a seed, offloads inference, spends TRM from its own ledger to pay the seed.
 
 ```bash
 ./target/release/forge worker \
@@ -136,7 +136,7 @@ Optional relay for NAT traversal:
   --relay "https://relay.example.com"
 ```
 
-A worker node starts with 1,000 CU (welcome loan, 0% interest, 72-hour term per parameters.md §3). Repaying the welcome loan builds the initial credit score from 0.3 to 0.4 (parameters.md §3 `welcome_loan_credit_bonus`).
+A worker node starts with 1,000 TRM (welcome loan, 0% interest, 72-hour term per parameters.md §3). Repaying the welcome loan builds the initial credit score from 0.3 to 0.4 (parameters.md §3 `welcome_loan_credit_bonus`).
 
 ---
 
@@ -144,16 +144,16 @@ A worker node starts with 1,000 CU (welcome loan, 0% interest, 72-hour term per 
 
 Prometheus metrics are exported at `/metrics` with no authentication required. The scrape target is intentionally unauthenticated so it can be added to a standard Prometheus config without token management.
 
-**11 metric series exported** (from `forge_ledger::metrics::ForgeMetrics`):
+**11 metric series exported** (from `tirami_ledger::metrics::ForgeMetrics`):
 
 | Metric | Type | Description |
 |---|---|---|
-| `forge_cu_contributed_total` | Counter | Total CU earned by this node across all trades |
-| `forge_cu_consumed_total` | Counter | Total CU spent by this node |
+| `forge_cu_contributed_total` | Counter | Total TRM earned by this node across all trades |
+| `forge_cu_consumed_total` | Counter | Total TRM spent by this node |
 | `forge_reputation{node_id}` | Gauge | Current reputation score (0.0–1.0, default 0.5 per parameters.md §7) |
 | `forge_trade_count_total` | Counter | Total trades recorded on this node's ledger |
 | `forge_active_loan_count` | Gauge | Number of open loans (as lender or borrower) |
-| `forge_pool_total_cu` | Gauge | Total CU in the lending pool |
+| `forge_pool_total_cu` | Gauge | Total TRM in the lending pool |
 | `forge_pool_reserve_ratio` | Gauge | Current reserve ratio (must stay ≥ 30% per parameters.md §5) |
 | `forge_collusion_tight_cluster_score` | Gauge | Tight-cluster detection score for this node |
 | `forge_collusion_volume_spike_score` | Gauge | Volume-spike detection score |
@@ -173,18 +173,18 @@ scrape_configs:
     scrape_interval: 15s
 ```
 
-**Grafana dashboard sketch**: create four panels — (1) CU flow over time: `rate(forge_cu_contributed_total[5m])` vs `rate(forge_cu_consumed_total[5m])`; (2) reputation gauge 0–1 with threshold line at 0.5; (3) lending pool health: `forge_pool_reserve_ratio` with alert below 0.3; (4) collusion scores as a stacked bar, alert if `forge_collusion_trust_penalty > 0.1`.
+**Grafana dashboard sketch**: create four panels — (1) TRM flow over time: `rate(forge_cu_contributed_total[5m])` vs `rate(forge_cu_consumed_total[5m])`; (2) reputation gauge 0–1 with threshold line at 0.5; (3) lending pool health: `forge_pool_reserve_ratio` with alert below 0.3; (4) collusion scores as a stacked bar, alert if `forge_collusion_trust_penalty > 0.1`.
 
 ---
 
 ## Backup and persistence
 
-**Ledger** (`forge-ledger.json`): written on graceful shutdown (SIGTERM / Ctrl-C). The file is HMAC-SHA256 protected — any file-level modification will be detected on next load and the file will be rejected.
+**Ledger** (`tirami-ledger.json`): written on graceful shutdown (SIGTERM / Ctrl-C). The file is HMAC-SHA256 protected — any file-level modification will be detected on next load and the file will be rejected.
 
 **On-demand backup** for L2/L3/L4 state:
 
 ```bash
-curl -X POST http://localhost:3000/v1/forge/admin/save-state \
+curl -X POST http://localhost:3000/v1/tirami/admin/save-state \
   -H "Authorization: Bearer $TOKEN"
 ```
 
@@ -194,11 +194,11 @@ This triggers immediate persistence of `bank_state_path`, `marketplace_state_pat
 
 ```bash
 # crontab -e
-*/5 * * * * curl -s -X POST http://localhost:3000/v1/forge/admin/save-state \
+*/5 * * * * curl -s -X POST http://localhost:3000/v1/tirami/admin/save-state \
   -H "Authorization: Bearer $(cat /etc/forge/api_token)" >> /var/log/forge-backup.log 2>&1
 ```
 
-Or with forge-sdk:
+Or with tirami-sdk:
 
 ```python
 from forge_sdk import ForgeClient
@@ -213,7 +213,7 @@ while True:
 
 **Snapshot restore**: automatic on startup. If `ledger_path` points to a valid (HMAC-intact) JSON file, the ledger resumes from that snapshot. Same for L2/L3/L4 state paths. No manual intervention needed.
 
-**Off-host backup**: copy `forge-ledger.json` and the three state files to a remote location. A simple approach:
+**Off-host backup**: copy `tirami-ledger.json` and the three state files to a remote location. A simple approach:
 
 ```bash
 */30 * * * * rsync -a /var/lib/forge/*.json backup-host:/forge-backups/$(hostname)/
@@ -228,7 +228,7 @@ Every forge node maintains a Merkle root of its trade log. This root can be publ
 **Get the anchor payload**:
 
 ```bash
-curl "http://localhost:3000/v1/forge/anchor?network=mainnet" \
+curl "http://localhost:3000/v1/tirami/anchor?network=mainnet" \
   -H "Authorization: Bearer $TOKEN"
 # Returns:
 # {
@@ -241,11 +241,11 @@ curl "http://localhost:3000/v1/forge/anchor?network=mainnet" \
 
 The `script_hex` is a valid 40-byte Bitcoin OP_RETURN payload (`6a28 FRGE <version> <merkle_root>`). It is within Bitcoin's 80-byte OP_RETURN limit.
 
-**Current status**: `forge-lightning`'s LDK wallet is scaffolded but not yet wired to broadcast anchor transactions automatically (Phase 11 work). Until then, broadcast manually via your own Bitcoin node:
+**Current status**: `tirami-lightning`'s LDK wallet is scaffolded but not yet wired to broadcast anchor transactions automatically (Phase 11 work). Until then, broadcast manually via your own Bitcoin node:
 
 ```bash
 # Cron: write anchor weekly, broadcast manually
-0 0 * * 0 curl -s "http://localhost:3000/v1/forge/anchor?network=mainnet" \
+0 0 * * 0 curl -s "http://localhost:3000/v1/tirami/anchor?network=mainnet" \
   -H "Authorization: Bearer $(cat /etc/forge/api_token)" \
   > /tmp/forge-anchor-$(date +%Y%m%d).json
 
@@ -265,7 +265,7 @@ The `script_hex` is a valid 40-byte Bitcoin OP_RETURN payload (`6a28 FRGE <versi
 
 **High CPU on inference**: reduce `max_tokens` in requests. Switch to a smaller model tier (Small tier = 1 CU/token per parameters.md §2 vs Frontier = 20 CU/token). If on CPU-only, this is expected — GPU offload is the primary path to fast inference.
 
-**Ledger corruption (HMAC-SHA256 fail)**: the ledger file was modified outside of Forge, or the disk had a write error. Restore from the last known-good backup. If no backup exists, delete `forge-ledger.json` and start fresh (balance resets to 0, welcome loan issued again). All trades before the corruption are unrecoverable from the local file.
+**Ledger corruption (HMAC-SHA256 fail)**: the ledger file was modified outside of Forge, or the disk had a write error. Restore from the last known-good backup. If no backup exists, delete `tirami-ledger.json` and start fresh (balance resets to 0, welcome loan issued again). All trades before the corruption are unrecoverable from the local file.
 
 **Reputation stuck at 0.5**: this is `DEFAULT_REPUTATION` (parameters.md §7) — the correct starting value for a new node. Reputation only moves after remote observations from peers are received and gossip-synced. Verify that P2P is working (`forge status --url http://localhost:3000`) and that at least one other node has observed your trades. In single-node mode (`forge node`), reputation stays at 0.5 indefinitely — that is expected.
 
@@ -279,7 +279,7 @@ The `script_hex` is a valid 40-byte Bitcoin OP_RETURN payload (`6a28 FRGE <versi
 - Rotate the API token if it appears in logs, process listings, or is shared accidentally. After rotation, restart the node.
 - Expose the HTTP API over HTTPS via a reverse proxy (nginx or Caddy) when accepting traffic from outside localhost. Forge does not handle TLS termination.
 - Firewall the QUIC port to only allow connections from expected peers if you're running a private mesh. Public seed nodes must leave the QUIC port open.
-- Back up `forge-ledger.json` off-host. A stolen or corrupted ledger file means a lost CU balance.
+- Back up `tirami-ledger.json` off-host. A stolen or corrupted ledger file means a lost TRM balance.
 - Never run `--bind 0.0.0.0` without `--api-token`. The default `127.0.0.1` binding protects against accidental public exposure.
 
 ---

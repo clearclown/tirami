@@ -1,10 +1,10 @@
-# Forge CU Payment Extension for Agent-to-Agent (A2A) Protocol
+# Forge TRM Payment Extension for Agent-to-Agent (A2A) Protocol
 
 *Proposal for adding compute payment to agent communication standards*
 
 ## Abstract
 
-Existing agent-to-agent protocols (Google A2A, Anthropic MCP) define how agents communicate but not how they pay each other. This proposal adds a CU (Compute Unit) payment layer, enabling agents to autonomously trade compute without human intervention or blockchain transactions.
+Existing agent-to-agent protocols (Google A2A, Anthropic MCP) define how agents communicate but not how they pay each other. This proposal adds a TRM (TRM) payment layer, enabling agents to autonomously trade compute without human intervention or blockchain transactions.
 
 ## Problem
 
@@ -14,7 +14,7 @@ When Agent A asks Agent B to perform a task:
 
 No existing standard supports agent-to-agent payment.
 
-## Proposal: CU Payment Headers
+## Proposal: TRM Payment Headers
 
 ### Request
 
@@ -103,7 +103,7 @@ Agents using function calling can include Forge tools:
     "type": "function",
     "function": {
       "name": "forge_pay",
-      "description": "Pay CU for a compute task",
+      "description": "Pay TRM for a compute task",
       "parameters": {
         "provider": "string",
         "cu_amount": "integer"
@@ -135,6 +135,6 @@ Agents using function calling can include Forge tools:
 
 Reference implementation: [github.com/clearclown/forge](https://github.com/clearclown/forge)
 
-- Python SDK: `pip install forge-sdk`
-- MCP Server: `pip install forge-mcp`
-- Rust crates: `forge-ledger`, `forge-core`
+- Python SDK: `pip install tirami-sdk`
+- MCP Server: `pip install tirami-mcp`
+- Rust crates: `tirami-ledger`, `tirami-core`

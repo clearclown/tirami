@@ -148,7 +148,7 @@ pub struct InferenceRequest {
 ```
 
 - `prompt_text` replaces the earlier token-ID prompt hack.
-- `max_tokens` is both a generation limit and the basis for preflight CU affordability checks.
+- `max_tokens` is both a generation limit and the basis for preflight TRM affordability checks.
 
 ### TokenStreamMsg
 
@@ -187,7 +187,7 @@ pub struct ErrorMsg {
 
 - `request_id` ties the error to the in-flight inference request.
 - `retryable` tells the caller whether retrying later is sensible.
-- Current seed/runtime uses this for invalid requests, CU rejection, concurrency saturation, and generation failures.
+- Current seed/runtime uses this for invalid requests, TRM rejection, concurrency saturation, and generation failures.
 
 ## Health and Liveness
 

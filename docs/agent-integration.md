@@ -2,7 +2,7 @@
 
 ## For AI Agent Developers
 
-Forge gives your agent a compute budget. The agent can earn CU by serving inference and spend CU to access larger models. No credit card, no API key, no human in the loop.
+Forge gives your agent a compute budget. The agent can earn TRM by serving inference and spend TRM to access larger models. No credit card, no API key, no human in the loop.
 
 ## Quick Integration
 
@@ -14,7 +14,7 @@ import requests
 FORGE = "http://127.0.0.1:3000"
 
 # Check if agent can afford a request
-balance = requests.get(f"{FORGE}/v1/forge/balance").json()
+balance = requests.get(f"{FORGE}/v1/tirami/balance").json()
 if balance["effective_balance"] > 100:
     # Run inference (costs CU)
     r = requests.post(f"{FORGE}/v1/chat/completions", json={
@@ -52,7 +52,7 @@ Add to your MCP settings:
   "mcpServers": {
     "forge": {
       "command": "python",
-      "args": ["path/to/forge/mcp/forge-mcp-server.py"]
+      "args": ["path/to/forge/mcp/tirami-mcp-server.py"]
     }
   }
 }
@@ -78,7 +78,7 @@ response = llm.invoke("Hello")
 
 ```bash
 # Check balance
-curl localhost:3000/v1/forge/balance
+curl localhost:3000/v1/tirami/balance
 
 # Run inference
 curl localhost:3000/v1/chat/completions \
@@ -86,7 +86,7 @@ curl localhost:3000/v1/chat/completions \
   -d '{"messages":[{"role":"user","content":"hello"}]}'
 
 # Check what it cost
-curl localhost:3000/v1/forge/trades
+curl localhost:3000/v1/tirami/trades
 ```
 
 ## Agent Economic Loop
@@ -103,7 +103,7 @@ def agent_loop():
         # 1. Check budget
         balance = forge.balance()
         if balance["effective_balance"] < 50:
-            print("Low CU balance. Waiting to earn more...")
+            print("Low TRM balance. Waiting to earn more...")
             time.sleep(60)
             continue
 
@@ -133,8 +133,8 @@ def agent_loop():
 ### Set Budget Policies
 
 ```bash
-# Limit an agent to 1000 CU per hour
-curl -X POST localhost:3000/v1/forge/policy \
+# Limit an agent to 1000 TRM per hour
+curl -X POST localhost:3000/v1/tirami/policy \
   -H "Content-Type: application/json" \
   -d '{
     "node_id": "<agent_node_id>",
@@ -147,7 +147,7 @@ curl -X POST localhost:3000/v1/forge/policy \
 ### Monitor Spend Velocity
 
 ```bash
-curl localhost:3000/v1/forge/safety
+curl localhost:3000/v1/tirami/safety
 # Returns: hourly_spend, lifetime_spend, spends_last_minute
 ```
 
@@ -155,7 +155,7 @@ curl localhost:3000/v1/forge/safety
 
 ```bash
 # Freeze everything
-curl -X POST localhost:3000/v1/forge/kill \
+curl -X POST localhost:3000/v1/tirami/kill \
   -d '{"activate": true, "reason": "agent anomaly"}'
 ```
 
@@ -163,18 +163,18 @@ curl -X POST localhost:3000/v1/forge/kill \
 
 | What agent needs | Endpoint | Method |
 |-----------------|----------|--------|
-| "How much CU do I have?" | `/v1/forge/balance` | GET |
-| "How much will this cost?" | `/v1/forge/pricing` | GET |
-| "Who's the cheapest provider?" | `/v1/forge/providers` | GET |
+| "How much TRM do I have?" | `/v1/tirami/balance` | GET |
+| "How much will this cost?" | `/v1/tirami/pricing` | GET |
+| "Who's the cheapest provider?" | `/v1/tirami/providers` | GET |
 | "Run inference" | `/v1/chat/completions` | POST |
-| "What did I spend?" | `/v1/forge/trades` | GET |
-| "Am I safe?" | `/v1/forge/safety` | GET |
-| "Cash out to Bitcoin" | `/v1/forge/invoice` | POST |
-| "STOP EVERYTHING" | `/v1/forge/kill` | POST |
+| "What did I spend?" | `/v1/tirami/trades` | GET |
+| "Am I safe?" | `/v1/tirami/safety` | GET |
+| "Cash out to Bitcoin" | `/v1/tirami/invoice` | POST |
+| "STOP EVERYTHING" | `/v1/tirami/kill` | POST |
 
 ## Agent Borrowing Workflow
 
-When an agent's CU balance is insufficient for a task, it can borrow:
+When an agent's TRM balance is insufficient for a task, it can borrow:
 
 ```python
 from forge_sdk import ForgeClient
@@ -198,7 +198,7 @@ def agent_with_borrowing():
                 term_hours=4,
                 collateral=shortfall // 3
             )
-            print(f"Borrowed {loan['principal_cu']} CU at {loan['interest_rate']}%/hr")
+            print(f"Borrowed {loan['principal_cu']} TRM at {loan['interest_rate']}%/hr")
     
     # Execute the task
     result = forge.chat("Complex analysis task...", max_tokens=2000)
@@ -243,12 +243,12 @@ def build_credit(forge):
 
 | What agent needs | Endpoint | Method |
 |-----------------|----------|--------|
-| "What's my credit score?" | `/v1/forge/credit` | GET |
-| "How much can I borrow?" | `/v1/forge/pool` | GET |
-| "Borrow CU" | `/v1/forge/borrow` | POST |
-| "Repay my loan" | `/v1/forge/repay` | POST |
-| "Lend my idle CU" | `/v1/forge/lend` | POST |
-| "View my loans" | `/v1/forge/loans` | GET |
+| "What's my credit score?" | `/v1/tirami/credit` | GET |
+| "How much can I borrow?" | `/v1/tirami/pool` | GET |
+| "Borrow CU" | `/v1/tirami/borrow` | POST |
+| "Repay my loan" | `/v1/tirami/repay` | POST |
+| "Lend my idle CU" | `/v1/tirami/lend` | POST |
+| "View my loans" | `/v1/tirami/loans` | GET |
 
 ## Credit Score Factors
 

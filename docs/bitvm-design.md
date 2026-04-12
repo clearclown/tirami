@@ -1,4 +1,4 @@
-# BitVM Optimistic Verification for Forge CU Claims
+# BitVM Optimistic Verification for Forge TRM Claims
 
 **Phase 12 A4 — Research Scaffold**
 
@@ -6,7 +6,7 @@
 
 ## 1. Motivation
 
-Forge already anchors its trade history to Bitcoin. Phase 10 P6 (`forge-ledger::anchor`)
+Forge already anchors its trade history to Bitcoin. Phase 10 P6 (`tirami-ledger::anchor`)
 embeds the trade-log Merkle root into an OP_RETURN output, producing a tamper-evident
 commitment: if any node rewrites its past trade records, the new Merkle root will
 diverge from what is permanently recorded on-chain.
@@ -50,7 +50,7 @@ in the re-anchored one. The staker's Bitcoin is at risk unless they can prove th
 inclusion.
 
 **Double-spend of CU.**
-An attacker claims the same CU balance in two forked ledger states — once to pay for
+An attacker claims the same TRM balance in two forked ledger states — once to pay for
 inference and once to repay a loan. The two different Merkle roots can both be anchored
 with OP_RETURN, but neither anchor says anything about the other. A staked claim lets a
 challenger post both root commitments and a conflicting-balance proof; the BitVM circuit
@@ -63,8 +63,8 @@ the node that replays the gossip record. Under BitVM, a challenger can post the 
 trade bytes and the public key as evidence; Bitcoin Script (via a SHA256/hash opcode
 sequence) can verify that the claimed signature is inconsistent.
 
-**Free-rider CU forgery (T10).**
-A node fabricates TradeRecords crediting itself CU it never earned. Gossip dedup and
+**Free-rider TRM forgery (T10).**
+A node fabricates TradeRecords crediting itself TRM it never earned. Gossip dedup and
 dual signatures (Phases 4-5) largely close this, but not against a colluding
 provider-consumer pair. A staked claim over the Merkle root means any honest peer who
 observed the real trades can challenge a root that includes the forged ones.
@@ -132,7 +132,7 @@ A counter-example demonstrating inconsistency:
 | `MerkleInclusionMismatch` | A Merkle inclusion proof for trade T contradicts the claimed root |
 | `InvalidSignature` | A trade record's signature doesn't verify against the signer's public key |
 | `DoubleSpend` | The same `trade_id` appears in two divergent history branches |
-| `InvalidBalanceUpdate` | A balance delta violates CU conservation across the claimed state |
+| `InvalidBalanceUpdate` | A balance delta violates TRM conservation across the claimed state |
 
 ### Challenge Window
 
@@ -150,7 +150,7 @@ protocol-defined (e.g., 80% to challenger, 20% burned) to incentivise honest mon
 
 ## 5. Why Not a Smart-Contract Chain?
 
-Forge's core design rule is: **no blockchain in the critical path**. CU accounting uses
+Forge's core design rule is: **no blockchain in the critical path**. TRM accounting uses
 local ledgers and gossip — 99%+ of trades never touch any external chain. Adding a
 dependency on Ethereum or Solana would mean:
 
@@ -177,7 +177,7 @@ This module is deliberately code-light and design-heavy. It provides:
 - **`MockFraudProofVerifier`** — deterministic mock for unit tests; accepts a proof if
   the first evidence byte diverges from the claim's Merkle root
 - **`BitVmError`** — structured error enum covering all failure modes
-- **Re-exports** from `forge_ledger` crate root so other crates can use the types
+- **Re-exports** from `tirami_ledger` crate root so other crates can use the types
   without reaching into internals
 
 The types are designed so Phase 13 can add real Bitcoin covenant logic by implementing
@@ -210,6 +210,6 @@ The following are explicitly deferred to avoid speculative implementation:
 - BIP 347: OP_CAT. https://github.com/bitcoin/bips/blob/master/bip-0347.mediawiki
 - Forge economics §8-§9 — Bitcoin anchor discussion
   (`docs/economy.md`, `docs/monetary-theory.md`)
-- `crates/forge-ledger/src/anchor.rs` — Phase 10 P6 OP_RETURN anchor layer
+- `crates/tirami-ledger/src/anchor.rs` — Phase 10 P6 OP_RETURN anchor layer
 - `docs/threat-model.md` — Economic threats T10-T17 that staked claims address
-- Forge `compute_trade_merkle_root()` in `crates/forge-ledger/src/ledger.rs`
+- Forge `compute_trade_merkle_root()` in `crates/tirami-ledger/src/ledger.rs`

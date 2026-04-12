@@ -37,13 +37,13 @@ Three invariants that every PR must respect:
 1. **Theory ↔ implementation parity.** Every numeric constant in the
    protocol lives in one place: `forge-economics/spec/parameters.md`.
    Rust code references those constants via named `pub const` values in
-   `crates/forge-ledger/src/lending.rs` or equivalent. Drift is caught
+   `crates/tirami-ledger/src/lending.rs` or equivalent. Drift is caught
    by `scripts/verify-impl.sh` (95/95 GREEN today) and audited in
    `docs/THEORY-AUDIT.md`. If you add or change a constant, update the
    spec first, then the code, then add a `verify-impl.sh` assertion.
 
 2. **Tests first.** We use TDD. For new handlers, copy the pattern in
-   `crates/forge-node/src/handlers/bank.rs` — handler function +
+   `crates/tirami-node/src/handlers/bank.rs` — handler function +
    `#[cfg(test)]` block + a `verify-impl.sh` grep assertion. Never
    merge a PR without tests for the new code path.
 
@@ -60,7 +60,7 @@ build flags (inherited through `llama-cpp-2`).
 
 ```bash
 cargo build --release              # full workspace
-cargo build --release -p forge-cli  # just the CLI binary
+cargo build --release -p tirami-cli  # just the CLI binary
 cargo check --workspace             # fast type-check
 cargo clippy --workspace            # lint (71 baseline warnings, don't add new ones)
 ```
@@ -83,17 +83,17 @@ and the assertion in the script.
 
 ## Adding a new HTTP endpoint
 
-Follow `crates/forge-node/src/handlers/bank.rs` exactly:
+Follow `crates/tirami-node/src/handlers/bank.rs` exactly:
 
-1. Write the handler function in `crates/forge-node/src/handlers/<layer>.rs`
-2. Register it in `crates/forge-node/src/api.rs` inside
+1. Write the handler function in `crates/tirami-node/src/handlers/<layer>.rs`
+2. Register it in `crates/tirami-node/src/api.rs` inside
    `create_router_with_services()`, in the protected router section
 3. Add at least one test using `test_router_default()` from the same file
 4. Add a `verify-impl.sh` assertion if the endpoint is spec-relevant
 
 ## Adding a new economic primitive
 
-Follow `crates/forge-ledger/src/lending.rs` exactly:
+Follow `crates/tirami-ledger/src/lending.rs` exactly:
 
 1. **First**, send a PR against `clearclown/forge-economics` that adds
    the new constant to `spec/parameters.md` under an appropriate section

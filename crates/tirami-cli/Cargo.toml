@@ -1,0 +1,33 @@
+[package]
+name = "tirami-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+readme.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "tirami"
+path = "src/main.rs"
+
+[[bin]]
+name = "tiramisu"
+path = "src/daemon.rs"
+
+[dependencies]
+tirami-core = { workspace = true }
+tirami-infer = { workspace = true }
+tirami-lightning = { workspace = true }
+tirami-node = { workspace = true }
+tirami-ledger = { workspace = true }
+iroh = { workspace = true }
+tokio = { workspace = true }
+clap = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+anyhow = { workspace = true }
+reqwest = { workspace = true }
+serde_json = { workspace = true }

@@ -1,0 +1,20 @@
+[package]
+name = "tirami-agora"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+readme.workspace = true
+authors.workspace = true
+description = "Layer 4 of the Forge ecosystem: post-marketing agent marketplace with reputation aggregation, capability matching, and NIP-90/A2A discovery."
+
+[dependencies]
+tirami-core = { workspace = true }
+tirami-ledger = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+glob = { workspace = true }

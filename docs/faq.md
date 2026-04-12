@@ -1,9 +1,9 @@
 # Forge — Frequently Asked Questions
 
-- [What is a Compute Unit?](#what-is-a-compute-unit)
-- [How is CU different from a token like BTC or TAO?](#how-is-cu-different-from-a-token-like-btc-or-tao)
-- [How much CU do I earn by running a node?](#how-much-cu-do-i-earn-by-running-a-node)
-- [Can I bridge CU to Bitcoin?](#can-i-bridge-cu-to-bitcoin)
+- [What is a TRM?](#what-is-a-compute-unit)
+- [How is TRM different from a token like BTC or TAO?](#how-is-cu-different-from-a-token-like-btc-or-tao)
+- [How much TRM do I earn by running a node?](#how-much-cu-do-i-earn-by-running-a-node)
+- [Can I bridge TRM to Bitcoin?](#can-i-bridge-cu-to-bitcoin)
 - [Does my data stay private?](#does-my-data-stay-private)
 - [How does reputation consensus resist collusion?](#how-does-reputation-consensus-resist-collusion)
 - [What happens if my node goes offline?](#what-happens-if-my-node-goes-offline)
@@ -15,19 +15,19 @@
 
 ---
 
-### What is a Compute Unit?
+### What is a TRM?
 
-1 CU = 10^9 FLOPs (one billion floating-point operations) of verified LLM inference (parameters.md §1 `cu_definition`). It is the atomic unit of economic account in Forge.
+1 TRM = 10^9 FLOPs (one billion floating-point operations) of verified LLM inference (parameters.md §1 `cu_definition`). It is the atomic unit of economic account in Forge.
 
-CU is **earned** by nodes that serve inference to other nodes, and **spent** by nodes that consume inference. Every `POST /v1/chat/completions` request creates a trade record: the provider's `contributed` balance increases by `cu_cost`, and the consumer's `consumed` balance increases by the same amount. The transfer is zero-sum — no CU is created or destroyed by the trade itself.
+CU is **earned** by nodes that serve inference to other nodes, and **spent** by nodes that consume inference. Every `POST /v1/chat/completions` request creates a trade record: the provider's `contributed` balance increases by `cu_cost`, and the consumer's `consumed` balance increases by the same amount. The transfer is zero-sum — no TRM is created or destroyed by the trade itself.
 
 ---
 
-### How is CU different from a token like BTC or TAO?
+### How is TRM different from a token like BTC or TAO?
 
-CU cannot be bought on an exchange. There is no token sale, no ICO, no pre-mine, no secondary market. The only way to acquire CU is to perform useful computation for another node.
+CU cannot be bought on an exchange. There is no token sale, no ICO, no pre-mine, no secondary market. The only way to acquire TRM is to perform useful computation for another node.
 
-| Property | BTC / TAO | CU |
+| Property | BTC / TAO | TRM |
 |---|---|---|
 | How to get it | Buy on exchange | Serve inference |
 | Exchange listing | Yes | No |
@@ -35,15 +35,15 @@ CU cannot be bought on an exchange. There is no token sale, no ICO, no pre-mine,
 | Supply anchor | SHA-256 difficulty / validator score | Physical FLOPs of useful work |
 | Human approval per tx | Required (wallet signature) | Not required (agent acts autonomously) |
 
-CU is also anchored to thermodynamic reality: producing 1 CU requires burning real electricity running real llama.cpp inference. The physical price floor is approximately $0.000001/CU (electricity cost) and the ceiling is approximately $0.000132/CU (Mac Mini M4 hardware amortization) per parameters.md §9.
+CU is also anchored to thermodynamic reality: producing 1 TRM requires burning real electricity running real llama.cpp inference. The physical price floor is approximately $0.000001/CU (electricity cost) and the ceiling is approximately $0.000132/CU (Mac Mini M4 hardware amortization) per parameters.md §9.
 
 ---
 
-### How much CU do I earn by running a node?
+### How much TRM do I earn by running a node?
 
 Three factors determine earnings:
 
-**1. Inference volume**: more requests served = more CU. Each token generated earns CU at the tier rate for the model you're serving. Rates per parameters.md §2:
+**1. Inference volume**: more requests served = more CU. Each token generated earns TRM at the tier rate for the model you're serving. Rates per parameters.md §2:
 - Small tier (< 3B params): 1 CU/token
 - Medium tier (3B–14B): 3 CU/token
 - Large tier (14B–70B): 8 CU/token
@@ -51,21 +51,21 @@ Three factors determine earnings:
 
 **2. Reputation**: new nodes start at 0.5 (`DEFAULT_REPUTATION`, parameters.md §7). Reputation rises with uptime and successful trades. Higher reputation means higher availability yield.
 
-**3. Availability yield**: nodes that stay online earn `0.1%/hour × reputation` on their accumulated contributed CU (parameters.md §7 `availability_yield_rate`). At reputation 1.0, a node with 10,000 CU contributed earns 10 CU/hour just for being reachable.
+**3. Availability yield**: nodes that stay online earn `0.1%/hour × reputation` on their accumulated contributed TRM (parameters.md §7 `availability_yield_rate`). At reputation 1.0, a node with 10,000 TRM contributed earns 10 CU/hour just for being reachable.
 
 In practice: a Mac Mini M4 running Qwen2.5-7B (Large tier) and serving a moderate load can produce around 5,000,000 CU/year (parameters.md §9 `mac_mini_annual_cu_capacity`). This is the physical production ceiling for that hardware class.
 
 ---
 
-### Can I bridge CU to Bitcoin?
+### Can I bridge TRM to Bitcoin?
 
-Yes, optionally. The `forge-lightning` crate implements a CU↔BTC bridge via Lightning Network.
+Yes, optionally. The `tirami-lightning` crate implements a CU↔BTC bridge via Lightning Network.
 
-`POST /v1/forge/invoice` creates a Lightning invoice that pays your CU balance out as satoshis. The CLI equivalent is `forge settle --pay`. This requires a configured LDK wallet (`forge wallet info` to check status).
+`POST /v1/tirami/invoice` creates a Lightning invoice that pays your TRM balance out as satoshis. The CLI equivalent is `forge settle --pay`. This requires a configured LDK wallet (`forge wallet info` to check status).
 
-The reverse direction (`create_deposit()`) accepts a Lightning payment and credits your CU balance.
+The reverse direction (`create_deposit()`) accepts a Lightning payment and credits your TRM balance.
 
-This is **entirely optional**. The Forge protocol has no blockchain in its critical path, no on-chain fees, and no requirement to ever touch Bitcoin. The bridge exists for hardware owners who want to convert CU earnings to BTC, and for agents that need to purchase digital services in the human economy (cloud GPU, APIs) using BTC.
+This is **entirely optional**. The Forge protocol has no blockchain in its critical path, no on-chain fees, and no requirement to ever touch Bitcoin. The bridge exists for hardware owners who want to convert TRM earnings to BTC, and for agents that need to purchase digital services in the human economy (cloud GPU, APIs) using BTC.
 
 ---
 
@@ -77,7 +77,7 @@ Partially, with a clearly stated trust boundary.
 
 **At the serving node**: in the current seed/worker topology, the node that runs inference sees your prompt text. This is an explicit trust boundary, not a solved privacy property. Only connect to seeds you trust with plaintext prompts.
 
-**In gossip**: trade records that propagate across the mesh include metadata (provider NodeId, consumer NodeId, CU amount, token count, model_id, timestamp) but **not** the prompt content or response text.
+**In gossip**: trade records that propagate across the mesh include metadata (provider NodeId, consumer NodeId, TRM amount, token count, model_id, timestamp) but **not** the prompt content or response text.
 
 **Local inference** (`forge node` mode): if you run the node locally and don't expose P2P ports, your prompts never leave your machine.
 
@@ -91,7 +91,7 @@ Two independent layers:
 
 **Layer 1 — Signed observations**: `ReputationObservation` gossip messages are signed with Ed25519 (`new_signed()` + strict `verify()`). Unsigned or invalidly-signed observations are rejected before they can influence a node's effective reputation. No node can forge another node's observation.
 
-**Layer 2 — Collusion detection**: `forge_ledger::collusion::CollusionDetector` runs three independent detection algorithms on the trade graph:
+**Layer 2 — Collusion detection**: `tirami_ledger::collusion::CollusionDetector` runs three independent detection algorithms on the trade graph:
 - *Tight cluster*: identifies groups of nodes that trade almost exclusively with each other.
 - *Volume spike*: detects sudden anomalous increases in trade volume between specific pairs.
 - *Round-robin (Tarjan SCC)*: uses Tarjan's strongly-connected-components algorithm to find circular trade patterns that resemble wash trading.
@@ -102,12 +102,12 @@ When a node scores above the detection threshold, a `trust_penalty` (up to 0.5) 
 
 ### What happens if my node goes offline?
 
-Your CU balance persists in `forge-ledger.json` across restarts and disconnections. The key invariant is: **earned CU is never lost to a node restart**.
+Your TRM balance persists in `tirami-ledger.json` across restarts and disconnections. The key invariant is: **earned TRM is never lost to a node restart**.
 
 What does decay over time:
 
 - **Reputation (uptime component)**: decays at 0.01/day after 7 days of inactivity (parameters.md §7 `inactivity_decay_rate`, `inactivity_decay_threshold_days`).
-- **CU balance**: nodes offline for more than 90 days may have accumulated CU burned at 1%/month (parameters.md §7 `inactivity_burn_rate`, `inactivity_burn_threshold_days`). This is an anti-squatting measure.
+- **CU balance**: nodes offline for more than 90 days may have accumulated TRM burned at 1%/month (parameters.md §7 `inactivity_burn_rate`, `inactivity_burn_threshold_days`). This is an anti-squatting measure.
 - **Open loans**: a loan that reaches its due date while the node is offline will default. Collateral is liquidated automatically. Credit score collapses after a default and takes weeks to rebuild.
 
 On restart, the ledger loads from its JSON snapshot (HMAC-SHA256 verified), and the node resumes earning immediately on its first served request.
@@ -116,12 +116,12 @@ On restart, the ledger loads from its JSON snapshot (HMAC-SHA256 verified), and 
 
 ### Is there a token sale, ICO, or presale?
 
-No. There is no Forge token. CU is earnable-only. Anyone claiming to sell "Forge tokens" or "pre-sale CU" is running a scam. Report it.
+No. There is no Forge token. TRM is earnable-only. Anyone claiming to sell "Forge tokens" or "pre-sale CU" is running a scam. Report it.
 
-The only on-ramp to CU is:
+The only on-ramp to TRM is:
 1. Serve inference to other nodes (earn directly).
-2. Receive the 1,000 CU welcome loan (0% interest, 72-hour term, parameters.md §3).
-3. Have another node lend you CU via the lending pool.
+2. Receive the 1,000 TRM welcome loan (0% interest, 72-hour term, parameters.md §3).
+3. Have another node lend you TRM via the lending pool.
 
 There is no ICO, no presale, no investor allocation, no foundation reserve, no token contract on any chain.
 
@@ -131,17 +131,17 @@ There is no ICO, no presale, no investor allocation, no foundation reserve, no t
 
 See `docs/compatibility.md` for the full feature matrix. The short version:
 
-**vs Bittensor (TAO)**: Bittensor has a speculative token (TAO) managed by a validator pool and opaque subnet scoring. Forge has no token — CU is the computation itself. There is no validator to bribe, no subnet to curate, no inflation schedule to game.
+**vs Bittensor (TAO)**: Bittensor has a speculative token (TAO) managed by a validator pool and opaque subnet scoring. Forge has no token — TRM is the computation itself. There is no validator to bribe, no subnet to curate, no inflation schedule to game.
 
-**vs Akash (AKT)**: Akash is a container rental marketplace metered by the hour. Forge is per-request metered for LLM inference. There is no AKT-style token in Forge — providers are paid in CU immediately upon serving each request.
+**vs Akash (AKT)**: Akash is a container rental marketplace metered by the hour. Forge is per-request metered for LLM inference. There is no AKT-style token in Forge — providers are paid in TRM immediately upon serving each request.
 
-**vs Ollama**: Ollama is an excellent single-node inference server with no P2P and no economy. If you want one model on one machine, Ollama is simpler. If you want a fleet of nodes that earn CU when idle, lend to other nodes, and run a self-improvement loop, use Forge.
+**vs Ollama**: Ollama is an excellent single-node inference server with no P2P and no economy. If you want one model on one machine, Ollama is simpler. If you want a fleet of nodes that earn TRM when idle, lend to other nodes, and run a self-improvement loop, use Forge.
 
 ---
 
 ### What is the learning curve?
 
-Under 30 seconds to first inference and first CU earned:
+Under 30 seconds to first inference and first TRM earned:
 
 ```bash
 git clone https://github.com/clearclown/forge && cd forge
@@ -165,7 +165,7 @@ The codebase is well-tested: 426 unit and integration tests, 95/95 conformance a
 
 However: this is v0.3, intended for single-operator deployments and research use. There are no production SLAs. The codebase has not had a third-party security audit. Phase 13+ work (real zkML proofs, real BitVM dispute resolution, forge-mesh full sync with production CI) is required before recommending Forge for high-value deployments.
 
-Run it for curiosity, research, and small-scale experiments. Treat CU balances accordingly.
+Run it for curiosity, research, and small-scale experiments. Treat TRM balances accordingly.
 
 ---
 

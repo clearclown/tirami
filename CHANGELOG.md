@@ -9,7 +9,7 @@ numbers follow [Semantic Versioning](https://semver.org/).
 - Phase 13 research frontier: real zkML backend (ezkl or risc0), real
   BitVM covenants, real federated training backend, forge-mesh full
   sync (ledger.rs 3-way merge, streaming + tools port)
-- Crates.io publish after `forge-core` / `forge-cli` name rename
+- Crates.io publish after `tirami-core` / `tirami-cli` name rename
 - Docker image + Homebrew tap
 - Structured docs hosting (ReadTheDocs or Sphinx)
 
@@ -31,16 +31,16 @@ hardware with a real GGUF model. 426 tests passing (Rust), 27 pytest
   `ForgeMindAgent` survive node restarts via JSON snapshots. New
   `StrategyKind` enum and `MindAgentSnapshot` handle trait-object
   fields. New `state_persist.rs` module.
-  `POST /v1/forge/admin/save-state` admin endpoint.
+  `POST /v1/tirami/admin/save-state` admin endpoint.
 - **A3 reputation gossip**: `ReputationObservation` wire message with
   weighted-median `consensus_reputation()` merge. Outlier-resistant.
-- **A4 NIP-90 Nostr relay publish**: `forge_ledger::agora_relay` with
+- **A4 NIP-90 Nostr relay publish**: `tirami_ledger::agora_relay` with
   `tokio-tungstenite` WebSocket publisher.
-- **A5 collusion resistance**: `forge_ledger::collusion` with tight
+- **A5 collusion resistance**: `tirami_ledger::collusion` with tight
   cluster + volume spike + round-robin (Tarjan SCC) detection. Trust
   penalty up to 0.5 subtracted in `effective_reputation()`.
-  `/v1/forge/collusion/{hex}` debug endpoint.
-- **B1 forge-sdk v0.3.0**: 20 new Python methods for all Phase 8
+  `/v1/tirami/collusion/{hex}` debug endpoint.
+- **B1 tirami-sdk v0.3.0**: 20 new Python methods for all Phase 8
   L2/L3/L4 endpoints. 27 pytest tests.
 - **B2 forge-cu-mcp v0.3.0**: 20 new MCP tools for Claude Code /
   Cursor / ChatGPT desktop.
@@ -49,7 +49,7 @@ hardware with a real GGUF model. 426 tests passing (Rust), 27 pytest
 
 #### Phase 10 — Productization (2026-04-08)
 
-- **P1**: forge-sdk 0.3.0 + forge-cu-mcp 0.3.0 wheels built and
+- **P1**: tirami-sdk 0.3.0 + forge-cu-mcp 0.3.0 wheels built and
   twine-checked.
 - **P2 Ed25519-signed ReputationObservation**: real cryptographic
   signatures replace the Phase 9 A3 placeholder. Strict verify()
@@ -58,12 +58,12 @@ hardware with a real GGUF model. 426 tests passing (Rust), 27 pytest
   every push/PR.
 - **P4 forge-mesh persistent state**: state_persist ported to
   forge-mesh with round-trip tests.
-- **P5 Prometheus `/metrics`**: `forge_ledger::metrics` with 11 series
+- **P5 Prometheus `/metrics`**: `tirami_ledger::metrics` with 11 series
   (cu_contributed, cu_consumed, reputation, trade_count, pool_*,
   collusion_*). Rate-limit-bypassed for scraping.
 - **P6 Bitcoin OP_RETURN anchoring**: 40-byte "FRGE" payload in
-  `forge_ledger::anchor`, builds a fully-signable Transaction
-  skeleton. `GET /v1/forge/anchor?network=<...>` endpoint.
+  `tirami_ledger::anchor`, builds a fully-signable Transaction
+  skeleton. `GET /v1/tirami/anchor?network=<...>` endpoint.
 - **P7 Compute Standard paper**:
   `forge-economics/papers/compute-standard.md` — 7,031-word academic
   preprint with 20 citations.
@@ -89,7 +89,7 @@ hardware with a real GGUF model. 426 tests passing (Rust), 27 pytest
   migration guides, verified end-to-end transcript.
 - **`scripts/demo-e2e.sh`**: one-command end-to-end demo.
 - **`docs/hn-teaser-draft.md`**: HN / X / Reddit launch post drafts.
-- **forge-infer unified resolver**: ported from mesh-llm. Supports
+- **tirami-infer unified resolver**: ported from mesh-llm. Supports
   local files, HF full URLs, HF shorthand (`org/repo/file.gguf`),
   catalog names, and `~/.models` scan via a 5-priority dispatcher.
 
@@ -100,15 +100,15 @@ hardware with a real GGUF model. 426 tests passing (Rust), 27 pytest
   `<tool_call>{...}</tool_call>` injection + extraction. Sync and
   streaming paths both emit `finish_reason: "tool_calls"` when the
   model complies.
-- **A2 zkML verification scaffold**: `forge_ledger::zk` module with
+- **A2 zkML verification scaffold**: `tirami_ledger::zk` module with
   `ProofVerifier` trait, `ProofOfInference` struct, `MockVerifier`,
   and `VerifierRegistry`. Forward-compatible with ezkl / risc0 /
   halo2 for Phase 13.
-- **A3 federated training scaffold**: `forge_mind::federated` module
+- **A3 federated training scaffold**: `tirami_mind::federated` module
   with `GradientContribution`, `FederatedRound`, `Aggregator` trait,
   and `WeightedAverageAggregator`.
 - **A4 BitVM optimistic verification scaffold**:
-  `forge_ledger::bitvm` with `StakedClaim`, `FraudProof`,
+  `tirami_ledger::bitvm` with `StakedClaim`, `FraudProof`,
   `FraudProofVerifier` trait, and a ~1100-word design document at
   `docs/bitvm-design.md`.
 
@@ -142,19 +142,19 @@ hardware with a real GGUF model. 426 tests passing (Rust), 27 pytest
   `readme` fields for crates.io discoverability.
 - Every crate's `Cargo.toml` now inherits metadata from the workspace
   (`repository.workspace = true`, etc.).
-- `pyproject.toml` for both forge-sdk and forge-cu-mcp upgraded to
+- `pyproject.toml` for both tirami-sdk and forge-cu-mcp upgraded to
   `Development Status :: 4 - Beta` with full URLs and classifiers.
 - README.md Quick Start restructured: `bash scripts/demo-e2e.sh`
   promoted to Option 1, Python / Rust / Docker as Options 2-4.
 - `MetaOptimizer` trait migrated from sync to `#[async_trait]` to
-  support reqwest-backed `CuPaidOptimizer`. All 53 forge-mind tests
+  support reqwest-backed `CuPaidOptimizer`. All 53 tirami-mind tests
   migrated to `#[tokio::test]`.
 - CHANGELOG.md expanded from a 781-byte stub to cover all of Phase
   1-12 in Keep-a-Changelog format.
 
 ### Fixed
 
-- Streaming endpoint CU accounting: trade record is now correctly
+- Streaming endpoint TRM accounting: trade record is now correctly
   written after the stream completes with the actual token count.
 - `DEFAULT_REPUTATION = 0.5` hoisted from 11 hardcoded literals in
   `ledger.rs` to a named constant in `lending.rs`. Matches spec §7.
@@ -168,11 +168,11 @@ hardware with a real GGUF model. 426 tests passing (Rust), 27 pytest
 
 ### Notes
 
-- **crates.io publish is deferred** to Phase 13. The `forge-core`
-  and `forge-cli` crate names on crates.io are squatted by unrelated
-  parties (forge-core at 0.8.3, forge-cli at 0.0.0). A rename pass
+- **crates.io publish is deferred** to Phase 13. The `tirami-core`
+  and `tirami-cli` crate names on crates.io are squatted by unrelated
+  parties (tirami-core at 0.8.3, tirami-cli at 0.0.0). A rename pass
   will land in Phase 13. In the meantime, install via
-  `cargo install --git https://github.com/clearclown/forge forge-cli`.
+  `cargo install --git https://github.com/clearclown/forge tirami-cli`.
 - **Demo GIF** is not included in this release. `vhs` and `asciinema`
   were not available on the build host. The `docs/compatibility.md`
   transcript stands in for a visual asset until v0.3.1.
@@ -185,7 +185,7 @@ $ bash scripts/demo-e2e.sh
 ✓ 3 real chat completions via SmolLM2-135M on Apple Silicon Metal
 ✓ balance: contributed=41 CU, reputation=0.5 (DEFAULT_REPUTATION)
 ✓ PortfolioManager.tick() → action=lend
-✓ RiskModel VaR 99%: 692 CU (DEFAULT_RATE=0.02, LGD=0.50, σ=2.33)
+✓ RiskModel VaR 99%: 692 TRM (DEFAULT_RATE=0.02, LGD=0.50, σ=2.33)
 ✓ Marketplace.find() returned 1 matches
 ✓ ForgeMindAgent initialized with EchoMetaOptimizer
 ✓ improve(1) → decision=Revert (correct)
@@ -199,13 +199,13 @@ All Phase 1-12 endpoints verified with live data.
 
 ## [0.2.0-alpha] - 2026-04-07
 
-- Phase 8: L2/L3/L4 Rust crates (forge-bank, forge-mind, forge-agora)
-  wired into forge-node with 20 new HTTP endpoints.
-- Phase 7: Rust rewrite of forge-bank, forge-mind, forge-agora from
+- Phase 8: L2/L3/L4 Rust crates (tirami-bank, tirami-mind, tirami-agora)
+  wired into tirami-node with 20 new HTTP endpoints.
+- Phase 7: Rust rewrite of tirami-bank, tirami-mind, tirami-agora from
   the original Python scaffolds. Bit-for-bit semantic preservation.
 - Phase 6: Multi-model pricing tiers (Small / Medium / Large /
   Frontier) and reputation-adjusted routing.
-- Phase 5.5: CU lending primitives, dual-signed loan records, credit
+- Phase 5.5: TRM lending primitives, dual-signed loan records, credit
   scoring, lending pool with circuit breakers.
 - Phase 5: Lightning bridge (CU ↔ BTC settlement), Lightning wallet
   CLI, settlement statement export.

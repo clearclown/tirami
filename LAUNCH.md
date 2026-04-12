@@ -11,7 +11,7 @@ Current state (as of 2026-04-10):
 - ✅ Code: 426 tests passing, 95/95 verify-impl GREEN, real e2e demo
   verified on Apple Silicon Metal
 - ✅ forge-mesh: 686 tests passing, Phase 12 scaffolds synced
-- ✅ GitHub releases: v0.3.0, forge-sdk-v0.3.0, forge-cu-mcp-v0.3.0,
+- ✅ GitHub releases: v0.3.0, tirami-sdk-v0.3.0, forge-cu-mcp-v0.3.0,
   forge-economics v0.3.0 (all created and published)
 - ✅ PyPI wheels: built and twine-checked, ready to upload
 - ✅ OSS meta-files: LICENSE, CONTRIBUTING, SECURITY, CODE_OF_CONDUCT
@@ -56,7 +56,7 @@ python3 -m twine check /Users/ablaze/Projects/forge/mcp/dist/forge_cu_mcp-0.3.0*
 
 ## Step 1 — Publish Python packages (2 min)
 
-### forge-sdk 0.3.0
+### tirami-sdk 0.3.0
 
 ```bash
 cd /Users/ablaze/Projects/forge/sdk/python
@@ -81,7 +81,7 @@ twine upload \
 ### Verify
 
 ```bash
-pip install --upgrade forge-sdk==0.3.0
+pip install --upgrade tirami-sdk==0.3.0
 pip install --upgrade forge-cu-mcp==0.3.0
 python3 -c "from forge_sdk import ForgeClient; c = ForgeClient(); print([m for m in dir(c) if not m.startswith('_')][:5])"
 # Expected: ['agora_find', 'agora_list_agents', 'agora_register', ...]
@@ -101,7 +101,7 @@ metadata).
 
 From the GitHub web UI at <https://github.com/clearclown/forge/settings>:
 
-- **Description**: "Distributed LLM inference protocol where compute is currency. Compute Unit (CU) = 10^9 FLOPs of verified inference. Rust, OpenAI-compatible, no token, no ICO."
+- **Description**: "Distributed LLM inference protocol where compute is currency. Tirami Resource Merit (TRM) = 10^9 FLOPs of verified inference. Rust, OpenAI-compatible, no token, no ICO."
 - **Website**: `https://github.com/clearclown/forge`
 - **Topics**: `compute-economy`, `distributed-inference`, `llm`,
   `bitcoin`, `rust`, `openai-api`, `p2p`, `llama-cpp`, `nostr`,
@@ -111,7 +111,7 @@ Or via gh CLI (if your local gh has admin auth):
 
 ```bash
 gh repo edit clearclown/forge \
-  --description "Distributed LLM inference protocol where compute is currency. Compute Unit (CU) = 10^9 FLOPs of verified inference. Rust, OpenAI-compatible, no token, no ICO." \
+  --description "Distributed LLM inference protocol where compute is currency. Tirami Resource Merit (TRM) = 10^9 FLOPs of verified inference. Rust, OpenAI-compatible, no token, no ICO." \
   --homepage "https://github.com/clearclown/forge" \
   --add-topic compute-economy \
   --add-topic distributed-inference \
@@ -128,7 +128,7 @@ gh repo edit clearclown/forge \
 ### forge-economics
 
 - **Description**: "Economic theory and spec for Forge: compute as currency. Academic paper + canonical parameters."
-- **Topics**: `economics`, `monetary-theory`, `compute`, `forge-protocol`, `academic-paper`
+- **Topics**: `economics`, `monetary-theory`, `compute`, `tirami-protocol`, `academic-paper`
 
 ```bash
 gh repo edit clearclown/forge-economics \
@@ -136,7 +136,7 @@ gh repo edit clearclown/forge-economics \
   --add-topic economics \
   --add-topic monetary-theory \
   --add-topic compute \
-  --add-topic forge-protocol \
+  --add-topic tirami-protocol \
   --add-topic academic-paper
 ```
 
@@ -260,9 +260,9 @@ Once everything is live, do a final sanity check:
 
 ```bash
 # 1. PyPI packages are actually installable
-pip uninstall -y forge-sdk forge-cu-mcp
-pip install forge-sdk==0.3.0 forge-cu-mcp==0.3.0
-forge-mcp --help   # should print the MCP server help
+pip uninstall -y tirami-sdk forge-cu-mcp
+pip install tirami-sdk==0.3.0 forge-cu-mcp==0.3.0
+tirami-mcp --help   # should print the MCP server help
 
 # 2. GitHub releases page lists all 3 forge releases + 1 forge-economics release
 gh release list --repo clearclown/forge --limit 5
@@ -357,11 +357,11 @@ Everything below was committed + pushed by the launch-prep batch:
 
 - 55f3380 chore: Phase 12.5 launch prep — metadata + docs + CI + OSS meta-files
 - cd8e77a feat: Phase 12 A1 — OpenAI tools / function calling support
-- 8dff8cd feat: Phase 12 C — port mesh-llm resolver to forge-infer
-- bb0a3ca feat: Phase 12 A3 — Federated training scaffold (forge-mind)
+- 8dff8cd feat: Phase 12 C — port mesh-llm resolver to tirami-infer
+- bb0a3ca feat: Phase 12 A3 — Federated training scaffold (tirami-mind)
 - 6d327e7 feat: Phase 12 A2 + A4 — zkML scaffold + BitVM optimistic verification
-- Tags: v0.3.0, forge-sdk-v0.3.0, forge-cu-mcp-v0.3.0 (all pushed)
-- GitHub releases: v0.3.0, forge-sdk-v0.3.0, forge-cu-mcp-v0.3.0 (all
+- Tags: v0.3.0, tirami-sdk-v0.3.0, forge-cu-mcp-v0.3.0 (all pushed)
+- GitHub releases: v0.3.0, tirami-sdk-v0.3.0, forge-cu-mcp-v0.3.0 (all
   created with wheel attachments)
 
 ### nm-arealnormalman/mesh-llm @ main

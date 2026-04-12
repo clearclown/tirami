@@ -6,12 +6,12 @@ Forge is a two-layer system: **inference** and **economy**.
 
 The inference layer handles model distribution, mesh networking, and API serving. It is built on [mesh-llm](https://github.com/michaelneale/mesh-llm).
 
-The economy layer handles CU accounting, trade recording, pricing, and agent budgets. This is Forge's original contribution.
+The economy layer handles TRM accounting, trade recording, pricing, and agent budgets. This is Forge's original contribution.
 
 ```
 ┌─────────────────────────────────────────────────┐
 │  SDK / Integration Boundary                     │
-│  Any client can embed forge-node as a library   │
+│  Any client can embed tirami-node as a library   │
 │  Third-party agents, dashboards, adapters       │
 └──────────────────┬──────────────────────────────┘
                    │
@@ -19,16 +19,16 @@ The economy layer handles CU accounting, trade recording, pricing, and agent bud
 │  Economic Layer (Forge-original)                │
 │                                                  │
 │  ┌──────────────┐ ┌──────────┐ ┌─────────────┐ │
-│  │ forge-ledger │ │ pricing  │ │ agent       │ │
-│  │ CU trades    │ │ supply/  │ │ budgets     │ │
-│  │ reputation   │ │ demand   │ │ /v1/forge/* │ │
+│  │ tirami-ledger │ │ pricing  │ │ agent       │ │
+│  │ TRM trades    │ │ supply/  │ │ budgets     │ │
+│  │ reputation   │ │ demand   │ │ /v1/tirami/* │ │
 │  │ yield        │ │          │ │             │ │
 │  └──────────────┘ └──────────┘ └─────────────┘ │
 │                                                  │
 │  ┌──────────────┐ ┌──────────────────────────┐  │
 │  │ forge-verify │ │ forge-bridge (optional)  │  │
-│  │ dual-sign    │ │ CU ↔ BTC Lightning      │  │
-│  │ gossip sync  │ │ CU ↔ stablecoin         │  │
+│  │ dual-sign    │ │ TRM ↔ BTC Lightning      │  │
+│  │ gossip sync  │ │ TRM ↔ stablecoin         │  │
 │  └──────────────┘ └──────────────────────────┘  │
 └──────────────────┬──────────────────────────────┘
                    │
@@ -59,7 +59,7 @@ Forge inherits all of this from mesh-llm. The inference layer does not know abou
 
 The economic layer sits above inference and is responsible for:
 
-### forge-ledger — The Economic Engine
+### tirami-ledger — The Economic Engine
 
 ```rust
 pub struct ComputeLedger {
@@ -71,8 +71,8 @@ pub struct ComputeLedger {
 ```
 
 Core responsibilities:
-- Track per-node CU balance (contributed, consumed, reserved)
-- Record every inference trade (provider, consumer, CU amount, tokens)
+- Track per-node TRM balance (contributed, consumed, reserved)
+- Record every inference trade (provider, consumer, TRM amount, tokens)
 - Compute dynamic market prices from supply/demand
 - Apply yield to contributing nodes
 - Export settlement statements for off-protocol bridges
@@ -80,7 +80,7 @@ Core responsibilities:
 
 ### forge-verify — Proof of Useful Work (target)
 
-Ensures CU claims are legitimate:
+Ensures TRM claims are legitimate:
 - Dual-sign protocol: both provider and consumer sign each TradeRecord
 - Gossip sync: signed trades propagate across the network
 - Verification: any node can validate both signatures
@@ -88,10 +88,10 @@ Ensures CU claims are legitimate:
 
 ### forge-bridge — External Settlement (optional)
 
-Converts CU to external value for operators who need it:
-- Bitcoin Lightning: CU → msats via configurable exchange rate
-- Stablecoin: CU → USDC/USDT via adapter
-- Fiat: CU → bank transfer via operator dashboard
+Converts TRM to external value for operators who need it:
+- Bitcoin Lightning: TRM → msats via configurable exchange rate
+- Stablecoin: TRM → USDC/USDT via adapter
+- Fiat: TRM → bank transfer via operator dashboard
 
 The bridge layer is outside the core protocol. Different operators can use different bridges.
 
@@ -99,10 +99,10 @@ The bridge layer is outside the core protocol. Different operators can use diffe
 
 | Route | Layer | Description |
 |-------|-------|-------------|
-| `POST /v1/chat/completions` | Inference + Economy | Run inference, record CU trade |
+| `POST /v1/chat/completions` | Inference + Economy | Run inference, record TRM trade |
 | `GET /v1/models` | Inference | List loaded models |
-| `GET /v1/forge/balance` | Economy | CU balance, reputation |
-| `GET /v1/forge/pricing` | Economy | Market price, cost estimates |
+| `GET /v1/tirami/balance` | Economy | TRM balance, reputation |
+| `GET /v1/tirami/pricing` | Economy | Market price, cost estimates |
 | `GET /status` | Economy | Market price, network stats, recent trades |
 | `GET /topology` | Inference | Model manifest, peers, shard plan |
 | `GET /settlement` | Economy | Exportable trade history |
@@ -110,7 +110,7 @@ The bridge layer is outside the core protocol. Different operators can use diffe
 
 ## Data Flow
 
-### Inference with CU Accounting
+### Inference with TRM Accounting
 
 ```
 Consumer sends request
@@ -142,7 +142,7 @@ Aggregates per-node: gross_earned, gross_spent, net_cu
     ↓
 Exports JSON statement with optional reference price
     ↓
-Operator uses bridge adapter to convert net CU to BTC/fiat
+Operator uses bridge adapter to convert net TRM to BTC/fiat
 ```
 
 ## Security Model
@@ -159,24 +159,24 @@ Each layer protects against different threats:
 - Layer 4: Model integrity (GGUF hash verification)
 - Layer 3: Transport confidentiality (eavesdropping)
 - Layer 2: Local tampering (file modification)
-- Layer 1: Network fraud (fake CU claims)
+- Layer 1: Network fraud (fake TRM claims)
 - Layer 0: Historical immutability (optional Bitcoin anchor)
 
 ## Crate Dependencies
 
 ```
-forge-core ← shared types (NodeId, CU, Config)
+tirami-core ← shared types (NodeId, CU, Config)
     ↑
-forge-ledger ← economic engine (trades, pricing, yield)
+tirami-ledger ← economic engine (trades, pricing, yield)
     ↑
-forge-lightning ← external bridge (LDK wallet, CU↔sats)
+tirami-lightning ← external bridge (LDK wallet, CU↔sats)
     ↑
-forge-node ← orchestrator (HTTP API, pipeline, ledger integration)
+tirami-node ← orchestrator (HTTP API, pipeline, ledger integration)
     ↑
-forge-cli ← reference CLI (chat, seed, worker, settle)
+tirami-cli ← reference CLI (chat, seed, worker, settle)
 
-forge-net ← P2P transport (iroh, QUIC, Noise, mDNS)
-forge-proto ← wire messages (bincode, 14 payload types)
-forge-infer ← inference engine (llama.cpp, GGUF loader)
+tirami-net ← P2P transport (iroh, QUIC, Noise, mDNS)
+tirami-proto ← wire messages (bincode, 14 payload types)
+tirami-infer ← inference engine (llama.cpp, GGUF loader)
 forge-shard ← topology planner (layer assignment, rebalancing)
 ```

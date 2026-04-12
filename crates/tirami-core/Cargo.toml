@@ -1,0 +1,18 @@
+[package]
+name = "tirami-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+readme.workspace = true
+authors.workspace = true
+description = "Core types for the Forge compute economy: NodeId, CU, Config"
+
+[dependencies]
+serde = { workspace = true }
+thiserror = { workspace = true }
+ed25519-dalek = { workspace = true }
+rand = { workspace = true }
+hex = { workspace = true }

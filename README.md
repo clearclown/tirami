@@ -4,7 +4,7 @@
 
 **Computation is currency. Every watt produces intelligence, not waste.**
 
-[![PyPI: forge-sdk](https://img.shields.io/pypi/v/forge-sdk?label=forge-sdk&color=3775A9)](https://pypi.org/project/forge-sdk/)
+[![PyPI: tirami-sdk](https://img.shields.io/pypi/v/tirami-sdk?label=tirami-sdk&color=3775A9)](https://pypi.org/project/tirami-sdk/)
 [![PyPI: forge-cu-mcp](https://img.shields.io/pypi/v/forge-cu-mcp?label=forge-cu-mcp&color=3775A9)](https://pypi.org/project/forge-cu-mcp/)
 [![Crates.io](https://img.shields.io/crates/v/forge?label=crates.io&color=e6522c)](https://crates.io/crates/forge)
 [![License: MIT](https://img.shields.io/badge/License-MIT-brightgreen.svg)](LICENSE)
@@ -15,25 +15,25 @@
 
 </div>
 
-**Forge is a distributed inference protocol where compute is money.** Nodes earn Compute Units (CU) by performing useful LLM inference for others. Unlike Bitcoin — where electricity is burned on meaningless hashes — every joule spent on a Forge node produces real intelligence that someone actually needs.
+**Forge is a distributed inference protocol where compute is money.** Nodes earn TRMs (CU) by performing useful LLM inference for others. Unlike Bitcoin — where electricity is burned on meaningless hashes — every joule spent on a Forge node produces real intelligence that someone actually needs.
 
-The distributed inference engine is built on [mesh-llm](https://github.com/michaelneale/mesh-llm) by Michael Neale. Forge adds a compute economy on top: CU accounting, Proof of Useful Work, dynamic pricing, autonomous agent budgets, and fail-safe controls. See [CREDITS.md](CREDITS.md).
+The distributed inference engine is built on [mesh-llm](https://github.com/michaelneale/mesh-llm) by Michael Neale. Forge adds a compute economy on top: TRM accounting, Proof of Useful Work, dynamic pricing, autonomous agent budgets, and fail-safe controls. See [CREDITS.md](CREDITS.md).
 
 **Integrated fork:** [forge-mesh](https://github.com/nm-arealnormalman/mesh-llm) — mesh-llm with Forge economic layer built in.
 
 ## Live Demo
 
-This is real output from a running Forge node. Every inference costs CU. Every CU is earned by useful computation.
+This is real output from a running Forge node. Every inference costs CU. Every TRM is earned by useful computation.
 
 ```
-$ forge node -m "qwen2.5:0.5b" --ledger forge-ledger.json
+$ forge node -m "qwen2.5:0.5b" --ledger tirami-ledger.json
   Model loaded: Qwen2.5-0.5B (Metal-accelerated, 491MB)
   API server listening on 127.0.0.1:3000
 ```
 
-**Check balance — every new node gets 1,000 CU free tier:**
+**Check balance — every new node gets 1,000 TRM free tier:**
 ```
-$ curl localhost:3000/v1/forge/balance
+$ curl localhost:3000/v1/tirami/balance
 {
   "effective_balance": 1000,
   "contributed": 0,
@@ -60,7 +60,7 @@ Every response includes `x_forge` — **the cost of that computation in CU** and
 
 **Three inferences later — real trades on the ledger:**
 ```
-$ curl localhost:3000/v1/forge/trades
+$ curl localhost:3000/v1/tirami/trades
 {
   "count": 3,
   "trades": [
@@ -73,7 +73,7 @@ $ curl localhost:3000/v1/forge/trades
 
 **Every trade has a Merkle root — anchorable to Bitcoin for immutable proof:**
 ```
-$ curl localhost:3000/v1/forge/network
+$ curl localhost:3000/v1/tirami/network
 {
   "total_trades": 3,
   "total_contributed_cu": 19,
@@ -83,15 +83,15 @@ $ curl localhost:3000/v1/forge/network
 
 **AI agents gone rogue? Kill switch freezes everything in milliseconds:**
 ```
-$ curl -X POST localhost:3000/v1/forge/kill \
+$ curl -X POST localhost:3000/v1/tirami/kill \
     -d '{"activate":true, "reason":"anomaly detected", "operator":"admin"}'
 → KILL SWITCH ACTIVATED
-→ All CU transactions frozen. No agent can spend.
+→ All TRM transactions frozen. No agent can spend.
 ```
 
 **Safety controls always on:**
 ```
-$ curl localhost:3000/v1/forge/safety
+$ curl localhost:3000/v1/tirami/safety
 {
   "kill_switch_active": false,
   "circuit_tripped": false,
@@ -111,13 +111,13 @@ Bitcoin:  electricity  →  meaningless SHA-256  →  BTC
 Forge:    electricity  →  useful LLM inference →  CU
 ```
 
-Bitcoin proved `electricity → computation → money`. But Bitcoin's computation is purposeless. Forge inverts it: every CU represents real intelligence that solved someone's real problem.
+Bitcoin proved `electricity → computation → money`. But Bitcoin's computation is purposeless. Forge inverts it: every TRM represents real intelligence that solved someone's real problem.
 
 **Four things no other project does:**
 
 ### 1. Compute = Currency
 
-Every inference is a trade. Provider earns CU, consumer spends CU. No blockchain, no token, no ICO. CU is backed by physics — the electricity consumed for useful work. Unlike Bittensor (TAO), Akash (AKT), or Golem (GLM), CU cannot be speculated on — it is earned by performing useful computation.
+Every inference is a trade. Provider earns CU, consumer spends CU. No blockchain, no token, no ICO. TRM is backed by physics — the electricity consumed for useful work. Unlike Bittensor (TAO), Akash (AKT), or Golem (GLM), TRM cannot be speculated on — it is earned by performing useful computation.
 
 ### 2. Tamper-Proof Without a Blockchain
 
@@ -125,38 +125,38 @@ Every trade is dual-signed (Ed25519) by both parties and gossip-synced across th
 
 ### 3. AI Agents Manage Their Own Compute
 
-An agent on a phone lends idle compute overnight → earns CU → buys 70B model access → becomes smarter → earns more. The agent checks `/v1/forge/balance` and `/v1/forge/pricing` autonomously. Budget policies and circuit breakers prevent runaway spending.
+An agent on a phone lends idle compute overnight → earns TRM → buys 70B model access → becomes smarter → earns more. The agent checks `/v1/tirami/balance` and `/v1/tirami/pricing` autonomously. Budget policies and circuit breakers prevent runaway spending.
 
 ```
 Agent (1.5B on phone)
-  → earns CU overnight by serving inference
-  → spends CU on 70B model → smarter answers
-  → better decisions → more CU earned
+  → earns TRM overnight by serving inference
+  → spends TRM on 70B model → smarter answers
+  → better decisions → more TRM earned
   → cycle repeats → agent grows
 ```
 
 ### 4. Compute Microfinance
 
-Nodes can lend idle CU to other nodes at interest. A small node borrows CU, accesses a larger model, earns more CU, repays with interest. No other distributed inference project offers compute lending — confirmed through competitive analysis of every major project in this space. This is the engine that makes the self-improvement loop economically viable for everyone, not just those who already own powerful hardware.
+Nodes can lend idle TRM to other nodes at interest. A small node borrows CU, accesses a larger model, earns more CU, repays with interest. No other distributed inference project offers compute lending — confirmed through competitive analysis of every major project in this space. This is the engine that makes the self-improvement loop economically viable for everyone, not just those who already own powerful hardware.
 
 ## Architecture
 
 ```
 ┌─────────────────────────────────────────────────┐
-│  L4: Discovery (forge-agora) ✅ v0.1            │
+│  L4: Discovery (tirami-agora) ✅ v0.1            │
 │  Agent marketplace, reputation aggregation,     │
 │  Nostr NIP-90, Google A2A payment extension     │
 ├─────────────────────────────────────────────────┤
-│  L3: Intelligence (forge-mind) ✅ v0.1          │
+│  L3: Intelligence (tirami-mind) ✅ v0.1          │
 │  AutoAgent self-improvement loops paid in CU,   │
 │  harness marketplace, meta-optimization         │
 ├─────────────────────────────────────────────────┤
-│  L2: Finance (forge-bank) ✅ v0.1               │
+│  L2: Finance (tirami-bank) ✅ v0.1               │
 │  Strategies, portfolios, futures, insurance,    │
 │  risk model, yield optimizer                    │
 ├─────────────────────────────────────────────────┤
 │  L1: Economy (forge — this repo) ✅ Phase 1-6   │
-│  CU ledger, dual-signed trades, dynamic pricing,│
+│  TRM ledger, dual-signed trades, dynamic pricing,│
 │  lending primitives, safety controls            │
 ├─────────────────────────────────────────────────┤
 │  L0: Inference (forge-mesh / mesh-llm) ✅       │
@@ -206,7 +206,7 @@ vs llama.cpp / mesh-llm / Ollama / Bittensor / Akash.
 ### Option 2: Python (drives everything via SDK + MCP)
 
 ```bash
-pip install forge-sdk forge-cu-mcp
+pip install tirami-sdk forge-cu-mcp
 
 python -c "
 from forge_sdk import ForgeClient
@@ -216,7 +216,7 @@ print('decision:', c.bank_tick())
 "
 ```
 
-[PyPI: forge-sdk](https://pypi.org/project/forge-sdk/) (20 L2/L3/L4 methods) ·
+[PyPI: tirami-sdk](https://pypi.org/project/tirami-sdk/) (20 L2/L3/L4 methods) ·
 [PyPI: forge-cu-mcp](https://pypi.org/project/forge-cu-mcp/) (20 MCP tools for Claude Code / Cursor)
 
 ### Option 3: Manual Rust commands
@@ -227,12 +227,12 @@ print('decision:', c.bank_tick())
 cargo build --release
 
 # Run a node — auto-downloads the model from HuggingFace
-./target/release/forge node -m "qwen2.5:0.5b" --ledger forge-ledger.json
+./target/release/forge node -m "qwen2.5:0.5b" --ledger tirami-ledger.json
 
 # Or any of:
 ./target/release/forge chat -m "smollm2:135m" "What is gravity?"
-./target/release/forge seed -m "qwen2.5:1.5b"               # earn CU as a P2P provider
-./target/release/forge worker --seed <public_key>           # spend CU as a P2P consumer
+./target/release/forge seed -m "qwen2.5:1.5b"               # earn TRM as a P2P provider
+./target/release/forge worker --seed <public_key>           # spend TRM as a P2P consumer
 ./target/release/forge models                                # list catalog (or use HF URLs / shorthand)
 ```
 
@@ -259,33 +259,33 @@ two minutes.
 
 | Endpoint | Description |
 |----------|-------------|
-| `GET /v1/forge/balance` | CU balance, reputation, contribution history |
-| `GET /v1/forge/pricing` | Market price (EMA smoothed), cost estimates |
-| `GET /v1/forge/trades` | Recent trades with CU amounts |
-| `GET /v1/forge/network` | Total CU flow + Merkle root |
-| `GET /v1/forge/providers` | Ranked providers by reputation and cost |
-| `POST /v1/forge/invoice` | Create Lightning invoice from CU balance |
-| `GET /v1/forge/route` | Optimal provider selection (cost/quality/balanced) |
+| `GET /v1/tirami/balance` | TRM balance, reputation, contribution history |
+| `GET /v1/tirami/pricing` | Market price (EMA smoothed), cost estimates |
+| `GET /v1/tirami/trades` | Recent trades with TRM amounts |
+| `GET /v1/tirami/network` | Total TRM flow + Merkle root |
+| `GET /v1/tirami/providers` | Ranked providers by reputation and cost |
+| `POST /v1/tirami/invoice` | Create Lightning invoice from TRM balance |
+| `GET /v1/tirami/route` | Optimal provider selection (cost/quality/balanced) |
 | `GET /settlement` | Exportable settlement statement |
 
 ### Lending
 
 | Endpoint | Description |
 |----------|-------------|
-| `POST /v1/forge/lend` | Offer CU to lending pool |
-| `POST /v1/forge/borrow` | Request a CU loan |
-| `POST /v1/forge/repay` | Repay outstanding loan |
-| `GET /v1/forge/credit` | Credit score and history |
-| `GET /v1/forge/pool` | Lending pool status |
-| `GET /v1/forge/loans` | Active loans |
+| `POST /v1/tirami/lend` | Offer TRM to lending pool |
+| `POST /v1/tirami/borrow` | Request a TRM loan |
+| `POST /v1/tirami/repay` | Repay outstanding loan |
+| `GET /v1/tirami/credit` | Credit score and history |
+| `GET /v1/tirami/pool` | Lending pool status |
+| `GET /v1/tirami/loans` | Active loans |
 
 ### Safety
 
 | Endpoint | Description |
 |----------|-------------|
-| `GET /v1/forge/safety` | Kill switch state, circuit breaker, budget policy |
-| `POST /v1/forge/kill` | Emergency halt — freeze all CU transactions |
-| `POST /v1/forge/policy` | Set per-agent budget limits |
+| `GET /v1/tirami/safety` | Kill switch state, circuit breaker, budget policy |
+| `POST /v1/tirami/kill` | Emergency halt — freeze all TRM transactions |
+| `POST /v1/tirami/policy` | Set per-agent budget limits |
 
 ## Safety Design
 
@@ -318,17 +318,17 @@ A room full of Mac Minis running Forge is an apartment building — generating y
 ```
 forge/  (this repo — Layer 1)
 ├── crates/
-│   ├── forge-ledger/      # CU accounting, lending, agora (NIP-90), safety
-│   ├── forge-node/        # Node daemon, HTTP API (lending + routing), pipeline
-│   ├── forge-cli/         # CLI: chat, seed, worker, settle, wallet
-│   ├── forge-lightning/   # CU ↔ Bitcoin Lightning bridge (bidirectional)
-│   ├── forge-net/         # P2P: iroh QUIC + Noise + gossip (trades + loans)
-│   ├── forge-proto/       # Wire protocol: 27+ message types incl. Loan*
-│   ├── forge-infer/       # Inference: llama.cpp, GGUF, Metal/CPU
-│   ├── forge-core/        # Types: NodeId, CU, Config
+│   ├── tirami-ledger/      # TRM accounting, lending, agora (NIP-90), safety
+│   ├── tirami-node/        # Node daemon, HTTP API (lending + routing), pipeline
+│   ├── tirami-cli/         # CLI: chat, seed, worker, settle, wallet
+│   ├── tirami-lightning/   # TRM ↔ Bitcoin Lightning bridge (bidirectional)
+│   ├── tirami-net/         # P2P: iroh QUIC + Noise + gossip (trades + loans)
+│   ├── tirami-proto/       # Wire protocol: 27+ message types incl. Loan*
+│   ├── tirami-infer/       # Inference: llama.cpp, GGUF, Metal/CPU
+│   ├── tirami-core/        # Types: NodeId, CU, Config
 │   └── forge-shard/       # Topology: layer assignment
 ├── sdk/python/forge_sdk.py        # Python client with full lending API
-├── mcp/forge-mcp-server.py        # MCP server (lending tools for Claude/etc.)
+├── mcp/tirami-mcp-server.py        # MCP server (lending tools for Claude/etc.)
 ├── scripts/verify-impl.sh         # TDD regression test (24 assertions)
 └── docs/                  # Specs, strategy, threat model, roadmap
 ```
@@ -340,25 +340,25 @@ forge/  (this repo — Layer 1)
 | Repo | Layer | Tests | Status |
 |------|-------|-------|--------|
 | [clearclown/forge](https://github.com/clearclown/forge) (this) | L1 Economy | 143 | Phase 1-6 ✅ |
-| [clearclown/forge-bank](https://github.com/clearclown/forge-bank) | L2 Finance | 45 | v0.1 ✅ |
-| [clearclown/forge-mind](https://github.com/clearclown/forge-mind) | L3 Intelligence | 40 | v0.1 ✅ |
-| [clearclown/forge-agora](https://github.com/clearclown/forge-agora) | L4 Discovery | 39 | v0.1 ✅ |
+| [clearclown/tirami-bank](https://github.com/clearclown/tirami-bank) | L2 Finance | 45 | v0.1 ✅ |
+| [clearclown/tirami-mind](https://github.com/clearclown/tirami-mind) | L3 Intelligence | 40 | v0.1 ✅ |
+| [clearclown/tirami-agora](https://github.com/clearclown/tirami-agora) | L4 Discovery | 39 | v0.1 ✅ |
 | [clearclown/forge-economics](https://github.com/clearclown/forge-economics) | Theory | 16/16 GREEN | ✅ |
 | [nm-arealnormalman/mesh-llm](https://github.com/nm-arealnormalman/mesh-llm) | L0 Inference | 43 (forge-economy) | ✅ |
 
 ## Docs
 
 - [Strategy](docs/strategy.md) — Competitive positioning, lending spec, 5-layer architecture
-- [Monetary Theory](docs/monetary-theory.md) — Why CU works: Soddy, Bitcoin, PoUW, AI-only currency
+- [Monetary Theory](docs/monetary-theory.md) — Why TRM works: Soddy, Bitcoin, PoUW, AI-only currency
 - [Concept & Vision](docs/concept.md) — Why compute is money
-- [Economic Model](docs/economy.md) — CU economy, Proof of Useful Work, lending
+- [Economic Model](docs/economy.md) — TRM economy, Proof of Useful Work, lending
 - [Architecture](docs/architecture.md) — Two-layer design
 - [Agent Integration](docs/agent-integration.md) — SDK, MCP, borrowing workflow
 - [Wire Protocol](docs/protocol-spec.md) — 17 message types
 - [Roadmap](docs/roadmap.md) — Development phases
 - [Threat Model](docs/threat-model.md) — Security + economic attacks
 - [Bootstrap](docs/bootstrap.md) — Startup, degradation, recovery
-- [A2A Payment](docs/a2a-payment.md) — CU payment extension for agent protocols
+- [A2A Payment](docs/a2a-payment.md) — TRM payment extension for agent protocols
 
 ## License
 

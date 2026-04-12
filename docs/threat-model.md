@@ -154,19 +154,19 @@ Those later guarantees depend on shipping actual split inference first. Until th
 
 ## Economic Threats
 
-### T10: CU Forgery
+### T10: TRM Forgery
 
-**Threat**: A node claims CU it did not earn by fabricating TradeRecords.
+**Threat**: A node claims TRM it did not earn by fabricating TradeRecords.
 
 **Current mitigation**: Local ledger with HMAC-SHA256 integrity prevents file-level tampering. However, the node operator can still write arbitrary trades into their own ledger.
 
-**Target mitigation**: Dual-signature protocol. Every TradeRecord must be signed by both the provider and the consumer. A node cannot credit itself CU without a counterparty's signature. Gossip sync means other nodes can verify both signatures independently.
+**Target mitigation**: Dual-signature protocol. Every TradeRecord must be signed by both the provider and the consumer. A node cannot credit itself TRM without a counterparty's signature. Gossip sync means other nodes can verify both signatures independently.
 
 **Residual risk**: Collusion between provider and consumer to create fake trades. This is economically irrational — the colluding consumer gains nothing. Statistical anomaly detection on trade volume and frequency can flag suspicious patterns.
 
 ### T11: Free Tier Abuse (Sybil)
 
-**Threat**: An attacker creates many new NodeIds to exploit the 1,000 CU free tier repeatedly.
+**Threat**: An attacker creates many new NodeIds to exploit the 1,000 TRM free tier repeatedly.
 
 **Current mitigation**: If more than 100 unknown nodes (contributed = 0, consumed > 0) exist in the ledger, new free-tier requests are rejected. Each NodeId is an Ed25519 keypair — cheap to create but trackable.
 
@@ -190,7 +190,7 @@ Those later guarantees depend on shipping actual split inference first. Until th
 
 ### T14: Inference Quality Attack
 
-**Threat**: A provider returns low-quality or truncated inference to earn CU without doing full computation.
+**Threat**: A provider returns low-quality or truncated inference to earn TRM without doing full computation.
 
 **Current mitigation**: Accept the risk. For most use cases, obviously wrong outputs are detectable by the consumer.
 

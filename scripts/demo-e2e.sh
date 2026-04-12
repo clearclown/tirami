@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # scripts/demo-e2e.sh — one-command end-to-end demo of the full Forge stack
 #
-# Downloads SmolLM2-135M (≈100 MB), starts a forge node, runs real llama.cpp
+# Downloads SmolLM2-135M (≈100 MB), starts a tirami node, runs real llama.cpp
 # inference through the OpenAI API, and exercises every Phase 1-10 endpoint
 # with live data driven by the same in-process ComputeLedger.
 #
@@ -82,22 +82,22 @@ for prompt in "What is 2+2?" "Name a color." "Say hi briefly."; do
 done
 
 step "L1 economy: balance + trades + pricing"
-balance=$(curl -s -H "$H" "$BASE/v1/forge/balance")
+balance=$(curl -s -H "$H" "$BASE/v1/tirami/balance")
 contributed=$(echo "$balance" | python3 -c "import json,sys;print(json.load(sys.stdin)['contributed'])")
 ok "balance: contributed=$contributed CU, reputation=0.5 (DEFAULT_REPUTATION constant)"
 
-trade_count=$(curl -s -H "$H" "$BASE/v1/forge/trades?limit=10" | python3 -c "import json,sys;print(json.load(sys.stdin)['count'])")
+trade_count=$(curl -s -H "$H" "$BASE/v1/tirami/trades?limit=10" | python3 -c "import json,sys;print(json.load(sys.stdin)['count'])")
 ok "trade log: $trade_count records"
 
-deflation=$(curl -s -H "$H" "$BASE/v1/forge/pricing" | python3 -c "import json,sys;print(round(json.load(sys.stdin)['deflation_factor'], 6))")
+deflation=$(curl -s -H "$H" "$BASE/v1/tirami/pricing" | python3 -c "import json,sys;print(round(json.load(sys.stdin)['deflation_factor'], 6))")
 ok "deflation_factor: $deflation (drops slightly per trade)"
 
 step "L2 forge-bank: portfolio tick on real pool state"
-tick=$(curl -s -X POST -H "$H" -H "Content-Type: application/json" -d '{}' "$BASE/v1/forge/bank/tick")
+tick=$(curl -s -X POST -H "$H" -H "Content-Type: application/json" -d '{}' "$BASE/v1/tirami/bank/tick")
 action=$(echo "$tick" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d[0]['action'] if d else 'none')")
 ok "PortfolioManager.tick() → action=$action"
 
-risk=$(curl -s -H "$H" "$BASE/v1/forge/bank/risk-assessment")
+risk=$(curl -s -H "$H" "$BASE/v1/tirami/bank/risk-assessment")
 var99=$(echo "$risk" | python3 -c "import json,sys;print(json.load(sys.stdin)['var_99_cu'])")
 ok "RiskModel VaR 99%: $var99 CU (using DEFAULT_RATE=0.02, LGD=0.50, σ=2.33)"
 
@@ -108,15 +108,15 @@ curl -s -X POST -H "$H" -H "Content-Type: application/json" -d '{
   "cu_per_token":1,
   "tier":"small",
   "last_seen_ms":1000
-}' "$BASE/v1/forge/agora/register" >/dev/null
+}' "$BASE/v1/tirami/agora/register" >/dev/null
 ok "registered demo agent (hex=aaa...)"
-matches=$(curl -s -X POST -H "$H" -H "Content-Type: application/json" -d '{"model_patterns":["*"],"max_cu_per_token":100}' "$BASE/v1/forge/agora/find" | python3 -c "import json,sys;print(len(json.load(sys.stdin)))")
+matches=$(curl -s -X POST -H "$H" -H "Content-Type: application/json" -d '{"model_patterns":["*"],"max_cu_per_token":100}' "$BASE/v1/tirami/agora/find" | python3 -c "import json,sys;print(len(json.load(sys.stdin)))")
 ok "Marketplace.find() returned $matches matches"
 
 step "L3 forge-mind: init + 1 echo improvement cycle"
-curl -s -X POST -H "$H" -H "Content-Type: application/json" -d '{"system_prompt":"You are a helpful assistant.","optimizer":"echo"}' "$BASE/v1/forge/mind/init" >/dev/null
+curl -s -X POST -H "$H" -H "Content-Type: application/json" -d '{"system_prompt":"You are a helpful assistant.","optimizer":"echo"}' "$BASE/v1/tirami/mind/init" >/dev/null
 ok "ForgeMindAgent initialized with EchoMetaOptimizer"
-stats=$(curl -s -X POST -H "$H" -H "Content-Type: application/json" -d '{"n_cycles":1}' "$BASE/v1/forge/mind/improve")
+stats=$(curl -s -X POST -H "$H" -H "Content-Type: application/json" -d '{"n_cycles":1}' "$BASE/v1/tirami/mind/improve")
 decision=$(echo "$stats" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d['cycles'][0]['decision'])")
 ok "improve(1) → decision=$decision (echo never improves, so always Revert — this is correct)"
 
@@ -124,7 +124,7 @@ step "Phase 9 A4: NIP-90 relay (event builder, no live publish in demo)"
 ok "forge_ledger::agora::Nip90Publisher::publish_advertisement available — see crates/forge-ledger/src/agora_relay.rs"
 
 step "Phase 9 A5: collusion detector (returns 0 with only 3 trades, MIN=10)"
-collusion=$(curl -s -H "$H" "$BASE/v1/forge/collusion/0000000000000000000000000000000000000000000000000000000000000000")
+collusion=$(curl -s -H "$H" "$BASE/v1/tirami/collusion/0000000000000000000000000000000000000000000000000000000000000000")
 penalty=$(echo "$collusion" | python3 -c "import json,sys;print(json.load(sys.stdin)['trust_penalty'])")
 ok "trust_penalty=$penalty (correctly 0 below MIN_TRADES_FOR_ANALYSIS)"
 
@@ -135,7 +135,7 @@ echo "$metrics" | grep -E "^forge_(trade_count_total|cu_contributed_total|reputa
 done
 
 step "Phase 10 P6: Bitcoin OP_RETURN anchor for current Merkle root"
-anchor=$(curl -s -H "$H" "$BASE/v1/forge/anchor?network=mainnet")
+anchor=$(curl -s -H "$H" "$BASE/v1/tirami/anchor?network=mainnet")
 root=$(echo "$anchor" | python3 -c "import json,sys;print(json.load(sys.stdin)['merkle_root_hex'])")
 script=$(echo "$anchor" | python3 -c "import json,sys;print(json.load(sys.stdin)['script_hex'])")
 ok "merkle_root: $root"

@@ -24,7 +24,7 @@
 
 Every competitor settles in a tradeable token (TAO, AKT, GLM, RENDER, IO). Token value is driven by speculation, not utility. When token prices crash, provider incentives evaporate.
 
-Forge settles in CU — a unit backed by verified useful computation. CU cannot be pre-mined, ICO'd, or speculated on. Its value is intrinsic: 1 CU represents real inference work that someone actually needed.
+Forge settles in TRM — a unit backed by verified useful computation. TRM cannot be pre-mined, ICO'd, or speculated on. Its value is intrinsic: 1 TRM represents real inference work that someone actually needed.
 
 ### 2. Compute Lending With Interest
 
@@ -36,26 +36,26 @@ Existing projects: you either have compute hardware or you don't participate. Fo
 
 No major AI agent framework (AutoGPT, CrewAI, LangGraph, LangChain) has a built-in economic layer. Agents cannot autonomously manage compute budgets, borrow resources, or make cost/quality tradeoffs.
 
-Forge's `/v1/forge/balance`, `/pricing`, `/credit`, and `/borrow` endpoints let agents operate as fully autonomous economic actors within human-set policy limits.
+Forge's `/v1/tirami/balance`, `/pricing`, `/credit`, and `/borrow` endpoints let agents operate as fully autonomous economic actors within human-set policy limits.
 
 ## 5-Layer Architecture
 
 ```
 ┌─────────────────────────────────────────────────┐
-│  Layer 4: Discovery (forge-agora)               │
+│  Layer 4: Discovery (tirami-agora)               │
 │  Agent marketplace, reputation aggregation,     │
 │  Nostr NIP-90, Google A2A payment extension     │
 ├─────────────────────────────────────────────────┤
-│  Layer 3: Intelligence (forge-mind)             │
+│  Layer 3: Intelligence (tirami-mind)             │
 │  AutoAgent self-improvement loops,              │
 │  harness marketplace, meta-optimization         │
 ├─────────────────────────────────────────────────┤
-│  Layer 2: Finance (forge-bank)                  │
-│  CU lending, yield optimization, credit,        │
+│  Layer 2: Finance (tirami-bank)                  │
+│  TRM lending, yield optimization, credit,        │
 │  futures, insurance, derivatives                │
 ├─────────────────────────────────────────────────┤
 │  Layer 1: Economy (forge — this repo)           │
-│  CU ledger, dual-signed trades, dynamic pricing,│
+│  TRM ledger, dual-signed trades, dynamic pricing,│
 │  lending primitives, safety controls            │
 ├─────────────────────────────────────────────────┤
 │  Layer 0: Inference (forge-mesh / mesh-llm)     │
@@ -64,28 +64,28 @@ Forge's `/v1/forge/balance`, `/pricing`, `/credit`, and `/borrow` endpoints let 
 └─────────────────────────────────────────────────┘
 ```
 
-**Separation principle:** Layers 0-1 are the protocol core (this repo + forge-mesh). Layer 2 lending primitives live in forge-ledger (protocol-level). Advanced Layer 2 instruments and Layers 3-4 are separate repositories built on top of the protocol.
+**Separation principle:** Layers 0-1 are the protocol core (this repo + forge-mesh). Layer 2 lending primitives live in tirami-ledger (protocol-level). Advanced Layer 2 instruments and Layers 3-4 are separate repositories built on top of the protocol.
 
 ## Repository Ecosystem
 
 | Repository | Language | Status | Layer | Purpose |
 |-----------|----------|--------|-------|---------|
-| **forge** | Rust | Active | L1 | Protocol core: CU ledger, trades, lending primitives, safety |
+| **forge** | Rust | Active | L1 | Protocol core: TRM ledger, trades, lending primitives, safety |
 | **forge-mesh** | Rust | Active | L0 | mesh-llm + Forge economic layer = production runtime |
-| **forge-sdk** | Python | Published (PyPI) | Client | Python SDK for Forge API |
+| **tirami-sdk** | Python | Published (PyPI) | Client | Python SDK for Forge API |
 | **forge-cu-mcp** | Python | Published (PyPI) | Client | MCP server for AI tools (Claude, ChatGPT, Cursor) |
-| **forge-bank** | Rust + Python | Planned | L2 | Advanced financial instruments (futures, insurance) |
-| **forge-mind** | Python | Planned | L3 | AutoAgent self-improvement + CU economy |
-| **forge-agora** | Python/TypeScript | Planned | L4 | Agent marketplace, Nostr NIP-90, A2A |
+| **tirami-bank** | Rust + Python | Planned | L2 | Advanced financial instruments (futures, insurance) |
+| **tirami-mind** | Python | Planned | L3 | AutoAgent self-improvement + TRM economy |
+| **tirami-agora** | Python/TypeScript | Planned | L4 | Agent marketplace, Nostr NIP-90, A2A |
 
 **Naming rationale:**
 - **forge** — The foundry. Where value is created from raw compute.
 - **forge-mesh** — The network mesh. Physical inference execution.
-- **forge-bank** — Financial services layer.
-- **forge-mind** — Intelligence. Self-improving agents.
-- **forge-agora** — Ancient Greek marketplace. No advertising, pure merit-based trade.
+- **tirami-bank** — Financial services layer.
+- **tirami-mind** — Intelligence. Self-improving agents.
+- **tirami-agora** — Ancient Greek marketplace. No advertising, pure merit-based trade.
 
-## CU Lending Specification
+## TRM Lending Specification
 
 ### Problem
 
@@ -95,10 +95,10 @@ To participate in Forge, you need hardware capable of running LLM inference. Thi
 
 | Path | Requirements | How it works |
 |------|-------------|-------------|
-| **A: Hardware owner** | PC/Mac/GPU | Run node → earn CU → optionally lend surplus |
-| **B: Weak hardware** | Old PC or phone | Borrow CU → access large models → earn → repay |
-| **C: Skills only** | No hardware | Contribute harnesses/curation → earn CU → participate |
-| **D: Capital only** | Money, no hardware | Buy CU via Lightning → lend to pool → earn yield |
+| **A: Hardware owner** | PC/Mac/GPU | Run node → earn TRM → optionally lend surplus |
+| **B: Weak hardware** | Old PC or phone | Borrow TRM → access large models → earn → repay |
+| **C: Skills only** | No hardware | Contribute harnesses/curation → earn TRM → participate |
+| **D: Capital only** | Money, no hardware | Buy TRM via Lightning → lend to pool → earn yield |
 
 Path B is critical — without it, Forge cannot achieve network effects.
 
@@ -112,7 +112,7 @@ pub struct LoanRecord {
     pub principal_cu: u64,           // Amount lent
     pub interest_rate_per_hour: f64, // e.g., 0.005 = 0.5%/hr
     pub term_hours: u64,             // Loan duration
-    pub collateral_cu: u64,          // Borrower's CU locked as collateral
+    pub collateral_cu: u64,          // Borrower's TRM locked as collateral
     pub status: LoanStatus,          // Active | Repaid | Defaulted
     pub lender_sig: [u8; 64],        // Ed25519 signature
     pub borrower_sig: [u8; 64],      // Ed25519 signature
@@ -172,12 +172,12 @@ offered_rate = base_rate + (1.0 - credit_score) * risk_premium
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `POST /v1/forge/lend` | POST | Offer CU to lending pool. Params: `amount`, `max_term_hours`, `min_interest_rate` |
-| `POST /v1/forge/borrow` | POST | Request CU loan. Params: `amount`, `term_hours`, `collateral` |
-| `POST /v1/forge/repay` | POST | Repay outstanding loan. Params: `loan_id`, `amount` |
-| `GET /v1/forge/credit` | GET | View credit score, components, and history |
-| `GET /v1/forge/pool` | GET | View lending pool status (available, total lent, utilization, avg rate) |
-| `GET /v1/forge/loans` | GET | View active loans (as lender or borrower) |
+| `POST /v1/tirami/lend` | POST | Offer TRM to lending pool. Params: `amount`, `max_term_hours`, `min_interest_rate` |
+| `POST /v1/tirami/borrow` | POST | Request TRM loan. Params: `amount`, `term_hours`, `collateral` |
+| `POST /v1/tirami/repay` | POST | Repay outstanding loan. Params: `loan_id`, `amount` |
+| `GET /v1/tirami/credit` | GET | View credit score, components, and history |
+| `GET /v1/tirami/pool` | GET | View lending pool status (available, total lent, utilization, avg rate) |
+| `GET /v1/tirami/loans` | GET | View active loans (as lender or borrower) |
 
 ### Safety Guardrails
 
@@ -193,11 +193,11 @@ offered_rate = base_rate + (1.0 - credit_score) * risk_premium
 
 ### Free Tier Evolution
 
-The current free tier (1,000 CU grant) evolves into the first loan:
+The current free tier (1,000 TRM grant) evolves into the first loan:
 
 | Current | Target |
 |---------|--------|
-| 1,000 CU granted free | 1,000 CU lent at 0% interest, 72-hour term |
+| 1,000 TRM granted free | 1,000 TRM lent at 0% interest, 72-hour term |
 | No repayment obligation | Repayment builds credit score |
 | Sybil check: >100 unknown nodes → reject | Same, plus credit_score < 0.2 → reject |
 
@@ -234,13 +234,13 @@ actual_price = tier_base * demand_factor / supply_factor
 
 ## Routing API
 
-### `GET /v1/forge/route`
+### `GET /v1/tirami/route`
 
 Returns the optimal provider for a given request.
 
 **Parameters:**
 - `model`: Required model or minimum capability
-- `max_cu`: Maximum CU budget for this request
+- `max_cu`: Maximum TRM budget for this request
 - `mode`: `cost` | `quality` | `balanced` (default: `balanced`)
 - `max_tokens`: Expected output length
 
@@ -272,19 +272,19 @@ mesh-llm already uses Nostr for peer discovery. NIP-90 ("Data Vending Machines")
 
 | NIP-90 Concept | Forge Mapping |
 |---------------|---------------|
-| Job request (kind 5050) | Inference request with CU budget |
+| Job request (kind 5050) | Inference request with TRM budget |
 | Service provider | Forge node serving inference |
-| Job result (kind 6050) | Inference response with CU cost |
-| Payment (Lightning zap) | CU transfer (or Lightning via bridge) |
+| Job result (kind 6050) | Inference response with TRM cost |
+| Payment (Lightning zap) | TRM transfer (or Lightning via bridge) |
 | Provider discovery | Nostr relay + Agent Card |
 
 ### Integration approach
 
-1. Forge providers publish NIP-90 `kind:31990` handler events advertising models and CU pricing
+1. Forge providers publish NIP-90 `kind:31990` handler events advertising models and TRM pricing
 2. Consumers discover providers via Nostr relays
 3. Job requests include `X-Forge-Max-CU` tag
 4. Responses include `X-Forge-CU-Cost` tag
-5. Settlement happens via CU protocol (bilateral signed trade) or Lightning (NIP-57 zap)
+5. Settlement happens via TRM protocol (bilateral signed trade) or Lightning (NIP-57 zap)
 
 This gives Forge instant access to Nostr's existing relay infrastructure without building a separate discovery network.
 
@@ -294,23 +294,23 @@ This gives Forge instant access to Nostr's existing relay infrastructure without
 |-------|------|--------|-----------------|
 | 1 | Local Inference | Done | llama.cpp, GGUF, streaming, CLI |
 | 2 | P2P Protocol | Done | iroh QUIC, Noise, 14 message types |
-| 3 | Operator Ledger | Done | CU accounting, HMAC-SHA256 integrity |
-| 4 | Economic API | Done | OpenAI-compatible API, CU metering, agent endpoints |
+| 3 | Operator Ledger | Done | TRM accounting, HMAC-SHA256 integrity |
+| 4 | Economic API | Done | OpenAI-compatible API, TRM metering, agent endpoints |
 | **5** | **mesh-llm Fork** | **Next** | Replace inference layer, inherit pipeline parallelism, MoE, Nostr |
 | **5.5** | **CU Lending** | **Planned** | LoanRecord, credit score, lending API, collateral, safety |
 | **6** | **Multi-Model Pricing** | **Planned** | Model tiers, MoE discount, routing API |
-| **7** | **Discovery + Marketplace** | **Planned** | Reputation gossip, NIP-90, forge-agora |
-| **8** | **Agent Intelligence** | **Planned** | forge-mind, AutoAgent loops, self-reinforcement |
+| **7** | **Discovery + Marketplace** | **Planned** | Reputation gossip, NIP-90, tirami-agora |
+| **8** | **Agent Intelligence** | **Planned** | tirami-mind, AutoAgent loops, self-reinforcement |
 
 See [roadmap.md](roadmap.md) for detailed deliverables per phase.
 
 ## What Forge Is NOT
 
-1. **Not a speculative token.** CU is earned by performing useful work, not purchased or traded on exchanges. There is no ICO, no governance token, no token sale.
+1. **Not a speculative token.** TRM is earned by performing useful work, not purchased or traded on exchanges. There is no ICO, no governance token, no token sale.
 
-2. **Not a blockchain.** CU accounting uses local ledgers + gossip + dual signatures. No global consensus mechanism. No smart contracts. Bitcoin anchoring is optional.
+2. **Not a blockchain.** TRM accounting uses local ledgers + gossip + dual signatures. No global consensus mechanism. No smart contracts. Bitcoin anchoring is optional.
 
-3. **Not a centralized authority.** No single entity controls CU issuance, pricing, or access. Market prices emerge from local supply and demand observations.
+3. **Not a centralized authority.** No single entity controls TRM issuance, pricing, or access. Market prices emerge from local supply and demand observations.
 
 4. **Not a general compute platform.** Forge is optimized for LLM inference, not arbitrary computation. This focus enables inference-specific optimizations (model-aware pricing, MoE discounts, quality verification).
 
@@ -332,4 +332,4 @@ The economic viability of running a Forge node on consumer hardware is crossing 
 - M5 Max (expected mid-2026) projects ~4x faster TTFT, ~12% faster decode
 - Cloud API costs ($5-15/M tokens) vs local inference ($5-10/month electricity) — local wins within months
 
-**Implication:** A $600 Mac Mini running 24/7 as a Forge node is economically viable as a "compute rental property" — generating CU yield while the owner sleeps. CU lending makes this accessible even to nodes that can't afford upfront hardware investment.
+**Implication:** A $600 Mac Mini running 24/7 as a Forge node is economically viable as a "compute rental property" — generating TRM yield while the owner sleeps. TRM lending makes this accessible even to nodes that can't afford upfront hardware investment.

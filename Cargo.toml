@@ -1,19 +1,19 @@
 [workspace]
 members = [
-    "crates/forge-core",
-    "crates/forge-net",
-    "crates/forge-shard",
-    "crates/forge-infer",
-    "crates/forge-proto",
-    "crates/forge-ledger",
-    "crates/forge-node",
-    "crates/forge-cli",
-    "crates/forge-lightning",
-    "crates/forge-bank",
-    "crates/forge-mind",
-    "crates/forge-agora",
-    "crates/forge-sdk",
-    "crates/forge-mcp",
+    "crates/tirami-core",
+    "crates/tirami-net",
+    "crates/tirami-shard",
+    "crates/tirami-infer",
+    "crates/tirami-proto",
+    "crates/tirami-ledger",
+    "crates/tirami-node",
+    "crates/tirami-cli",
+    "crates/tirami-lightning",
+    "crates/tirami-bank",
+    "crates/tirami-mind",
+    "crates/tirami-agora",
+    "crates/tirami-sdk",
+    "crates/tirami-mcp",
 ]
 resolver = "2"
 
@@ -30,19 +30,19 @@ readme = "README.md"
 [workspace.dependencies]
 # Internal crates — path + explicit version so `cargo publish` dry-run succeeds.
 # When bumping, update `[workspace.package].version` and here simultaneously.
-forge-core = { path = "crates/forge-core", version = "0.3.0" }
-forge-net = { path = "crates/forge-net", version = "0.3.0" }
-forge-shard = { path = "crates/forge-shard", version = "0.3.0" }
-forge-infer = { path = "crates/forge-infer", version = "0.3.0" }
-forge-proto = { path = "crates/forge-proto", version = "0.3.0" }
-forge-ledger = { path = "crates/forge-ledger", version = "0.3.0" }
-forge-node = { path = "crates/forge-node", version = "0.3.0" }
-forge-lightning = { path = "crates/forge-lightning", version = "0.3.0" }
-forge-bank = { path = "crates/forge-bank", version = "0.3.0" }
-forge-mind = { path = "crates/forge-mind", version = "0.3.0" }
-forge-agora = { path = "crates/forge-agora", version = "0.3.0" }
-forge-sdk = { path = "crates/forge-sdk", version = "0.3.0" }
-forge-mcp = { path = "crates/forge-mcp", version = "0.3.0" }
+tirami-core = { path = "crates/tirami-core", version = "0.3.0" }
+tirami-net = { path = "crates/tirami-net", version = "0.3.0" }
+tirami-shard = { path = "crates/tirami-shard", version = "0.3.0" }
+tirami-infer = { path = "crates/tirami-infer", version = "0.3.0" }
+tirami-proto = { path = "crates/tirami-proto", version = "0.3.0" }
+tirami-ledger = { path = "crates/tirami-ledger", version = "0.3.0" }
+tirami-node = { path = "crates/tirami-node", version = "0.3.0" }
+tirami-lightning = { path = "crates/tirami-lightning", version = "0.3.0" }
+tirami-bank = { path = "crates/tirami-bank", version = "0.3.0" }
+tirami-mind = { path = "crates/tirami-mind", version = "0.3.0" }
+tirami-agora = { path = "crates/tirami-agora", version = "0.3.0" }
+tirami-sdk = { path = "crates/tirami-sdk", version = "0.3.0" }
+tirami-mcp = { path = "crates/tirami-mcp", version = "0.3.0" }
 
 # MCP SDK
 rmcp = { version = "1.2.0", features = ["server", "transport-io"] }
@@ -92,10 +92,10 @@ tower = "0.5"
 tokio-stream = "0.1"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 
-# Pattern matching (for forge-agora CapabilityMatcher)
+# Pattern matching (for tirami-agora CapabilityMatcher)
 glob = "0.3"
 
-# Async trait (for forge-mind MetaOptimizer with reqwest-backed CuPaidOptimizer)
+# Async trait (for tirami-mind MetaOptimizer with reqwest-backed CuPaidOptimizer)
 async-trait = "0.1"
 
 # WebSocket client for Nostr relay publishing

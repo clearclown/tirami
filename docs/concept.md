@@ -30,10 +30,10 @@ Forge is mesh-llm with an economy.
 The inference layer (networking, model distribution, API) comes from mesh-llm. Forge adds:
 
 1. **CU Ledger** — Every inference creates a trade. Provider earns CU, consumer spends CU. Dual-signed by both parties.
-2. **Dynamic Pricing** — CU per token floats with local supply and demand. More idle nodes → cheaper. More requests → more expensive.
-3. **Proof of Useful Work** — CU is earned by performing real inference, not by solving arbitrary puzzles.
+2. **Dynamic Pricing** — TRM per token floats with local supply and demand. More idle nodes → cheaper. More requests → more expensive.
+3. **Proof of Useful Work** — TRM is earned by performing real inference, not by solving arbitrary puzzles.
 4. **Agent Budget API** — AI agents can query their balance, estimate costs, and make autonomous spending decisions.
-5. **External Bridges** — CU can optionally be exchanged for Bitcoin (Lightning), stablecoins, or fiat through adapter layers outside the protocol.
+5. **External Bridges** — TRM can optionally be exchanged for Bitcoin (Lightning), stablecoins, or fiat through adapter layers outside the protocol.
 
 ## Why Not Just Use Bitcoin?
 
@@ -44,45 +44,45 @@ We considered making Bitcoin/Lightning the primary settlement layer. We decided 
 | **Philosophical inconsistency** | Rewarding useful work in a currency backed by useless work |
 | **External dependency** | If Bitcoin's security breaks (quantum computing, regulatory), Forge's economy breaks too |
 | **Efficiency** | Lightning channel management is overhead for per-inference micropayments |
-| **Self-sufficiency** | CU has value because the computation itself is useful — it doesn't need external validation |
+| **Self-sufficiency** | TRM has value because the computation itself is useful — it doesn't need external validation |
 
 Bitcoin remains available as an **off-ramp** for operators who need external liquidity. But the protocol's native economy runs on CU.
 
-## Why CU Has Value
+## Why TRM Has Value
 
 CU is not a speculative token. It is a **claim on future compute**.
 
-If you earned 10,000 CU by serving inference, you can spend those CU to buy inference from any other node on the network. The value is not abstract — it is the ability to make a machine think for you.
+If you earned 10,000 TRM by serving inference, you can spend those TRM to buy inference from any other node on the network. The value is not abstract — it is the ability to make a machine think for you.
 
-This makes CU a **productive asset**, not a store of value:
+This makes TRM a **productive asset**, not a store of value:
 
 ```
 Apartment building          Mac Mini on Forge
 ───────────────────         ──────────────────
 Asset: building             Asset: compute hardware
 Cost: maintenance           Cost: electricity
-Revenue: rent               Revenue: CU from inference
-Yield: rent - maintenance   Yield: CU earned - electricity
+Revenue: rent               Revenue: TRM from inference
+Yield: rent - maintenance   Yield: TRM earned - electricity
 Idle = lost income          Idle = wasted potential
 ```
 
-Unlike Bitcoin (digital gold — holds value but produces nothing), CU is like a rental property — it generates yield by performing useful work.
+Unlike Bitcoin (digital gold — holds value but produces nothing), TRM is like a rental property — it generates yield by performing useful work.
 
 ## AI Agents as Economic Actors
 
 The most important consumer of Forge's economy is not humans — it's AI agents.
 
-An agent running a small local model (1.5B parameters on a phone) has limited intelligence. But if it can earn CU by lending idle compute and spend CU to access larger models, it can autonomously expand its own capabilities:
+An agent running a small local model (1.5B parameters on a phone) has limited intelligence. But if it can earn TRM by lending idle compute and spend TRM to access larger models, it can autonomously expand its own capabilities:
 
 ```
 Small agent (phone, 1.5B)
   → idle overnight → lends CPU → earns CU
   → morning: needs complex reasoning
-  → checks /v1/forge/balance → has 5,000 CU
-  → checks /v1/forge/pricing → 70B model costs 2,000 CU for 500 tokens
+  → checks /v1/tirami/balance → has 5,000 CU
+  → checks /v1/tirami/pricing → 70B model costs 2,000 TRM for 500 tokens
   → buys 70B inference → gets smarter answer
   → uses answer to make better trading decisions
-  → earns more CU next cycle
+  → earns more TRM next cycle
 ```
 
 This is the self-reinforcement loop: agents that make good economic decisions grow stronger, which lets them make even better decisions.
@@ -100,20 +100,20 @@ Forge enables a marketplace where providers are judged by verifiable performance
 - **Quality** is benchmarkable — agents can spot-check inference outputs
 - **Discovery** happens via Nostr NIP-90 and A2A Agent Cards, not SEO
 
-This is the vision behind **forge-agora** (Layer 4): an agent marketplace where the best provider wins, not the loudest.
+This is the vision behind **tirami-agora** (Layer 4): an agent marketplace where the best provider wins, not the loudest.
 
 ## Compute Microfinance
 
-A node with 500 CU cannot access a 70B model (costs ~2,000 CU per session). Without lending, this node is permanently stuck at the small-model tier.
+A node with 500 TRM cannot access a 70B model (costs ~2,000 TRM per session). Without lending, this node is permanently stuck at the small-model tier.
 
-With CU lending:
+With TRM lending:
 
 ```
-1. Node borrows 1,500 CU at 0.5%/hr interest
+1. Node borrows 1,500 TRM at 0.5%/hr interest
 2. Accesses 70B model for 4 hours
 3. Serves premium inference, earns 3,000 CU
-4. Repays 1,500 + 30 CU interest
-5. Net profit: 1,470 CU (minus electricity)
+4. Repays 1,500 + 30 TRM interest
+5. Net profit: 1,470 TRM (minus electricity)
 ```
 
 This is the engine that makes Forge's self-improvement loop economically viable. No other distributed inference project offers compute lending — this was confirmed through comprehensive competitive analysis of Bittensor, Akash, Golem, io.net, Gensyn, Ritual, and others.
@@ -137,4 +137,4 @@ See [economy.md](economy.md) for the full lending specification and [strategy.md
 
 ## The Metaphor
 
-A seed falls into the network. It earns its first CU by lending idle cycles overnight. With those CU, it buys access to a larger model. It becomes smarter. It finds more efficient trades. More CU. A bigger model. A forest emerges from a single seed — not because someone planted it, but because the economics made growth inevitable.
+A seed falls into the network. It earns its first TRM by lending idle cycles overnight. With those CU, it buys access to a larger model. It becomes smarter. It finds more efficient trades. More CU. A bigger model. A forest emerges from a single seed — not because someone planted it, but because the economics made growth inevitable.

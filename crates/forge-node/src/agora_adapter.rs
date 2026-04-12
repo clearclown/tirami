@@ -84,3 +84,76 @@ pub async fn refresh_marketplace_from_ledger(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_trade(provider: [u8; 32], consumer: [u8; 32], cu: u64) -> TradeRecord {
+        TradeRecord {
+            provider: forge_core::NodeId(provider),
+            consumer: forge_core::NodeId(consumer),
+            cu_amount: cu,
+            tokens_processed: cu / 10,
+            timestamp: 1_700_000_000_000,
+            model_id: "test-model".to_string(),
+        }
+    }
+
+    // ===========================================================================
+    // DEEP SECURITY TESTS — Round 2 (agora adapter edge cases)
+    // ===========================================================================
+
+    #[test]
+    fn sec_deep_observation_from_self_trade_returns_none() {
+        // provider == consumer → observation_from_trade must return None.
+        let same = [1u8; 32];
+        let trade = make_trade(same, same, 100);
+        let obs = observation_from_trade(&trade);
+        assert!(
+            obs.is_none(),
+            "self-trade (provider == consumer) must produce None observation"
+        );
+    }
+
+    #[test]
+    fn sec_deep_observation_from_valid_trade_returns_some() {
+        let trade = make_trade([1u8; 32], [2u8; 32], 100);
+        let obs = observation_from_trade(&trade);
+        assert!(obs.is_some(), "valid distinct-party trade must produce Some observation");
+    }
+
+    #[test]
+    fn sec_deep_observation_from_zero_cu_trade_handled() {
+        // TradeRecord with cu_amount = 0 — the adapter should not panic.
+        let trade = make_trade([3u8; 32], [4u8; 32], 0);
+        let result = std::panic::catch_unwind(|| observation_from_trade(&trade));
+        assert!(result.is_ok(), "zero-cu trade must not cause panic in observation_from_trade");
+    }
+
+    #[test]
+    fn sec_deep_infer_tier_frontier_models() {
+        assert_eq!(infer_tier("claude-opus-3-5"), ModelTier::Frontier);
+        assert_eq!(infer_tier("gpt-4-turbo"), ModelTier::Frontier);
+        assert_eq!(infer_tier("frontier-model"), ModelTier::Frontier);
+    }
+
+    #[test]
+    fn sec_deep_infer_tier_unknown_model_defaults_to_small() {
+        assert_eq!(infer_tier("unknown-model-xyz"), ModelTier::Small);
+        assert_eq!(infer_tier(""), ModelTier::Small);
+        assert_eq!(infer_tier("   "), ModelTier::Small);
+    }
+
+    #[test]
+    fn sec_deep_infer_tier_large_models() {
+        assert_eq!(infer_tier("llama-70b"), ModelTier::Large);
+        assert_eq!(infer_tier("model-large-v2"), ModelTier::Large);
+    }
+
+    #[test]
+    fn sec_deep_infer_tier_medium_models() {
+        assert_eq!(infer_tier("llama-3-8b"), ModelTier::Medium);
+        assert_eq!(infer_tier("model-13b-chat"), ModelTier::Medium);
+    }
+}

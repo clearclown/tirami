@@ -437,4 +437,96 @@ mod tests {
         // HighYield will lend
         assert!(decisions.iter().any(|d| d.action == ActionKind::Lend));
     }
+
+    // ===========================================================================
+    // DEEP SECURITY TESTS — Round 2 (NaN/Inf pool fields, zero-cash, edge cases)
+    // ===========================================================================
+
+    #[test]
+    fn sec_deep_conservative_with_nan_reserve_ratio_does_not_panic() {
+        // PoolSnapshot::new validates reserve_ratio in [0,1], so NaN is rejected.
+        // Verify the constructor rejects NaN without panic.
+        let result = crate::types::PoolSnapshot::new(100_000, 0, 100_000, f64::NAN, 0, 0.0, 0, 0.0);
+        assert!(result.is_err(), "NaN reserve_ratio must be rejected by PoolSnapshot::new");
+    }
+
+    #[test]
+    fn sec_deep_conservative_with_infinity_reserve_ratio_does_not_panic() {
+        let result = crate::types::PoolSnapshot::new(100_000, 0, 100_000, f64::INFINITY, 0, 0.0, 0, 0.0);
+        assert!(result.is_err(), "Infinity reserve_ratio must be rejected");
+    }
+
+    #[test]
+    fn sec_deep_strategy_zero_cash_all_hold() {
+        // Portfolio with 0 CU cash — strategies must return Hold, not panic.
+        let s_conservative = ConservativeStrategy::default();
+        let s_high = HighYieldStrategy::default();
+        let s_balanced = BalancedStrategy::default();
+        let pool = default_pool(0.7);
+        let empty = Portfolio::new(0);
+
+        for (name, decisions) in [
+            ("conservative", s_conservative.decide(&empty, &pool, &RiskTolerance::Balanced)),
+            ("high_yield",   s_high.decide(&empty, &pool, &RiskTolerance::Balanced)),
+            ("balanced",     s_balanced.decide(&empty, &pool, &RiskTolerance::Balanced)),
+        ] {
+            assert!(
+                !decisions.is_empty(),
+                "{name} must return at least one decision for zero-cash portfolio"
+            );
+            // With zero cash, Lend amount should be 0 (nothing to lend).
+            for d in &decisions {
+                if d.action == ActionKind::Lend {
+                    assert_eq!(d.cu_amount, 0, "{name}: Lend cu_amount must be 0 when portfolio cash is 0");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn sec_deep_strategy_kind_conservative_roundtrip() {
+        let kind = StrategyKind::Conservative { max_commit_fraction: 0.25 };
+        let strategy = kind.to_strategy().expect("must produce valid strategy");
+        assert_eq!(strategy.name(), "ConservativeStrategy");
+    }
+
+    #[test]
+    fn sec_deep_strategy_kind_high_yield_roundtrip() {
+        let kind = StrategyKind::HighYield { base_commit_fraction: 0.60 };
+        let strategy = kind.to_strategy().expect("must produce valid strategy");
+        assert_eq!(strategy.name(), "HighYieldStrategy");
+    }
+
+    #[test]
+    fn sec_deep_strategy_kind_balanced_roundtrip() {
+        let kind = StrategyKind::Balanced { threshold: 0.45 };
+        let strategy = kind.to_strategy().expect("must produce valid strategy");
+        assert_eq!(strategy.name(), "BalancedStrategy");
+    }
+
+    #[test]
+    fn sec_deep_strategy_kind_invalid_fraction_rejected() {
+        // Out-of-range fraction must return Err, not panic.
+        let kind = StrategyKind::Conservative { max_commit_fraction: 2.0 };
+        assert!(kind.to_strategy().is_err(), "fraction > 1.0 must be rejected");
+
+        let kind2 = StrategyKind::HighYield { base_commit_fraction: 0.0 };
+        assert!(kind2.to_strategy().is_err(), "fraction = 0.0 must be rejected");
+    }
+
+    #[test]
+    fn sec_deep_high_yield_infinity_avg_interest_rate_does_not_panic() {
+        // avg_interest_rate = INF in a pool snapshot that passes validation.
+        // PoolSnapshot::new does not validate avg_interest_rate, so INF may be stored.
+        let pool_result = crate::types::PoolSnapshot::new(
+            1_000_000, 0, 1_000_000, 0.8, 10, f64::INFINITY, 0, f64::INFINITY,
+        );
+        if let Ok(pool) = pool_result {
+            let s = HighYieldStrategy::default();
+            // Must not panic regardless of INF fields.
+            let decisions = s.decide(&Portfolio::new(10_000), &pool, &RiskTolerance::Balanced);
+            assert!(!decisions.is_empty(), "strategy must produce decisions for INF-rate pool");
+        }
+        // If PoolSnapshot::new rejected it, that's also acceptable.
+    }
 }

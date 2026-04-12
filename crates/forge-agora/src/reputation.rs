@@ -297,4 +297,87 @@ mod tests {
             + ReputationCalculator::WEIGHT_CONSISTENCY;
         assert!((sum - 1.0).abs() < 1e-9);
     }
+
+    // ===========================================================================
+    // DEEP SECURITY TESTS — Round 2 (empty inputs, NaN volume, edge timestamps)
+    // ===========================================================================
+
+    #[test]
+    fn sec_deep_reputation_empty_trades_returns_cold_start() {
+        let calc = ReputationCalculator;
+        let score = calc.compute(&hex64("a"), &[], 1_000_000);
+        assert_eq!(
+            score.overall,
+            ReputationCalculator::NEW_AGENT_REPUTATION,
+            "empty trades must return NEW_AGENT_REPUTATION"
+        );
+        assert!(!score.overall.is_nan(), "empty trades must not produce NaN score");
+        assert_eq!(score.trade_count, 0);
+    }
+
+    #[test]
+    fn sec_deep_reputation_overall_never_nan_with_zero_amounts() {
+        // Trades with cu_amount = 0 → volume = 0 → volume_score = 0 (not NaN).
+        let calc = ReputationCalculator;
+        let now = 1_700_000_000_000u64;
+        let trades = vec![make_trade("a", "b", 0, now)];
+        let score = calc.compute(&hex64("a"), &trades, now);
+        assert!(!score.overall.is_nan(), "zero-amount trades must not produce NaN score");
+        assert!((0.0..=1.0).contains(&score.overall));
+    }
+
+    #[test]
+    fn sec_deep_reputation_single_trade_no_consistency_score() {
+        // Single trade → only 1 timestamp → no intervals → consistency = 0.
+        let calc = ReputationCalculator;
+        let now = 1_700_000_000_000u64;
+        let trades = vec![make_trade("a", "b", 100, now)];
+        let score = calc.compute(&hex64("a"), &trades, now);
+        assert_eq!(score.consistency, 0.0, "single trade must have consistency 0");
+        assert!(!score.consistency.is_nan());
+    }
+
+    #[test]
+    fn sec_deep_reputation_now_before_trade_timestamp_recency_still_valid() {
+        // now_ms < trade timestamp: saturating_sub(now, most_recent) = 0 → age = 0 → recency = 1.0.
+        let calc = ReputationCalculator;
+        let trade_ts = 1_700_000_000_000u64;
+        let now = trade_ts - 1_000; // now is BEFORE the trade
+        let trades = vec![make_trade("a", "b", 100, trade_ts)];
+        let score = calc.compute(&hex64("a"), &trades, now);
+        assert!(
+            !score.recency.is_nan(),
+            "recency must be finite even when now < trade timestamp"
+        );
+        assert!((0.0..=1.0).contains(&score.recency));
+    }
+
+    #[test]
+    fn sec_deep_reputation_very_large_cu_amount_does_not_overflow() {
+        // cu_amount near u64::MAX — summing multiple such trades could overflow.
+        // volume_subscore uses total_cu as f64 / VOLUME_CAP → must not panic.
+        let calc = ReputationCalculator;
+        let now = 1_700_000_000_000u64;
+        let trades = vec![
+            make_trade("a", "b", u64::MAX / 2, now),
+            make_trade("a", "c", u64::MAX / 2, now + 1000),
+        ];
+        let score = calc.compute(&hex64("a"), &trades, now + 1000);
+        assert!(!score.volume.is_nan(), "u64::MAX volume must not produce NaN");
+        assert!((0.0..=1.0).contains(&score.volume), "volume capped at 1.0");
+        assert!(!score.overall.is_nan());
+    }
+
+    #[test]
+    fn sec_deep_reputation_all_same_timestamps_consistency_is_one() {
+        // All trades at the exact same timestamp → intervals all zero → mean = 0 → score = 1.0.
+        let calc = ReputationCalculator;
+        let now = 1_700_000_000_000u64;
+        let trades: Vec<_> = (0..5u8).map(|i| {
+            make_trade("a", &(i + 10).to_string(), 100, now)
+        }).collect();
+        let score = calc.compute(&hex64("a"), &trades, now);
+        // mean interval = 0 → consistency returns 1.0.
+        assert!(!score.consistency.is_nan(), "zero-interval trades must not produce NaN consistency");
+    }
 }

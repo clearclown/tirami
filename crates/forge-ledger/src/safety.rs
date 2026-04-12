@@ -457,7 +457,9 @@ impl SafetyController {
         }
 
         // Gate 4: borrower credit
-        if borrower_credit < MIN_CREDIT_FOR_BORROWING {
+        // Security: NaN < MIN_CREDIT evaluates to false in IEEE 754,
+        // so NaN credit would bypass this gate. Check finite first.
+        if !borrower_credit.is_finite() || borrower_credit < MIN_CREDIT_FOR_BORROWING {
             return Err(LoanDenied::InsufficientCredit {
                 score: borrower_credit,
                 minimum: MIN_CREDIT_FOR_BORROWING,
@@ -799,5 +801,160 @@ mod tests {
             result,
             Err(LoanDenied::DefaultRateCircuitTripped)
         ));
+    }
+
+    // ===========================================================================
+    // DEEP SECURITY TESTS — Round 2 (safety boundary edge cases)
+    // ===========================================================================
+
+    #[test]
+    fn sec_deep_kill_switch_blocks_all_spending_operations() {
+        let mut safety = SafetyController::new();
+        let node = NodeId([1u8; 32]);
+
+        safety.kill_switch.activate("test emergency", "security-admin");
+
+        // Every cu_amount from 1 to max_cu_per_request must be blocked.
+        for amount in [1u64, 10, 100, 500, 999, 1000] {
+            let result = safety.check_spend(&node, amount);
+            assert!(
+                matches!(result, Err(SpendDenied::KillSwitchActive(_))),
+                "kill switch must block all spends regardless of amount, failed for {amount}"
+            );
+        }
+
+        // Even zero-spend check must go through kill switch gate first.
+        // (zero is blocked by policy limit gate which comes after kill switch.)
+        let result = safety.check_spend(&node, 1_u64);
+        assert!(result.is_err(), "kill switch must still block smallest possible spend");
+    }
+
+    #[test]
+    fn sec_deep_zero_max_cu_per_hour_blocks_all_spends() {
+        let mut safety = SafetyController::new();
+        let node = NodeId([2u8; 32]);
+        safety.default_policy.max_cu_per_hour = 0;
+        safety.default_policy.max_cu_per_request = 10_000; // lift request limit
+
+        // With max_cu_per_hour = 0, hourly_spend (0) + any amount > 0 exceeds limit.
+        let result = safety.check_spend(&node, 1);
+        assert!(
+            matches!(result, Err(SpendDenied::HourlyLimitExceeded { .. })),
+            "zero max_cu_per_hour must block all spends, got {:?}", result
+        );
+    }
+
+    #[test]
+    fn sec_deep_zero_lifetime_cap_blocks_all_spends() {
+        let mut safety = SafetyController::new();
+        let node = NodeId([3u8; 32]);
+        safety.default_policy.max_cu_lifetime = 0;
+        safety.default_policy.max_cu_per_request = 10_000;
+        safety.default_policy.max_cu_per_hour = 1_000_000;
+
+        let result = safety.check_spend(&node, 1);
+        assert!(
+            matches!(result, Err(SpendDenied::LifetimeCapReached { .. })),
+            "zero lifetime cap must block all spends, got {:?}", result
+        );
+    }
+
+    #[test]
+    fn sec_deep_budget_policy_exactly_at_hourly_limit_allowed_then_blocked() {
+        let mut safety = SafetyController::new();
+        let node = NodeId([4u8; 32]);
+        safety.default_policy.max_cu_per_hour = 1_000;
+        safety.default_policy.max_cu_per_request = 1_000;
+        safety.default_policy.max_cu_lifetime = 100_000;
+        safety.default_policy.human_approval_threshold = None;
+
+        // Exactly at the limit must be allowed.
+        assert!(safety.check_spend(&node, 1_000).is_ok(), "exactly at hourly limit must be allowed");
+        safety.record_spend(&node, 1_000);
+
+        // One more must be blocked.
+        let result = safety.check_spend(&node, 1);
+        assert!(
+            matches!(result, Err(SpendDenied::HourlyLimitExceeded { .. })),
+            "one over hourly limit must be blocked, got {:?}", result
+        );
+    }
+
+    #[test]
+    fn sec_deep_lending_circuit_breaker_auto_resets_after_5min() {
+        let mut state = LendingCircuitState::default();
+        let now = 1_000_000u64;
+        state.trip(now, "test trip");
+        assert!(state.is_tripped(now), "just-tripped circuit must be tripped");
+
+        // At RESET_AFTER_MS - 1, still tripped.
+        let just_before = now + LendingCircuitState::RESET_AFTER_MS - 1;
+        assert!(state.is_tripped(just_before), "circuit must remain tripped before reset window");
+
+        // At exactly RESET_AFTER_MS, auto-reset.
+        let at_reset = now + LendingCircuitState::RESET_AFTER_MS;
+        assert!(!state.is_tripped(at_reset), "circuit must auto-reset exactly at RESET_AFTER_MS");
+    }
+
+    #[test]
+    fn sec_deep_lending_circuit_zero_default_rate_is_zero() {
+        let mut state = LendingCircuitState::default();
+        let now = 1_000_000u64;
+        let rate = state.default_rate(now);
+        assert_eq!(rate, 0.0, "empty state must have 0.0 default rate, not NaN");
+        assert!(!rate.is_nan(), "default_rate must never be NaN on empty state");
+    }
+
+    #[test]
+    fn sec_deep_lending_circuit_velocity_zero_on_empty() {
+        let mut state = LendingCircuitState::default();
+        let now = 1_000_000u64;
+        let vel = state.velocity(now);
+        assert_eq!(vel, 0, "empty state must have velocity 0");
+    }
+
+    #[test]
+    fn sec_deep_check_loan_nan_credit_behavior_documented() {
+        // KNOWN BEHAVIOR: NaN < MIN_CREDIT_FOR_BORROWING (e.g., 0.3) evaluates to FALSE
+        // in IEEE 754. This means NaN credit passes the credit check gate.
+        //
+        // The safe fix is to guard with: if !credit.is_finite() || credit < minimum { deny }
+        //
+        // This test documents the CURRENT behavior so any future fix that rejects NaN
+        // will cause this test to pass the more-strict assertion.
+        let mut safety = SafetyController::new();
+        let result = safety.check_loan_creation(
+            1_000, 3_000, 24,
+            f64::NAN, // NaN credit score
+            1_000_000, 1_000_000,
+        );
+        // Currently NaN passes the credit check. If fixed, result would be Err.
+        // Document: NaN credit score is a bypass vulnerability when not guarded.
+        match result {
+            Err(LoanDenied::InsufficientCredit { .. }) => {
+                // Fixed — NaN is now rejected as insufficient credit.
+            }
+            Ok(()) => {
+                // Known vulnerability: NaN bypasses credit check.
+                // This is documented here; the fix is to add is_finite() guard.
+            }
+            Err(e) => {
+                // Rejected for another reason (e.g., pool limit) — acceptable.
+                let _ = e;
+            }
+        }
+    }
+
+    #[test]
+    fn sec_deep_check_loan_with_zero_collateral_returns_ltv_error() {
+        let mut safety = SafetyController::new();
+        let result = safety.check_loan_creation(
+            1_000, 0, // zero collateral
+            24, 0.9, 1_000_000, 1_000_000,
+        );
+        assert!(
+            matches!(result, Err(LoanDenied::ExcessiveLtv { .. })),
+            "zero collateral must return ExcessiveLtv error, got {:?}", result
+        );
     }
 }

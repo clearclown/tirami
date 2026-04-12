@@ -400,4 +400,128 @@ mod tests {
             "zero-CU spend must always be rejected"
         );
     }
+
+    // ===========================================================================
+    // DEEP SECURITY TESTS — Round 2 (day-rollover timing, overflow, ROI edge cases)
+    // ===========================================================================
+
+    #[test]
+    fn sec_deep_budget_day_rollover_at_exact_24h_boundary() {
+        // Rollover must trigger at exactly 24 * 3_600_000 ms.
+        let mut b = CuBudget::default();
+        let start = b.day_started_at_ms;
+        b.record_spend(500).unwrap();
+
+        let exact_boundary = start + 24 * 3_600_000;
+        let reset = b.maybe_reset_day(exact_boundary);
+        assert!(reset, "rollover must trigger at exactly 24h boundary");
+        assert_eq!(b.spent_today_cu, 0, "spend counter must reset at 24h");
+    }
+
+    #[test]
+    fn sec_deep_budget_no_rollover_just_before_24h() {
+        // At 24h - 1ms, rollover must NOT trigger.
+        let mut b = CuBudget::default();
+        let start = b.day_started_at_ms;
+        b.record_spend(500).unwrap();
+
+        let just_before = start + 24 * 3_600_000 - 1;
+        let reset = b.maybe_reset_day(just_before);
+        assert!(!reset, "rollover must NOT trigger at 24h - 1ms");
+        assert_eq!(b.spent_today_cu, 500, "spend counter must remain unchanged before rollover");
+    }
+
+    #[test]
+    fn sec_deep_budget_u64_max_timestamp_does_not_overflow() {
+        // now_ms = u64::MAX must not overflow in saturating_sub with day_started_at_ms = 0.
+        let mut b = CuBudget {
+            day_started_at_ms: 0,
+            ..CuBudget::default()
+        };
+        // u64::MAX - 0 = u64::MAX, which is >= 24h → rollover triggers.
+        let result = std::panic::catch_unwind(move || {
+            b.maybe_reset_day(u64::MAX)
+        });
+        assert!(result.is_ok(), "u64::MAX timestamp must not cause panic in maybe_reset_day");
+    }
+
+    #[test]
+    fn sec_deep_budget_now_ms_before_day_start_does_not_rollover() {
+        // now_ms < day_started_at_ms — saturating_sub produces 0 → no rollover.
+        let mut b = CuBudget {
+            day_started_at_ms: 1_000_000,
+            ..CuBudget::default()
+        };
+        b.record_spend(100).unwrap();
+        let reset = b.maybe_reset_day(500_000); // past → underflow saturates to 0
+        assert!(!reset, "timestamp before day_start must not trigger rollover");
+        assert_eq!(b.spent_today_cu, 100, "spend counter must be unchanged");
+    }
+
+    #[test]
+    fn sec_deep_improvement_negative_delta_never_accepted() {
+        let b = CuBudget {
+            min_score_delta: 0.01,
+            min_roi_threshold: 0.0,
+            ..CuBudget::default()
+        };
+        // Negative delta must always be rejected regardless of ROI.
+        assert!(
+            !b.is_improvement_worth_keeping(-0.01, 0, 0),
+            "negative delta must always produce Revert decision"
+        );
+        assert!(
+            !b.is_improvement_worth_keeping(-100.0, 0, 1_000_000),
+            "large negative delta with infinite ROI must still be rejected"
+        );
+    }
+
+    #[test]
+    fn sec_deep_improvement_zero_cost_positive_delta_accepted() {
+        let b = CuBudget {
+            min_score_delta: 0.01,
+            min_roi_threshold: 1.0, // ROI must be >= 1x
+            ..CuBudget::default()
+        };
+        // cu_invested = 0 → free improvement → cu_return_estimate / 0 is guarded.
+        // The implementation: if cu_invested == 0, return score_delta > 0.
+        assert!(
+            b.is_improvement_worth_keeping(0.05, 0, 0),
+            "zero-cost positive delta must always be accepted (free improvement)"
+        );
+    }
+
+    #[test]
+    fn sec_deep_improvement_tiny_delta_below_threshold_rejected() {
+        let b = CuBudget {
+            min_score_delta: 0.01,
+            min_roi_threshold: 0.0,
+            ..CuBudget::default()
+        };
+        // delta = 0.009 < min_score_delta 0.01 → rejected.
+        assert!(
+            !b.is_improvement_worth_keeping(0.009, 100, 1_000),
+            "delta 0.009 below min_score_delta 0.01 must be rejected"
+        );
+        // delta = 0.01 (exactly at threshold) → accepted.
+        assert!(
+            b.is_improvement_worth_keeping(0.01, 100, 1_000),
+            "delta exactly at min_score_delta threshold must be accepted"
+        );
+    }
+
+    #[test]
+    fn sec_deep_record_spend_exact_at_daily_limit() {
+        let mut b = CuBudget {
+            max_cu_per_cycle: 50_000,
+            max_cu_per_day: 50_000,
+            max_cycles_per_day: 20,
+            ..CuBudget::default()
+        };
+        // Spend exactly the daily limit.
+        b.record_spend(50_000).unwrap();
+        assert_eq!(b.spent_today_cu, 50_000);
+        // One more CU must be rejected.
+        assert!(!b.can_spend(1), "one CU over daily limit must be rejected");
+    }
 }

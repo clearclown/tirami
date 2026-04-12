@@ -240,4 +240,116 @@ mod tests {
         assert!(load_marketplace(&nonexistent).unwrap().is_none());
         assert!(load_mind_snapshot(&nonexistent).unwrap().is_none());
     }
+
+    // ===========================================================================
+    // DEEP SECURITY TESTS — Round 2 (corrupt JSON, empty files, garbage bytes)
+    // ===========================================================================
+
+    #[test]
+    fn sec_deep_load_bank_from_corrupt_json_returns_err() {
+        let path = tmp_path("corrupt_bank");
+        std::fs::write(&path, "{invalid json!!!").unwrap();
+
+        let result = load_bank(&path);
+        assert!(
+            result.is_err(),
+            "corrupt JSON for bank state must return Err, not panic"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn sec_deep_load_marketplace_from_empty_file_returns_err() {
+        let path = tmp_path("empty_marketplace");
+        std::fs::write(&path, "").unwrap();
+
+        let result = load_marketplace(&path);
+        assert!(
+            result.is_err(),
+            "empty file for marketplace state must return Err, not None"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn sec_deep_load_mind_from_binary_garbage_returns_err() {
+        let path = tmp_path("garbage_mind");
+        // Write random binary garbage.
+        let garbage: Vec<u8> = (0u8..=255u8).cycle().take(512).collect();
+        std::fs::write(&path, &garbage).unwrap();
+
+        let result = load_mind_snapshot(&path);
+        assert!(
+            result.is_err(),
+            "binary garbage for mind state must return Err, not panic"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn sec_deep_load_bank_from_valid_json_wrong_schema_returns_err() {
+        // Valid JSON but wrong schema (missing required fields).
+        let path = tmp_path("wrong_schema_bank");
+        std::fs::write(&path, r#"{"foo": "bar", "baz": 42}"#).unwrap();
+
+        let result = load_bank(&path);
+        assert!(
+            result.is_err(),
+            "wrong-schema JSON for bank state must return Err"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn sec_deep_load_marketplace_from_corrupt_json_returns_err() {
+        let path = tmp_path("corrupt_marketplace");
+        std::fs::write(&path, r#"{"agents": [null, null, {"broken": true}], "incomplete"#).unwrap();
+
+        let result = load_marketplace(&path);
+        assert!(
+            result.is_err(),
+            "corrupt JSON for marketplace must return Err"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn sec_deep_mind_snapshot_with_empty_history_roundtrip() {
+        let path = tmp_path("mind_empty_history");
+        let _ = std::fs::remove_file(&path);
+
+        let harness = Harness::new("empty history test".to_string());
+        let bench = InMemoryBenchmark::with_fn(|_| 0.5_f64);
+        let opt = EchoMetaOptimizer;
+        let agent = ForgeMindAgent::new(harness, Box::new(bench), Box::new(opt), None);
+
+        // Agent with no improvement cycles has empty history.
+        assert_eq!(agent.history().len(), 0, "fresh agent must have empty history");
+
+        save_mind(&agent, &path).expect("save_mind must succeed");
+        let snap = load_mind_snapshot(&path)
+            .expect("load must succeed")
+            .expect("file must exist");
+
+        assert_eq!(snap.history.len(), 0, "empty history must roundtrip correctly");
+        assert_eq!(snap.harness.system_prompt, "empty history test");
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn sec_deep_strategy_kind_serialize_deserialize_all_variants() {
+        use forge_bank::StrategyKind;
+        use serde_json;
+
+        for kind in [
+            StrategyKind::Conservative { max_commit_fraction: 0.30 },
+            StrategyKind::HighYield { base_commit_fraction: 0.50 },
+            StrategyKind::Balanced { threshold: 0.50 },
+        ] {
+            let json = serde_json::to_string(&kind).expect("must serialize");
+            let roundtripped: StrategyKind = serde_json::from_str(&json).expect("must deserialize");
+            assert_eq!(kind, roundtripped, "StrategyKind must roundtrip via JSON");
+        }
+    }
 }

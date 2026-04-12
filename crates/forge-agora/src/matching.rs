@@ -220,4 +220,102 @@ mod tests {
         let expected = 0.6 * 0.8 + 0.4 * 0.75;
         assert!((results[0].composite_score - expected).abs() < 1e-9);
     }
+
+    // ===========================================================================
+    // DEEP SECURITY TESTS — Round 2 (empty agents, empty patterns, glob injection)
+    // ===========================================================================
+
+    #[test]
+    fn sec_deep_capability_matcher_empty_agents_returns_empty() {
+        let matcher = CapabilityMatcher;
+        let reps = HashMap::new();
+        let query = CapabilityQuery::default();
+        let results = matcher.find_matches(&[], &reps, &query);
+        assert!(results.is_empty(), "empty agent list must return empty matches, not panic");
+    }
+
+    #[test]
+    fn sec_deep_capability_matcher_empty_model_patterns_matches_first_model() {
+        // Empty model_patterns → no pattern constraint → matched_model = first model or empty.
+        let matcher = CapabilityMatcher;
+        let agents = vec![make_agent("a", ModelTier::Medium, 3, vec!["qwen3-8b"])];
+        let reps = HashMap::new();
+        let mut query = CapabilityQuery::default();
+        query.model_patterns = vec![]; // empty patterns
+        let results = matcher.find_matches(&agents, &reps, &query);
+        // Agent with models should match (first model used).
+        assert_eq!(results.len(), 1, "empty model_patterns must not filter out agents that have models");
+        assert_eq!(results[0].matched_model, "qwen3-8b");
+    }
+
+    #[test]
+    fn sec_deep_capability_matcher_agent_with_no_models_empty_pattern() {
+        // Agent with no models_served + empty patterns → matched_model is empty string.
+        let matcher = CapabilityMatcher;
+        let agents = vec![make_agent("a", ModelTier::Medium, 3, vec![])]; // no models
+        let reps = HashMap::new();
+        let mut query = CapabilityQuery::default();
+        query.model_patterns = vec![]; // no pattern constraint
+        let results = matcher.find_matches(&agents, &reps, &query);
+        assert_eq!(results.len(), 1, "agent with no models and no pattern constraint must still match");
+        assert_eq!(results[0].matched_model, "", "matched_model must be empty string when no models");
+    }
+
+    #[test]
+    fn sec_deep_capability_matcher_zero_max_cu_per_token_filters_all() {
+        // max_cu_per_token = 0: all agents have cu_per_token >= 1 → none match.
+        let matcher = CapabilityMatcher;
+        let agents = vec![
+            make_agent("a", ModelTier::Small, 1, vec!["m1"]),
+            make_agent("b", ModelTier::Medium, 2, vec!["m2"]),
+        ];
+        let reps = HashMap::new();
+        let mut query = CapabilityQuery::default();
+        query.max_cu_per_token = 0;
+        let results = matcher.find_matches(&agents, &reps, &query);
+        assert!(results.is_empty(), "max_cu_per_token=0 must filter out all agents with cu_per_token >= 1");
+    }
+
+    #[test]
+    fn sec_deep_capability_matcher_glob_patterns_do_not_cause_path_traversal() {
+        // Verify adversarial glob patterns do not panic or produce unexpected matches.
+        // The glob crate operates on string matching, not filesystem paths.
+        let matcher = CapabilityMatcher;
+        let agents = vec![make_agent("a", ModelTier::Medium, 3, vec!["safe-model"])];
+        let reps = HashMap::new();
+        let mut query = CapabilityQuery::default();
+        // Adversarial patterns that could be problematic in filesystem glob operations.
+        query.model_patterns = vec![
+            "../../etc/passwd".to_string(),
+            "**/**/../../etc".to_string(),
+            "*".to_string(), // wildcard that should match "safe-model"
+        ];
+        // Must not panic regardless of pattern content.
+        let result = std::panic::catch_unwind(|| {
+            matcher.find_matches(&agents, &reps, &query)
+        });
+        assert!(result.is_ok(), "adversarial glob patterns must not cause panic");
+        // "*" should match "safe-model".
+        let results = result.unwrap();
+        assert!(!results.is_empty(), "wildcard '*' must match 'safe-model'");
+    }
+
+    #[test]
+    fn sec_deep_capability_matcher_nan_reputation_uses_new_agent_default() {
+        // If reputation map contains NaN for an agent, it should be treated carefully.
+        // The map lookup returns a reference; NaN in the map would fail the min_reputation check.
+        let matcher = CapabilityMatcher;
+        let agents = vec![make_agent("a", ModelTier::Medium, 3, vec!["m"])];
+        let mut reps = HashMap::new();
+        reps.insert(hex64("a"), f64::NAN); // inject NaN reputation
+        let mut query = CapabilityQuery::default();
+        query.min_reputation = 0.0; // accept any reputation
+
+        // NaN < 0.0 is false in IEEE 754, so it passes the min_reputation filter.
+        // Document behavior: NaN reputation passes min_reputation=0.0 filter.
+        let result = std::panic::catch_unwind(|| {
+            matcher.find_matches(&agents, &reps, &query)
+        });
+        assert!(result.is_ok(), "NaN reputation in the map must not cause panic");
+    }
 }

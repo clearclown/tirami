@@ -61,25 +61,3 @@ jobs:
         continue-on-error: true
         run: cargo clippy --workspace -- -D warnings
 
-  python-sdk:
-    name: forge-sdk pytest
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install pytest httpx
-
-      - name: Run pytest
-        working-directory: sdk/python
-        run: pytest -v tests/

@@ -8,6 +8,7 @@ homepage.workspace = true
 documentation.workspace = true
 readme.workspace = true
 authors.workspace = true
+description = "llama.cpp inference engine integration for Tirami"
 
 [features]
 default = []

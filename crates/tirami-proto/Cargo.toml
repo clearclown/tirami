@@ -8,6 +8,7 @@ homepage.workspace = true
 documentation.workspace = true
 readme.workspace = true
 authors.workspace = true
+description = "Wire protocol messages for the Tirami distributed inference network"
 
 [dependencies]
 tirami-core = { workspace = true }

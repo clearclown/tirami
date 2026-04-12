@@ -8,6 +8,7 @@ homepage.workspace = true
 documentation.workspace = true
 readme.workspace = true
 authors.workspace = true
+description = "P2P transport layer for Tirami using iroh QUIC + Noise encryption"
 
 [dependencies]
 tirami-core = { workspace = true }

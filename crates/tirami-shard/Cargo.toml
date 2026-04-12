@@ -8,6 +8,7 @@ homepage.workspace = true
 documentation.workspace = true
 readme.workspace = true
 authors.workspace = true
+description = "Layer assignment and topology planner for Tirami distributed inference"
 
 [dependencies]
 tirami-core = { workspace = true }

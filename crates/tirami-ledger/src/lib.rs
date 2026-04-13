@@ -4,6 +4,7 @@ pub mod agora_relay;
 pub mod anchor;
 pub mod bitvm;
 pub mod collusion;
+pub mod governance;
 pub mod ledger;
 pub mod lending;
 pub mod metrics;
@@ -31,6 +32,9 @@ pub use tirami_proto::ReputationObservation;
 pub use bitvm::{
     BitVmError, FraudProof, FraudProofVerifier, FraudType, MockFraudProofVerifier,
     StakedClaim,
+};
+pub use governance::{
+    GovernanceError, GovernanceState, Proposal, ProposalKind, ProposalStatus, Vote,
 };
 pub use staking::{Stake, StakeDuration, StakingError, StakingPool};
 pub use tokenomics::{

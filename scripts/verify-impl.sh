@@ -98,16 +98,16 @@ assert "#BANK-optimizer"  "YieldOptimizer with risk gate" \
 # === Phase 7: L3 tirami-mind (§11 of tirami-economics parameters.md) ===
 assert "#MIND-harness"    "Harness with evolve() + JSON" \
   "grep -q 'pub struct Harness' crates/tirami-mind/src/harness.rs && grep -q 'pub fn evolve' crates/tirami-mind/src/harness.rs"
-assert "#MIND-budget"     "CuBudget with §11 constants" \
-  "grep -q 'pub struct CuBudget' crates/tirami-mind/src/budget.rs && grep -q '5_000\\|5000' crates/tirami-mind/src/budget.rs && grep -q '50_000\\|50000' crates/tirami-mind/src/budget.rs"
+assert "#MIND-budget"     "TrmBudget with §11 constants" \
+  "grep -q 'pub struct TrmBudget' crates/tirami-mind/src/budget.rs && grep -q '5_000\\|5000' crates/tirami-mind/src/budget.rs && grep -q '50_000\\|50000' crates/tirami-mind/src/budget.rs"
 assert "#MIND-benchmark"  "Benchmark trait + InMemoryBenchmark" \
   "grep -q 'pub trait Benchmark' crates/tirami-mind/src/benchmark.rs && grep -q 'pub struct InMemoryBenchmark' crates/tirami-mind/src/benchmark.rs"
 assert "#MIND-optimizer"  "MetaOptimizer trait + 2 impls" \
   "grep -q 'pub trait MetaOptimizer' crates/tirami-mind/src/meta_optimizer.rs && grep -q 'pub struct PromptRewriteOptimizer' crates/tirami-mind/src/meta_optimizer.rs"
 assert "#MIND-cycle"      "ImprovementCycleRunner + ROI constant" \
   "grep -q 'pub struct ImprovementCycleRunner' crates/tirami-mind/src/cycle.rs && grep -q '100_000\\|100000' crates/tirami-mind/src/cycle.rs"
-assert "#MIND-agent"      "ForgeMindAgent improve loop (async after Phase 8)" \
-  "grep -q 'pub struct ForgeMindAgent' crates/tirami-mind/src/agent.rs && grep -qE 'pub (async )?fn improve' crates/tirami-mind/src/agent.rs"
+assert "#MIND-agent"      "TiramiMindAgent improve loop (async after Phase 8)" \
+  "grep -q 'pub struct TiramiMindAgent' crates/tirami-mind/src/agent.rs && grep -qE 'pub (async )?fn improve' crates/tirami-mind/src/agent.rs"
 
 # === Phase 7: L4 tirami-agora (§12 of tirami-economics parameters.md) ===
 assert "#AGORA-types"      "AgentProfile + TradeObservation" \
@@ -128,8 +128,8 @@ assert "#P8-state-bank"      "AppState owns BankServices" \
   "grep -q 'bank: Arc<Mutex<crate::bank_adapter::BankServices' crates/tirami-node/src/api.rs"
 assert "#P8-state-mp"        "AppState owns Marketplace" \
   "grep -q 'marketplace: Arc<Mutex<.*Marketplace' crates/tirami-node/src/api.rs"
-assert "#P8-state-mind"      "AppState owns Option<ForgeMindAgent>" \
-  "grep -q 'mind_agent: Arc<Mutex<Option<.*ForgeMindAgent' crates/tirami-node/src/api.rs"
+assert "#P8-state-mind"      "AppState owns Option<TiramiMindAgent>" \
+  "grep -q 'mind_agent: Arc<Mutex<Option<.*TiramiMindAgent' crates/tirami-node/src/api.rs"
 
 # Adapter modules
 assert "#P8-bank-adapter"    "bank_adapter::pool_snapshot_from_ledger exists" \
@@ -170,8 +170,8 @@ assert "#P8-mind-routes"     "All 5 /v1/tirami/mind/* routes registered" \
    grep -q '/v1/tirami/mind/stats' crates/tirami-node/src/api.rs"
 
 # CuPaidOptimizer
-assert "#P8-cu-paid"         "CuPaidOptimizer with reqwest exists" \
-  "grep -q 'pub struct CuPaidOptimizer' crates/tirami-mind/src/cu_paid_optimizer.rs && \
+assert "#P8-cu-paid"         "TrmPaidOptimizer with reqwest exists" \
+  "grep -q 'pub struct TrmPaidOptimizer' crates/tirami-mind/src/cu_paid_optimizer.rs && \
    grep -q 'reqwest' crates/tirami-mind/src/cu_paid_optimizer.rs"
 
 # Async MetaOptimizer migration
@@ -230,8 +230,8 @@ assert "#P10-anchor-endpoint" "/v1/tirami/anchor route registered" \
   "grep -q '/v1/tirami/anchor' crates/tirami-node/src/api.rs"
 
 # === Phase 10 P5: Prometheus metrics ===
-assert "#P10-metrics-module" "metrics.rs implements ForgeMetrics" \
-  "grep -q 'pub struct ForgeMetrics' crates/tirami-ledger/src/metrics.rs"
+assert "#P10-metrics-module" "metrics.rs implements TiramiMetrics" \
+  "grep -q 'pub struct TiramiMetrics' crates/tirami-ledger/src/metrics.rs"
 assert "#P10-metrics-observe" "ForgeMetrics::observe exists" \
   "grep -q 'pub fn observe' crates/tirami-ledger/src/metrics.rs"
 assert "#P10-metrics-endpoint" "/metrics route registered" \
@@ -284,6 +284,87 @@ assert "#P12-tools-request" "OpenAIChatRequest has tools field" \
   "grep -q 'pub tools: Option<Vec<OpenAITool>>' crates/tirami-node/src/api.rs"
 assert "#P12-tools-extract" "extract_tool_call helper exists" \
   "grep -q 'fn extract_tool_call' crates/tirami-node/src/api.rs"
+
+# === Phase 13: Tokenomics ===
+assert "#P13-supply-cap"    "TOTAL_TRM_SUPPLY = 21B constant exists" \
+  "grep -q 'TOTAL_TRM_SUPPLY.*21_000_000_000' crates/tirami-ledger/src/tokenomics.rs"
+assert "#P13-supply-factor" "supply_factor function exists" \
+  "grep -q 'pub fn supply_factor' crates/tirami-ledger/src/tokenomics.rs"
+assert "#P13-epoch"         "current_epoch function exists" \
+  "grep -q 'pub fn current_epoch' crates/tirami-ledger/src/tokenomics.rs"
+assert "#P13-yield-rate"    "epoch_yield_rate with halving exists" \
+  "grep -q 'pub fn epoch_yield_rate' crates/tirami-ledger/src/tokenomics.rs"
+assert "#P13-mint-rate"     "effective_mint_rate exists" \
+  "grep -q 'pub fn effective_mint_rate' crates/tirami-ledger/src/tokenomics.rs"
+assert "#P13-tx-fee"        "transaction_fee function exists" \
+  "grep -q 'pub fn transaction_fee' crates/tirami-ledger/src/tokenomics.rs"
+
+# === Phase 13: Staking ===
+assert "#P13-stake-dur"     "StakeDuration enum with 4 tiers" \
+  "grep -q 'pub enum StakeDuration' crates/tirami-ledger/src/staking.rs && \
+   grep -q 'Days7' crates/tirami-ledger/src/staking.rs && \
+   grep -q 'Days30' crates/tirami-ledger/src/staking.rs && \
+   grep -q 'Days90' crates/tirami-ledger/src/staking.rs && \
+   grep -q 'Days365' crates/tirami-ledger/src/staking.rs"
+assert "#P13-staking-pool"  "StakingPool with stake/unstake/apply_slash" \
+  "grep -q 'pub struct StakingPool' crates/tirami-ledger/src/staking.rs && \
+   grep -q 'pub fn stake' crates/tirami-ledger/src/staking.rs && \
+   grep -q 'pub fn unstake' crates/tirami-ledger/src/staking.rs && \
+   grep -q 'pub fn apply_slash' crates/tirami-ledger/src/staking.rs"
+assert "#P13-slash-rate"    "Graduated slashing (5/20/50%)" \
+  "grep -q 'fn slash_rate' crates/tirami-ledger/src/staking.rs && \
+   grep -q '0.05' crates/tirami-ledger/src/staking.rs && \
+   grep -q '0.20' crates/tirami-ledger/src/staking.rs && \
+   grep -q '0.50' crates/tirami-ledger/src/staking.rs"
+
+# === Phase 13: Referral ===
+assert "#P13-referral"      "ReferralTracker with register + bonus" \
+  "grep -q 'pub struct ReferralTracker' crates/tirami-ledger/src/referral.rs && \
+   grep -q 'pub fn register' crates/tirami-ledger/src/referral.rs"
+assert "#P13-referral-bonus" "REFERRAL_BONUS = 100 TRM" \
+  "grep -q 'REFERRAL_BONUS.*100' crates/tirami-ledger/src/referral.rs"
+assert "#P13-referral-max"  "REFERRAL_MAX_PER_NODE = 50" \
+  "grep -q 'REFERRAL_MAX_PER_NODE.*50' crates/tirami-ledger/src/referral.rs"
+
+# === Phase 13: Governance ===
+assert "#P13-gov-module"    "governance.rs module exists" \
+  "test -f crates/tirami-ledger/src/governance.rs"
+assert "#P13-gov-state"     "GovernanceState struct exists" \
+  "grep -q 'pub struct GovernanceState' crates/tirami-ledger/src/governance.rs"
+assert "#P13-gov-proposal"  "Proposal + ProposalKind types exist" \
+  "grep -q 'pub struct Proposal' crates/tirami-ledger/src/governance.rs && \
+   grep -q 'pub enum ProposalKind' crates/tirami-ledger/src/governance.rs"
+assert "#P13-gov-vote"      "Vote struct + cast_vote method exist" \
+  "grep -q 'pub struct Vote' crates/tirami-ledger/src/governance.rs && \
+   grep -q 'fn cast_vote' crates/tirami-ledger/src/governance.rs"
+assert "#P13-gov-tally"     "tally method with stake-weighted voting" \
+  "grep -q 'fn tally' crates/tirami-ledger/src/governance.rs"
+assert "#P13-gov-constants" "Governance constants match §19" \
+  "grep -q 'GOVERNANCE_MIN_REPUTATION.*0\\.7' crates/tirami-ledger/src/governance.rs && \
+   grep -q 'GOVERNANCE_MIN_STAKE.*1.*000' crates/tirami-ledger/src/governance.rs"
+assert "#P13-gov-seniority" "Seniority bonuses 1.5 / 2.0" \
+  "grep -q '1\\.5' crates/tirami-ledger/src/governance.rs && \
+   grep -q '2\\.0' crates/tirami-ledger/src/governance.rs"
+
+# === Phase 13: Tokenomics API endpoints ===
+assert "#P13-api-supply"    "/v1/tirami/su/supply endpoint registered" \
+  "grep -q '/v1/tirami/su/supply' crates/tirami-node/src/api.rs"
+assert "#P13-api-stake"     "/v1/tirami/su/stake endpoint registered" \
+  "grep -q '/v1/tirami/su/stake' crates/tirami-node/src/api.rs"
+assert "#P13-api-unstake"   "/v1/tirami/su/unstake endpoint registered" \
+  "grep -q '/v1/tirami/su/unstake' crates/tirami-node/src/api.rs"
+assert "#P13-api-refer"     "/v1/tirami/su/refer endpoint registered" \
+  "grep -q '/v1/tirami/su/refer' crates/tirami-node/src/api.rs"
+assert "#P13-api-referrals" "/v1/tirami/su/referrals endpoint registered" \
+  "grep -q '/v1/tirami/su/referrals' crates/tirami-node/src/api.rs"
+
+# === Phase 13: Prometheus tokenomics gauges ===
+assert "#P13-prom-minted"   "tirami_total_minted Prometheus gauge" \
+  "grep -q 'tirami_total_minted' crates/tirami-ledger/src/metrics.rs"
+assert "#P13-prom-epoch"    "tirami_current_epoch Prometheus gauge" \
+  "grep -q 'tirami_current_epoch' crates/tirami-ledger/src/metrics.rs"
+assert "#P13-prom-staked"   "tirami_total_staked Prometheus gauge" \
+  "grep -q 'tirami_total_staked' crates/tirami-ledger/src/metrics.rs"
 
 # === Build & test ===
 assert "BUILD" "cargo check --workspace passes" \

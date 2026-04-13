@@ -74,6 +74,26 @@ enum Commands {
         /// Seed relay URL (optional, for NAT traversal)
         #[arg(long)]
         relay: Option<String>,
+
+        /// Port for the local HTTP API
+        #[arg(short, long, default_value = "3000")]
+        port: u16,
+
+        /// Bind address for the local HTTP API
+        #[arg(long, default_value = "127.0.0.1")]
+        bind: String,
+
+        /// Optional bearer token protecting administrative HTTP API routes
+        #[arg(long)]
+        api_token: Option<String>,
+
+        /// Path to the persisted ledger snapshot
+        #[arg(long, default_value = "forge-ledger.json")]
+        ledger: String,
+
+        /// Run as daemon (no interactive prompt)
+        #[arg(long)]
+        daemon: bool,
     },
 
     /// Start a local API server (no P2P)
@@ -426,8 +446,14 @@ async fn main() -> anyhow::Result<()> {
 
             node.run_seed().await?;
         }
-        Commands::Worker { seed, relay } => {
-            let config = Config::default();
+        Commands::Worker { seed, relay, port, bind, api_token, ledger, daemon } => {
+            let config = Config {
+                api_port: port,
+                api_bind_addr: bind.clone(),
+                api_bearer_token: resolve_api_token(api_token),
+                ledger_path: Some(PathBuf::from(&ledger)),
+                ..Config::default()
+            };
             let mut node = tirami_node::TiramiNode::new(config);
 
             let public_key: iroh::PublicKey = seed
@@ -445,46 +471,97 @@ async fn main() -> anyhow::Result<()> {
             let transport = node.connect_to_seed(seed_addr).await?;
             tracing::info!("Connected to seed. Ready for inference.");
 
-            // Interactive worker chat
-            let node_id = transport.tirami_node_id();
-            let peers = transport.connected_peers().await;
-            let seed_peer_id = peers
-                .first()
-                .ok_or_else(|| anyhow::anyhow!("no seed peer found"))?
-                .clone();
+            // Spawn HTTP API server in background (same pattern as Seed)
+            node.spawn_api();
 
-            println!("Forge Worker (connected to seed)");
-            println!("Type a prompt to send to the seed for inference.");
-            println!("---");
-
-            let stdin = io::stdin();
-            loop {
-                print!("> ");
-                io::stdout().flush()?;
-
-                let mut input = String::new();
-                stdin.lock().read_line(&mut input)?;
-                let input = input.trim();
-
-                if input.is_empty() {
-                    continue;
+            // Install Ctrl-C handler for graceful shutdown
+            let shutdown_ledger = node.ledger.clone();
+            let shutdown_ledger_path = node.config.ledger_path.clone();
+            let shutdown_bank = node.bank.clone();
+            let shutdown_marketplace = node.marketplace.clone();
+            let shutdown_mind = node.mind_agent.clone();
+            let shutdown_config = node.config.clone();
+            tokio::spawn(async move {
+                if tokio::signal::ctrl_c().await.is_ok() {
+                    tracing::info!("Received Ctrl-C, persisting state...");
+                    if let Some(path) = shutdown_ledger_path {
+                        if let Err(e) = shutdown_ledger.lock().await.save_to_path(&path) {
+                            tracing::warn!("Failed to persist ledger on shutdown: {}", e);
+                        } else {
+                            tracing::info!("Ledger persisted to {}", path.display());
+                        }
+                    }
+                    if let Some(ref path) = shutdown_config.bank_state_path {
+                        let bank = shutdown_bank.lock().await;
+                        if let Err(e) = tirami_node::state_persist::save_bank(&*bank, path) {
+                            tracing::warn!("Failed to persist bank state: {}", e);
+                        }
+                    }
+                    if let Some(ref path) = shutdown_config.marketplace_state_path {
+                        let mp = shutdown_marketplace.lock().await;
+                        if let Err(e) = tirami_node::state_persist::save_marketplace(&*mp, path) {
+                            tracing::warn!("Failed to persist marketplace state: {}", e);
+                        }
+                    }
+                    if let Some(ref path) = shutdown_config.mind_state_path {
+                        let mind = shutdown_mind.lock().await;
+                        if let Some(agent) = mind.as_ref() {
+                            if let Err(e) = tirami_node::state_persist::save_mind(agent, path) {
+                                tracing::warn!("Failed to persist mind state: {}", e);
+                            }
+                        }
+                    }
+                    std::process::exit(0);
                 }
-                if input == "quit" || input == "exit" {
-                    break;
-                }
+            });
 
-                match tirami_node::pipeline::PipelineCoordinator::request_inference(
-                    &transport,
-                    &seed_peer_id,
-                    &node_id,
-                    input,
-                    256,
-                    0.7,
-                )
-                .await
-                {
-                    Ok(response) => println!("{}", response),
-                    Err(e) => eprintln!("Error: {}", e),
+            if daemon {
+                tracing::info!("Worker running in daemon mode (Ctrl-C to stop)");
+                // Block forever — the HTTP API runs in the background
+                std::future::pending::<()>().await;
+            } else {
+                // Interactive worker chat
+                let node_id = transport.tirami_node_id();
+                let peers = transport.connected_peers().await;
+                let seed_peer_id = peers
+                    .first()
+                    .ok_or_else(|| anyhow::anyhow!("no seed peer found"))?
+                    .clone();
+
+                println!("Tirami Worker (connected to seed)");
+                println!("HTTP API at http://{}:{}", bind, port);
+                println!("Type a prompt to send to the seed for inference.");
+                println!("---");
+
+                let stdin = io::stdin();
+                loop {
+                    print!("> ");
+                    io::stdout().flush()?;
+
+                    let mut input = String::new();
+                    stdin.lock().read_line(&mut input)?;
+                    let input = input.trim();
+
+                    if input.is_empty() {
+                        continue;
+                    }
+                    if input == "quit" || input == "exit" {
+                        break;
+                    }
+
+                    match tirami_node::pipeline::PipelineCoordinator::request_inference(
+                        &transport,
+                        &seed_peer_id,
+                        &node_id,
+                        input,
+                        256,
+                        0.7,
+                    )
+                    .await
+                    {
+                        Ok(response) => println!("{}", response),
+                        Err(e) => eprintln!("Error: {}", e),
+                    }
                 }
             }
         }

@@ -719,10 +719,23 @@ async fn model_name(manifest: &ModelState) -> String {
         .unwrap_or_else(|| "forge-no-model".to_string())
 }
 
+/// Parse an `X-Tirami-Node-Id` header (64-char hex → NodeId).
+fn parse_consumer_header(headers: &axum::http::HeaderMap) -> Option<NodeId> {
+    let hex_str = headers.get("X-Tirami-Node-Id")?.to_str().ok()?;
+    if hex_str.len() == 64 {
+        let mut id = [0u8; 32];
+        hex::decode_to_slice(hex_str, &mut id).ok()?;
+        Some(NodeId(id))
+    } else {
+        None
+    }
+}
+
 /// Record a trade in the ledger after inference.
 async fn record_api_trade(
     ledger: &LedgerState,
     provider: &NodeId,
+    consumer: Option<NodeId>,
     tokens: u32,
     model_id: &str,
 ) -> u64 {
@@ -730,7 +743,7 @@ async fn record_api_trade(
     let trm_cost = ledger.estimate_cost(tokens as u64, 1, 1);
     let trade = TradeRecord {
         provider: provider.clone(),
-        consumer: NodeId([255u8; 32]), // API caller (anonymous local)
+        consumer: consumer.unwrap_or(NodeId([255u8; 32])),
         trm_amount: trm_cost,
         tokens_processed: tokens as u64,
         timestamp: now_millis(),
@@ -906,6 +919,7 @@ async fn chat_stream(
 /// POST /v1/chat/completions — OpenAI-compatible chat completions.
 async fn openai_chat_completions(
     State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
     Json(req): Json<OpenAIChatRequest>,
 ) -> Result<Response, (StatusCode, String)> {
     use axum::response::IntoResponse;
@@ -972,11 +986,12 @@ async fn openai_chat_completions(
 
     let model = model_name(&state.model_manifest).await;
     let stream = req.stream.unwrap_or(false);
+    let consumer_id = parse_consumer_header(&headers);
 
     if stream {
-        openai_stream_response(state, prompt, max_tokens, temperature, top_p, top_k, model, has_tools).await
+        openai_stream_response(state, prompt, max_tokens, temperature, top_p, top_k, model, has_tools, consumer_id).await
     } else {
-        openai_sync_response(state, prompt, max_tokens, temperature, top_p, top_k, model, has_tools)
+        openai_sync_response(state, prompt, max_tokens, temperature, top_p, top_k, model, has_tools, consumer_id)
             .await
             .map(|json| json.into_response())
     }
@@ -992,6 +1007,7 @@ async fn openai_sync_response(
     top_k: Option<i32>,
     model: String,
     has_tools: bool,
+    consumer_id: Option<NodeId>,
 ) -> Result<Json<OpenAIChatResponse>, (StatusCode, String)> {
     let mut engine = state.engine.lock().await;
     if !engine.is_loaded() {
@@ -1035,7 +1051,7 @@ async fn openai_sync_response(
 
     // Record trade in ledger
     let trm_cost =
-        record_api_trade(&state.ledger, &state.local_node_id, completion_tokens, &model).await;
+        record_api_trade(&state.ledger, &state.local_node_id, consumer_id, completion_tokens, &model).await;
     let effective_balance = state.ledger.lock().await.effective_balance(&state.local_node_id);
 
     // If tools were injected, try to extract a tool call from the model output.
@@ -1119,6 +1135,7 @@ async fn openai_stream_response(
     top_k: Option<i32>,
     model: String,
     has_tools: bool,
+    consumer_id: Option<NodeId>,
 ) -> Result<Response, (StatusCode, String)> {
     use axum::response::IntoResponse;
     use tokio_stream::wrappers::UnboundedReceiverStream;
@@ -1272,7 +1289,7 @@ async fn openai_stream_response(
 
         // Record trade in ledger asynchronously after streaming finishes.
         rt.spawn(async move {
-            record_api_trade(&ledger_arc, &provider_id, count, &model_for_trade).await;
+            record_api_trade(&ledger_arc, &provider_id, consumer_id, count, &model_for_trade).await;
         });
     });
 
@@ -3099,5 +3116,54 @@ mod tests {
             .expect("response");
 
         assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[tokio::test]
+    async fn record_api_trade_uses_consumer_from_header() {
+        let ledger: LedgerState = Arc::new(Mutex::new(ComputeLedger::new()));
+        let provider = NodeId([1u8; 32]);
+
+        // With an explicit consumer
+        let consumer = NodeId([42u8; 32]);
+        record_api_trade(&ledger, &provider, Some(consumer.clone()), 100, "test-model").await;
+
+        let trades = ledger.lock().await.recent_trades(1);
+        assert_eq!(trades.len(), 1);
+        assert_eq!(trades[0].consumer, consumer);
+    }
+
+    #[tokio::test]
+    async fn record_api_trade_falls_back_to_anonymous() {
+        let ledger: LedgerState = Arc::new(Mutex::new(ComputeLedger::new()));
+        let provider = NodeId([1u8; 32]);
+
+        // Without a consumer (None) → anonymous
+        record_api_trade(&ledger, &provider, None, 100, "test-model").await;
+
+        let trades = ledger.lock().await.recent_trades(1);
+        assert_eq!(trades.len(), 1);
+        assert_eq!(trades[0].consumer, NodeId([255u8; 32]));
+    }
+
+    #[test]
+    fn parse_consumer_header_valid_hex() {
+        let mut headers = axum::http::HeaderMap::new();
+        let hex_id = "aa".repeat(32); // 64-char hex → [0xaa; 32]
+        headers.insert("X-Tirami-Node-Id", hex_id.parse().unwrap());
+        let result = parse_consumer_header(&headers);
+        assert_eq!(result, Some(NodeId([0xaa; 32])));
+    }
+
+    #[test]
+    fn parse_consumer_header_missing() {
+        let headers = axum::http::HeaderMap::new();
+        assert_eq!(parse_consumer_header(&headers), None);
+    }
+
+    #[test]
+    fn parse_consumer_header_wrong_length() {
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert("X-Tirami-Node-Id", "abcdef".parse().unwrap());
+        assert_eq!(parse_consumer_header(&headers), None);
     }
 }

@@ -187,41 +187,11 @@ impl TiramiNode {
         Ok(())
     }
 
-    /// Initialize P2P transport.
-    pub async fn init_transport(&mut self) -> Result<Arc<ForgeTransport>, tirami_core::TiramiError> {
-        if let Some(transport) = self.transport.as_ref() {
-            return Ok(transport.clone());
-        }
-
-        let transport = ForgeTransport::new()
-            .await
-            .map_err(|e| tirami_core::TiramiError::NetworkError(format!("transport: {e}")))?;
-        let transport = Arc::new(transport);
-        let local_capability = build_local_capability(&self.config, transport.tirami_node_id());
-        self.cluster = Some(Arc::new(ClusterManager::new(
-            transport.clone(),
-            local_capability,
-        )));
-        self.transport = Some(transport.clone());
-        Ok(transport)
-    }
-
-    /// Run as a Seed node — holds model, serves inference, earns CU.
-    pub async fn run_seed(&mut self) -> Result<(), tirami_core::TiramiError> {
-        let transport = self.init_transport().await?;
-
-        let addr = transport.endpoint_addr();
-        let id = transport.endpoint_id();
-        tracing::info!("=== FORGE SEED NODE ===");
-        tracing::info!("Public key: {}", id);
-        tracing::info!("Node ID: {}", transport.tirami_node_id());
-        tracing::info!("Full address: {:?}", addr);
-        tracing::info!("Workers connect with: forge worker --seed {}", id);
-
-        // Accept connections
-        let _accept_handle = transport.start_accepting();
-
-        // API server in background
+    /// Spawn the HTTP API server as a background tokio task.
+    ///
+    /// Returns a `JoinHandle` so the caller can optionally await it, but
+    /// typically it runs until the process exits.
+    pub fn spawn_api(&self) -> tokio::task::JoinHandle<()> {
         let engine_api = self.engine.clone();
         let ledger_api = self.ledger.clone();
         let manifest_api = self.model_manifest.clone();
@@ -257,7 +227,45 @@ impl TiramiNode {
                 tracing::info!("HTTP API at http://{}", addr);
                 let _ = axum::serve(listener, app).await;
             }
-        });
+        })
+    }
+
+    /// Initialize P2P transport.
+    pub async fn init_transport(&mut self) -> Result<Arc<ForgeTransport>, tirami_core::TiramiError> {
+        if let Some(transport) = self.transport.as_ref() {
+            return Ok(transport.clone());
+        }
+
+        let transport = ForgeTransport::new()
+            .await
+            .map_err(|e| tirami_core::TiramiError::NetworkError(format!("transport: {e}")))?;
+        let transport = Arc::new(transport);
+        let local_capability = build_local_capability(&self.config, transport.tirami_node_id());
+        self.cluster = Some(Arc::new(ClusterManager::new(
+            transport.clone(),
+            local_capability,
+        )));
+        self.transport = Some(transport.clone());
+        Ok(transport)
+    }
+
+    /// Run as a Seed node — holds model, serves inference, earns CU.
+    pub async fn run_seed(&mut self) -> Result<(), tirami_core::TiramiError> {
+        let transport = self.init_transport().await?;
+
+        let addr = transport.endpoint_addr();
+        let id = transport.endpoint_id();
+        tracing::info!("=== FORGE SEED NODE ===");
+        tracing::info!("Public key: {}", id);
+        tracing::info!("Node ID: {}", transport.tirami_node_id());
+        tracing::info!("Full address: {:?}", addr);
+        tracing::info!("Workers connect with: forge worker --seed {}", id);
+
+        // Accept connections
+        let _accept_handle = transport.start_accepting();
+
+        // API server in background
+        self.spawn_api();
 
         // Run pipeline coordinator with ledger
         let coordinator = PipelineCoordinator::new(transport);

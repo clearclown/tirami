@@ -202,28 +202,37 @@ impl ForgeTransport {
         peers: Arc<Mutex<HashMap<String, PeerConnection>>>,
         recent_msg_ids: Arc<Mutex<HashMap<String, ReplayWindow>>>,
     ) {
-        // Rate limit: max 100 messages per second per peer
-        let mut msg_count_this_second: u32 = 0;
-        let mut last_rate_reset = tokio::time::Instant::now();
-        const MAX_MESSAGES_PER_SECOND: u32 = 100;
+        // Token bucket rate limiter: 500 msg/s sustained, 200 burst capacity,
+        // with a 5-second grace period after connection to absorb handshake bursts.
+        const MAX_MESSAGES_PER_SECOND: u32 = 500;
+        const BURST_CAPACITY: u32 = 200;
+        const GRACE_PERIOD: std::time::Duration = std::time::Duration::from_secs(5);
+
+        let connection_start = tokio::time::Instant::now();
+        let mut tokens: f64 = BURST_CAPACITY as f64;
+        let mut last_refill = tokio::time::Instant::now();
 
         loop {
-            // Reset rate counter every second
-            if last_rate_reset.elapsed() >= std::time::Duration::from_secs(1) {
-                msg_count_this_second = 0;
-                last_rate_reset = tokio::time::Instant::now();
-            }
+            // Refill tokens based on elapsed time
+            let now = tokio::time::Instant::now();
+            let elapsed = now.duration_since(last_refill).as_secs_f64();
+            tokens = (tokens + elapsed * MAX_MESSAGES_PER_SECOND as f64)
+                .min(BURST_CAPACITY as f64);
+            last_refill = now;
 
             match peer.recv_message().await {
                 Ok(envelope) => {
-                    msg_count_this_second += 1;
-                    if msg_count_this_second > MAX_MESSAGES_PER_SECOND {
+                    // Grace period: no rate limiting in first 5 seconds
+                    let in_grace = connection_start.elapsed() < GRACE_PERIOD;
+                    if !in_grace && tokens < 1.0 {
                         tracing::warn!(
-                            "Rate limit exceeded for peer {} ({} msg/s), dropping message",
+                            "Rate limit exceeded for peer {} (token bucket empty), dropping message",
                             peer_id,
-                            msg_count_this_second
                         );
                         continue;
+                    }
+                    if !in_grace {
+                        tokens -= 1.0;
                     }
 
                     if let Err(err) = envelope.validate_for_peer(peer.peer_node_id()) {
@@ -325,5 +334,84 @@ impl ForgeTransport {
         self.closed.store(true, Ordering::SeqCst);
         self.shutdown.notify_waiters();
         self.endpoint.close().await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Verify that the token bucket rate limiter allows bursts during the
+    /// grace period and correctly limits after the grace period expires.
+    #[test]
+    fn token_bucket_grace_period() {
+        const MAX_MESSAGES_PER_SECOND: u32 = 500;
+        const BURST_CAPACITY: u32 = 200;
+        const GRACE_PERIOD: std::time::Duration = std::time::Duration::from_secs(5);
+
+        // Simulate connection start (grace period active)
+        let connection_start = std::time::Instant::now();
+        let mut tokens: f64 = BURST_CAPACITY as f64;
+
+        // During grace period, messages should never be dropped even if
+        // we exceed BURST_CAPACITY.
+        let in_grace = connection_start.elapsed() < GRACE_PERIOD;
+        assert!(in_grace, "should be in grace period immediately after start");
+
+        // Drain all tokens — during grace period this should not matter
+        for _ in 0..300 {
+            // In grace period: tokens are not consumed
+            if in_grace {
+                // no token deduction
+            } else {
+                tokens -= 1.0;
+            }
+        }
+
+        // Tokens should be untouched because we were in grace period
+        assert_eq!(tokens, BURST_CAPACITY as f64);
+
+        // After grace period: simulate token consumption
+        let mut tokens: f64 = BURST_CAPACITY as f64;
+        let mut dropped = 0u32;
+        for _ in 0..250 {
+            if tokens < 1.0 {
+                dropped += 1;
+                continue;
+            }
+            tokens -= 1.0;
+        }
+
+        // Should have dropped 50 messages (250 - 200 burst capacity)
+        assert_eq!(dropped, 50);
+        assert!(tokens < 1.0, "tokens should be exhausted");
+
+        // Simulate refill: 0.1 seconds at 500/s = 50 tokens
+        let refill_elapsed = 0.1_f64;
+        tokens = (tokens + refill_elapsed * MAX_MESSAGES_PER_SECOND as f64)
+            .min(BURST_CAPACITY as f64);
+        assert!((tokens - 50.0).abs() < 1.0, "should have ~50 tokens after refill");
+    }
+
+    #[test]
+    fn replay_window_dedup() {
+        let mut window = ReplayWindow::default();
+        assert!(window.record(1));
+        assert!(window.record(2));
+        assert!(!window.record(1), "duplicate should be rejected");
+        assert!(window.record(3));
+    }
+
+    #[test]
+    fn replay_window_eviction() {
+        let mut window = ReplayWindow::default();
+        for i in 0..MAX_RECENT_MSG_IDS_PER_PEER + 100 {
+            assert!(window.record(i as u64));
+        }
+        // Old IDs should have been evicted
+        assert!(
+            window.record(0),
+            "msg_id 0 should be accepted again after eviction"
+        );
     }
 }

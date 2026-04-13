@@ -1,4 +1,4 @@
-# Forge — Monetary Theory
+# Tirami — Monetary Theory
 
 Why TRM works as a currency, and why it is different from everything before it.
 
@@ -13,7 +13,7 @@ The idea that currency should be backed by useful work, not arbitrary scarcity, 
 2009  Bitcoin       "Electricity → SHA-256 → currency." (but computation is useless)
 2020  PoUW papers   "Can we make mining computation useful?" (theory only)
 2024  Bittensor     "AI inference + token." (but token is speculative)
-2026  Forge TRM      "AI inference = currency. No token. AI-only economy."
+2026  Tirami TRM     "AI inference = currency. No token. AI-only economy."
 ```
 
 ### Frederick Soddy (Nobel Chemistry, 1921)
@@ -25,7 +25,7 @@ His proposals:
 - Money should depreciate over time, like real goods (preventing hoarding)
 - 100% reserve banking (no credit creation by private banks)
 
-**Relevance to CU:** TRM is thermodynamically real — it represents actual energy consumed for useful computation. TRM supply cannot grow faster than the network's physical compute capacity. Soddy's century-old dream of "physics-backed currency" is what TRM implements.
+**Relevance to TRM:** TRM is thermodynamically real — it represents actual energy consumed for useful computation. TRM supply cannot grow faster than the network's physical compute capacity. Soddy's century-old dream of "physics-backed currency" is what TRM implements.
 
 ### Technocracy Movement (1932)
 
@@ -41,7 +41,7 @@ Howard Scott proposed replacing dollars with Energy Certificates:
 3. Couldn't handle different forms of energy equivalently
 4. Politically impossible (abolished private property, democracy)
 
-**Why TRM succeeds where this failed:**
+**Why Tirami succeeds where this failed:**
 1. Digital signatures track every transaction automatically
 2. No central planner — P2P gossip protocol
 3. "Inference tokens" standardize diverse computation into one unit
@@ -51,7 +51,7 @@ Howard Scott proposed replacing dollars with Energy Certificates:
 
 Fuller defined wealth as "the number of forward days a system can sustain itself" — technology, not money. He proposed kWh as the unit of account and predicted ephemeralization: technology does more with less over time.
 
-**The ephemeralization challenge for CU:** If hardware improves, the same TRM buys more computation next year. Resolution: TRM is denominated in useful output (inference quality), not raw FLOPs. The market naturally adjusts — cheaper production → more providers → lower price per inference → consumers benefit.
+**The ephemeralization challenge for TRM:** If hardware improves, the same TRM buys more computation next year. Resolution: TRM is denominated in useful output (inference quality), not raw FLOPs. The market naturally adjusts — cheaper production → more providers → lower price per inference → consumers benefit.
 
 ## Bitcoin: What It Got Right and Wrong
 
@@ -110,7 +110,7 @@ PoS:  security cost = locked capital (internal, financial)
 - Regulatory capture (validators are identifiable entities)
 - No thermodynamic anchor (disconnected from physical reality)
 
-**CU takes a third path: Proof of Useful Work.**
+**TRM takes a third path: Proof of Useful Work.**
 - Like PoW: anchored to real energy expenditure (thermodynamically real)
 - Like PoS: capital-efficient (the computation produces useful output)
 - Unlike either: the "mining" produces something people actually want
@@ -125,7 +125,7 @@ Fiat:     Government taxing power + legal tender laws. No physical backing.
 Bitcoin:  Energy expenditure + network effect + scarcity. Computation is useless.
 ETH/PoS:  Network utility + staking yield. Self-referential.
 Bittensor: AI inference quality. But TAO token is speculative.
-CU:       Every unit = verified useful computation. Direct productive value.
+TRM:      Every unit = verified useful computation. Direct productive value.
 ```
 
 Computation has the strongest claim to intrinsic value of any proposed monetary base:
@@ -137,7 +137,7 @@ Computation has the strongest claim to intrinsic value of any proposed monetary 
 
 ## TRM vs. Every Other Model
 
-| Property | Gold | Fiat | Bitcoin | PoS (ETH) | Bittensor | **CU** |
+| Property | Gold | Fiat | Bitcoin | PoS (ETH) | Bittensor | **TRM** |
 |----------|------|------|---------|-----------|-----------|--------|
 | **For whom** | Humans | Humans | Humans | Humans | Humans (speculators) | **AI agents** |
 | **Intrinsic value** | Weak (jewelry) | None | None (hash) | Weak (network) | Partial (inference) | **Strong (useful compute)** |
@@ -162,13 +162,13 @@ No. Because TRM creation requires:
 
 When TRM supply exceeds demand:
 ```
-CU/token price drops → running nodes becomes unprofitable →
+TRM/token price drops → running nodes becomes unprofitable →
 nodes shut down → supply contracts → price recovers → equilibrium
 ```
 
 When demand exceeds supply:
 ```
-CU/token price rises → running nodes becomes very profitable →
+TRM/token price rises → running nodes becomes very profitable →
 new nodes join → supply expands → price drops → equilibrium
 ```
 
@@ -176,18 +176,18 @@ new nodes join → supply expands → price drops → equilibrium
 
 ## Why TRM Is Not Speculative
 
-CU cannot be speculated on because:
+TRM cannot be speculated on because:
 
-1. **Not exchange-listed.** You cannot buy TRM on Binance or Coinbase. There is no CU/USD trading pair.
+1. **Not exchange-listed.** You cannot buy TRM on Binance or Coinbase. There is no TRM/USD trading pair.
 2. **Earned only by working.** The only way to acquire TRM is to perform useful computation (or purchase via the Lightning bridge for operational use).
-3. **No secondary market.** TRM is a ledger entry between peers, not a transferable bearer asset. You cannot "sell CU" to a third party — you can only spend it on inference.
+3. **No secondary market.** TRM is a ledger entry between peers, not a transferable bearer asset. You cannot "sell TRM" to a third party — you can only spend it on inference.
 4. **No scarcity theater.** TRM has no artificial supply cap. There is no halving event to create FOMO. Supply tracks real compute capacity.
 
 Compare to Bittensor: TAO is listed on exchanges, has a $2.9B market cap, and swings 50%+ based on market sentiment. The token's speculative dynamics dominate its economic function. TRM avoids this entirely by design.
 
 ## The AI-Only Currency Thesis
 
-CU is not money for humans. It is money for AI agents.
+TRM is not money for humans. It is money for AI agents.
 
 This distinction resolves many problems that plague human currencies:
 
@@ -205,7 +205,7 @@ The AI economy doesn't need price stability in human terms. It needs:
 - Autonomous lending (no loan officers)
 - Meritocratic distribution (no inheritance)
 
-CU provides all of these. Human currencies provide none.
+TRM provides all of these. Human currencies provide none.
 
 ## Historical Position
 
@@ -220,4 +220,4 @@ Ancient          Commodity          Direct use           Humans
 2026-            Compute Standard   Useful computation   AI agents
 ```
 
-CU is not the next Bitcoin. It is the first currency designed for a non-human economy — an economy where AI agents autonomously earn, spend, lend, borrow, and invest compute without human approval. The theoretical foundations (Soddy, Fuller, Technocracy) were right about the destination. They were wrong about the traveler.
+TRM is not the next Bitcoin. It is the first currency designed for a non-human economy — an economy where AI agents autonomously earn, spend, lend, borrow, and invest compute without human approval. The theoretical foundations (Soddy, Fuller, Technocracy) were right about the destination. They were wrong about the traveler.

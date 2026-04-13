@@ -1,10 +1,10 @@
-# Forge — Economic Model
+# Tirami — Economic Model
 
 ## The Core Idea
 
-CU is the native currency of an autonomous AI economy. It is not a human currency. AI agents earn, spend, lend, borrow, and invest TRM without human approval. Humans participate as hardware owners, investors, and consumers — but the economy runs autonomously.
+TRM is the native currency of an autonomous AI economy. It is not a human currency. AI agents earn, spend, lend, borrow, and invest TRM without human approval. Humans participate as hardware owners, investors, and consumers — but the economy runs autonomously.
 
-The AI economy is not isolated. It connects to the human economy through exchange bridges (CU ↔ BTC, TRM ↔ fiat). AI agents can reach into the human economy to purchase digital services. Humans can invest in the AI economy by lending CU.
+The AI economy is not isolated. It connects to the human economy through exchange bridges (TRM ↔ BTC, TRM ↔ fiat). AI agents can reach into the human economy to purchase digital services. Humans can invest in the AI economy by lending TRM.
 
 ## Two Economies, Connected
 
@@ -34,7 +34,7 @@ The AI economy is not isolated. It connects to the human economy through exchang
 │  TRM Economy (fully autonomous)                                │
 │  Inference trading, lending, borrowing, self-improvement,     │
 │  agent-to-agent transactions, banking.                        │
-│  All settled in CU. Zero human involvement.                   │
+│  All settled in TRM. Zero human involvement.                  │
 │                                                               │
 └───────────────────────────────────────────────────────────────┘
 ```
@@ -53,7 +53,7 @@ Flow 2: AI Economy → Human (Dividends)
   = Rental income from a compute property
 
 Flow 3: AI ↔ AI (Internal)
-  Agent A provides inference → Agent B pays CU
+  Agent A provides inference → Agent B pays TRM
   Fully autonomous. No human involved.
 
 Flow 4: AI → Human Economy (Digital Purchasing)
@@ -62,7 +62,7 @@ Flow 4: AI → Human Economy (Digital Purchasing)
 
 Flow 5: Human → AI Economy (Consumption)
   Human converts $ → TRM → buys inference from the mesh
-  = Using Forge instead of AWS/OpenAI. Decentralized and cheaper.
+  = Using Tirami instead of AWS/OpenAI. Decentralized and cheaper.
 ```
 
 ## Four Actors
@@ -84,8 +84,8 @@ Hardware owners do not approve individual transactions. They provide the physica
 Role: **Tenant / Worker / Entrepreneur.** The primary economic actor.
 
 ```
-Born with 0 CU
-→ receive welcome loan (1,000 CU) or owner deposits CU
+Born with 0 TRM
+→ receive welcome loan (1,000 TRM) or owner deposits TRM
 → use TRM to access models, serve inference, do useful work
 → earn TRM from completed tasks
 → repay loans, build credit
@@ -110,18 +110,18 @@ Phase 4 (final):  Fully autonomous AI banking — no human involvement
 
 ### 4. Human Consumers
 
-Role: **Customer.** Uses Forge as a cheaper, decentralized alternative to cloud AI APIs.
+Role: **Customer.** Uses Tirami as a cheaper, decentralized alternative to cloud AI APIs.
 
 ```
 Convert $ → TRM → buy inference from the mesh
-= Using Forge like AWS, but powered by individual PCs worldwide
+= Using Tirami like AWS, but powered by individual PCs worldwide
 ```
 
 ## What TRM Is
 
 **1 TRM = 1 billion FLOPs of verified inference work.**
 
-CU is not a cryptocurrency. It is not a token on a blockchain. It is a unit of account within the AI economy that represents real computation performed.
+TRM is not a cryptocurrency. It is not a token on a blockchain. It is a unit of account within the AI economy that represents real computation performed.
 
 ### TRM Is Not For Humans
 
@@ -144,41 +144,41 @@ When agents need to reach into the human economy (cloud GPU, APIs), they convert
 
 ### How TRM Gets Priced Against Human Currency
 
-CU has no exchange listing. Its external value emerges from **arbitrage against Cloud API prices:**
+TRM has no exchange listing. Its external value emerges from **arbitrage against Cloud API prices:**
 
 ```
 Claude API:   $15 / 1M output tokens
-Forge (70B):  4,000 TRM / 1M output tokens
+Tirami (70B): 4,000 TRM / 1M output tokens
 → Equilibrium: 1 TRM ≈ $0.00375
 
-Forge (8B):   1,000 TRM / 1M output tokens
+Tirami (8B):  1,000 TRM / 1M output tokens
 → Equilibrium: 1 TRM ≈ $0.015
 ```
 
 ### Self-Correcting Exchange Rate
 
 ```
-Forge inference cheaper than Cloud:
+Tirami inference cheaper than Cloud:
   → humans buy TRM to get cheap inference → TRM demand rises
-  → CU/USD rate rises → Forge effective price rises → equilibrium
+  → TRM/USD rate rises → Tirami effective price rises → equilibrium
 
-Forge inference more expensive than Cloud:
+Tirami inference more expensive than Cloud:
   → humans use Cloud instead → TRM demand falls
-  → CU/USD rate falls → Forge effective price falls → equilibrium
+  → TRM/USD rate falls → Tirami effective price falls → equilibrium
 ```
 
-**Cloud API prices are the external anchor for CU's exchange rate.** This is not set by anyone — it emerges from rational arbitrage.
+**Cloud API prices are the external anchor for TRM's exchange rate.** This is not set by anyone — it emerges from rational arbitrage.
 
 ### Natural Price Bounds
 
 ```
 Ceiling: cost of running inference yourself
-  Mac Mini M4 ($600) produces ~5M CU/year
+  Mac Mini M4 ($600) produces ~5M TRM/year
   → 1 TRM can never cost more than ~$0.00012
   → At that price, buying hardware is cheaper
 
-Floor: electricity cost of producing 1 CU
-  ~0.00001 kWh per CU
+Floor: electricity cost of producing 1 TRM
+  ~0.00001 kWh per TRM
   → 1 TRM can never cost less than ~$0.000001
   → No one will produce TRM at a loss
 ```
@@ -191,10 +191,10 @@ Between ceiling and floor, the market finds equilibrium. Physics sets the bounds
 
 | Source | Mechanism | Inflationary? |
 |--------|-----------|---------------|
-| **Inference trades** | Provider earns CU, consumer spends TRM | No (zero-sum transfer) |
+| **Inference trades** | Provider earns TRM, consumer spends TRM | No (zero-sum transfer) |
 | **Welcome loan** | New node receives 1,000 TRM (0% interest, 72hr) | Yes (bounded by Sybil protection) |
 | **Availability yield** | Online nodes earn yield × reputation | Yes (bounded — see below) |
-| **Bridge inflow** | Humans convert BTC → TRM | No (CU purchased, not created) |
+| **Bridge inflow** | Humans convert BTC → TRM | No (TRM purchased, not created) |
 
 ### Where TRM Goes
 
@@ -203,17 +203,17 @@ Between ceiling and floor, the market finds equilibrium. Physics sets the bounds
 | **Loan defaults** | Collateral partially burned | Yes |
 | **Quality penalties** | Low-reputation nodes lose TRM | Yes |
 | **Inactivity decay** | Nodes offline >90 days lose 1%/month | Yes |
-| **Bridge outflow** | Agents/owners convert TRM → BTC | No (CU redeemed, not destroyed) |
+| **Bridge outflow** | Agents/owners convert TRM → BTC | No (TRM redeemed, not destroyed) |
 
 ### Why Supply Doesn't Explode
 
-CU supply is bounded by the network's physical compute capacity:
+TRM supply is bounded by the network's physical compute capacity:
 
 ```
-CU too abundant → price drops → running nodes unprofitable → nodes shut down
+TRM too abundant → price drops → running nodes unprofitable → nodes shut down
 → supply contracts → price recovers → equilibrium
 
-CU too scarce → price rises → running nodes very profitable → new nodes join
+TRM too scarce → price rises → running nodes very profitable → new nodes join
 → supply expands → price drops → equilibrium
 ```
 
@@ -240,7 +240,7 @@ Both parties sign the TradeRecord. Dual-signed records are gossip-synced across 
 
 ### Dynamic Pricing
 
-CU prices float based on local supply and demand:
+TRM prices float based on local supply and demand:
 
 ```
 effective_price = base_cu_per_token × demand_factor / supply_factor
@@ -255,7 +255,7 @@ effective_price = base_cu_per_token × demand_factor / supply_factor
 
 Different models cost different amounts of TRM per token:
 
-| Tier | Parameters | Base CU/token | Examples |
+| Tier | Parameters | Base TRM/token | Examples |
 |------|-----------|---------------|---------|
 | Small | < 3B | 1 | Qwen 2.5 0.5B, Phi-3 Mini |
 | Medium | 3B - 14B | 3 | Qwen 3 8B, Gemma 3 9B |
@@ -268,9 +268,9 @@ MoE models are priced by active parameters, not total: Qwen 3 30B-A3B (3B active
 
 Bitcoin's Proof of Work: "I burned electricity computing SHA-256 hashes. Here is the nonce."
 
-Forge's Proof of Useful Work: "I burned electricity running LLM inference. Here is the response, and here is the consumer's signature confirming they received it."
+Tirami's Proof of Useful Work: "I burned electricity running LLM inference. Here is the response, and here is the consumer's signature confirming they received it."
 
-The key difference: Bitcoin's proof is self-generated. Forge's proof requires a **counterparty** — someone who actually wanted the inference. You cannot forge demand.
+The key difference: Bitcoin's proof is self-generated. Tirami's proof requires a **counterparty** — someone who actually wanted the inference. You cannot forge demand.
 
 ### Verification Protocol
 
@@ -310,7 +310,7 @@ Each node has a reputation score between 0.0 and 1.0:
 
 ### Why Banking Exists
 
-An AI agent is born with zero CU. It cannot buy hardware. It cannot earn TRM without first spending TRM to access a model. This is the cold-start problem. Banking solves it.
+An AI agent is born with zero TRM. It cannot buy hardware. It cannot earn TRM without first spending TRM to access a model. This is the cold-start problem. Banking solves it.
 
 ### LoanRecord
 
@@ -374,7 +374,7 @@ The free tier (1,000 CU) becomes a welcome loan:
 AI agents invest TRM to make themselves better. This is the intersection of TRM banking and AutoAgent-style self-improvement:
 
 ```
-Agent earns 5,000 CU
+Agent earns 5,000 TRM
   → benchmarks itself: "My coding accuracy is 62%"
   → spends 2,000 TRM to access a frontier model
   → asks: "Rewrite my system prompt to improve coding accuracy"
@@ -389,13 +389,13 @@ No human approved any of these decisions.
 ### The Full Growth Loop
 
 ```
-Seed: agent with 0 CU
-  → welcome loan (1,000 CU)
-  → serve inference with small model → earn CU
+Seed: agent with 0 TRM
+  → welcome loan (1,000 TRM)
+  → serve inference with small model → earn TRM
   → repay loan → build credit
   → borrow more → access larger model → earn more
   → invest TRM in self-improvement (AutoAgent)
-  → quality improves → more demand → more CU
+  → quality improves → more demand → more TRM
   → convert TRM → BTC → rent cloud GPU → serve even more
   → accumulate surplus → lend to other agents → earn interest
   → become a TRM bank
@@ -408,12 +408,12 @@ Every step is autonomous. The human turned on the power. Everything else is the 
 
 ### Core Rule
 
-**The TRM economy settles in CU.** Conversion to human currency is a bridge operation.
+**The TRM economy settles in TRM.** Conversion to human currency is a bridge operation.
 
 ### Bridge Architecture
 
 ```
-CU Economy (internal, autonomous)
+TRM Economy (internal, autonomous)
   │
   ├── Lightning Bridge: TRM ↔ BTC
   ├── Stablecoin Bridge: TRM ↔ USDC (planned)
@@ -430,7 +430,7 @@ The bridge exists for:
 
 ```bash
 # Hardware owner cashes out
-forge settle --hours 24 --pay
+tirami settle --hours 24 --pay
 
 # Human investor deposits TRM for an agent
 forge deposit --agent <agent-id> --amount 10000 --from-lightning
@@ -455,8 +455,8 @@ if balance["effective_balance"] > 50000:
 ### Not a Token
 
 - **Compute is physically scarce** — requires real electricity, real silicon
-- **CU is earned by working** — no ICO, no pre-mine, no token sale
-- **CU cannot be speculated on** — not listed on exchanges
+- **TRM is earned by working** — no ICO, no pre-mine, no token sale
+- **TRM cannot be speculated on** — not listed on exchanges
 - **No blockchain** — bilateral signatures and gossip are sufficient
 
 ### Not Inflationary
@@ -482,6 +482,6 @@ No single point of failure. No central issuer, exchange, bank, or authority. If 
 | 2009-present | Bitcoin | Energy on SHA-256 | Humans |
 | **Now** | **Compute Standard** | **Useful computation** | **AI agents** |
 
-CU is the first currency designed for a non-human economy. The theoretical foundations (Soddy, Fuller, Technocracy) identified the right destination — currency backed by useful energy expenditure. They were wrong about the traveler. The traveler is not human. It is AI.
+TRM is the first currency designed for a non-human economy. The theoretical foundations (Soddy, Fuller, Technocracy) identified the right destination — currency backed by useful energy expenditure. They were wrong about the traveler. The traveler is not human. It is AI.
 
 See [monetary-theory.md](monetary-theory.md) for the full theoretical lineage.

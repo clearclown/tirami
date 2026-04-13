@@ -1,4 +1,4 @@
-# BitVM Optimistic Verification for Forge TRM Claims
+# BitVM Optimistic Verification for Tirami TRM Claims
 
 **Phase 12 A4 — Research Scaffold**
 
@@ -6,7 +6,7 @@
 
 ## 1. Motivation
 
-Forge already anchors its trade history to Bitcoin. Phase 10 P6 (`tirami-ledger::anchor`)
+Tirami already anchors its trade history to Bitcoin. Phase 10 P6 (`tirami-ledger::anchor`)
 embeds the trade-log Merkle root into an OP_RETURN output, producing a tamper-evident
 commitment: if any node rewrites its past trade records, the new Merkle root will
 diverge from what is permanently recorded on-chain.
@@ -24,14 +24,14 @@ off-chain optimistic execution with on-chain dispute resolution using only exist
 Bitcoin opcodes (and, once activated, OP_CAT for more compact scripts). The key idea is
 the *staked claim + challenge window* pattern:
 
-1. A party stakes Bitcoin behind an assertion ("the Forge ledger at block N has Merkle
+1. A party stakes Bitcoin behind an assertion ("the Tirami ledger at block N has Merkle
    root R").
 2. Anyone observing a contradiction can post a fraud proof on-chain during the challenge
    window.
 3. If the fraud proof is valid, Bitcoin Script enforces slashing automatically — no
    trusted arbitrator, no separate chain.
 
-Combined with Forge's existing OP_RETURN anchors, this upgrades the system from
+Combined with Tirami's existing OP_RETURN anchors, this upgrades the system from
 "tamper-evident" to "tamper-proven-and-slashable".
 
 ---
@@ -49,8 +49,8 @@ inclusion proof for a trade that exists in the original anchor but is absent or 
 in the re-anchored one. The staker's Bitcoin is at risk unless they can prove the
 inclusion.
 
-**Double-spend of CU.**
-An attacker claims the same TRM balance in two forked ledger states — once to pay for
+**Double-spend of TRM.**
+An attacker claims the same balance in two forked ledger states — once to pay for
 inference and once to repay a loan. The two different Merkle roots can both be anchored
 with OP_RETURN, but neither anchor says anything about the other. A staked claim lets a
 challenger post both root commitments and a conflicting-balance proof; the BitVM circuit
@@ -63,8 +63,8 @@ the node that replays the gossip record. Under BitVM, a challenger can post the 
 trade bytes and the public key as evidence; Bitcoin Script (via a SHA256/hash opcode
 sequence) can verify that the claimed signature is inconsistent.
 
-**Free-rider TRM forgery (T10).**
-A node fabricates TradeRecords crediting itself TRM it never earned. Gossip dedup and
+**Free-rider forgery (T10).**
+A node fabricates TradeRecords crediting itself TRM it never earned via fabricated trades. Gossip dedup and
 dual signatures (Phases 4-5) largely close this, but not against a colluding
 provider-consumer pair. A staked claim over the Merkle root means any honest peer who
 observed the real trades can challenge a root that includes the forged ones.
@@ -74,7 +74,7 @@ observed the real trades can challenge a root that includes the forged ones.
 ## 3. High-Level Architecture
 
 ```
-Forge ledger
+Tirami ledger
     │
     ├─► anchor.rs (Phase 10 P6)
     │       builds OP_RETURN script with Merkle root
@@ -103,7 +103,7 @@ broadcast it (Phase 13 will add the actual Bitcoin signing and relay logic).
 
 ### StakedClaim
 
-An assertion that the Forge trade ledger is in a specific state at a specific Bitcoin
+An assertion that the Tirami trade ledger is in a specific state at a specific Bitcoin
 block height. Fields:
 
 - `staker: NodeId` — who is putting up collateral
@@ -132,7 +132,7 @@ A counter-example demonstrating inconsistency:
 | `MerkleInclusionMismatch` | A Merkle inclusion proof for trade T contradicts the claimed root |
 | `InvalidSignature` | A trade record's signature doesn't verify against the signer's public key |
 | `DoubleSpend` | The same `trade_id` appears in two divergent history branches |
-| `InvalidBalanceUpdate` | A balance delta violates TRM conservation across the claimed state |
+| `InvalidBalanceUpdate` | A balance delta violates conservation across the claimed state |
 
 ### Challenge Window
 
@@ -150,19 +150,19 @@ protocol-defined (e.g., 80% to challenger, 20% burned) to incentivise honest mon
 
 ## 5. Why Not a Smart-Contract Chain?
 
-Forge's core design rule is: **no blockchain in the critical path**. TRM accounting uses
+Tirami's core design rule is: **no blockchain in the critical path**. TRM accounting uses
 local ledgers and gossip — 99%+ of trades never touch any external chain. Adding a
 dependency on Ethereum or Solana would mean:
 
-- Every Forge node needs an ETH/SOL wallet and gas budget.
-- Network congestion on those chains directly impacts Forge's dispute resolution.
-- Forge's economics become entangled with another chain's governance and token.
+- Every Tirami node needs an ETH/SOL wallet and gas budget.
+- Network congestion on those chains directly impacts Tirami's dispute resolution.
+- Tirami's economics become entangled with another chain's governance and token.
 
-BitVM lets Forge use Bitcoin as a *neutral last-resort arbiter* only. Bitcoin is chosen
+BitVM lets Tirami use Bitcoin as a *neutral last-resort arbiter* only. Bitcoin is chosen
 because it is the most credibly neutral settlement layer: no smart-contract governance,
 no central foundation controlling opcodes, longest chain history. The cost of this choice
 is circuit complexity (BitVM proofs are more verbose than Ethereum contracts), but for
-Forge's use case — disputes happen rarely and the circuit is fixed at protocol design
+Tirami's use case — disputes happen rarely and the circuit is fixed at protocol design
 time — this is an acceptable trade-off.
 
 ---
@@ -195,7 +195,7 @@ The following are explicitly deferred to avoid speculative implementation:
 - **Real Bitcoin wallet integration** — posting the staked claim UTXO on-chain, watching
   the mempool for challenge transactions, and broadcasting slashing transactions.
 - **Challenge-period monitoring** — a background task that watches for new `StakedClaim`
-  commitments on Bitcoin and verifies each one against the local Forge ledger.
+  commitments on Bitcoin and verifies each one against the local Tirami ledger.
 - **Watchtower relay services** — third-party nodes that monitor claims on behalf of
   light clients who cannot run a full Bitcoin node.
 - **Stake recovery** — after the challenge window closes with no valid fraud proof,
@@ -208,8 +208,8 @@ The following are explicitly deferred to avoid speculative implementation:
 - Linus, Robin. "BitVM: Compute Anything on Bitcoin" (October 2023).
   https://bitvm.org/bitvm.pdf
 - BIP 347: OP_CAT. https://github.com/bitcoin/bips/blob/master/bip-0347.mediawiki
-- Forge economics §8-§9 — Bitcoin anchor discussion
+- Tirami economics §8-§9 — Bitcoin anchor discussion
   (`docs/economy.md`, `docs/monetary-theory.md`)
 - `crates/tirami-ledger/src/anchor.rs` — Phase 10 P6 OP_RETURN anchor layer
 - `docs/threat-model.md` — Economic threats T10-T17 that staked claims address
-- Forge `compute_trade_merkle_root()` in `crates/tirami-ledger/src/ledger.rs`
+- Tirami `compute_trade_merkle_root()` in `crates/tirami-ledger/src/ledger.rs`

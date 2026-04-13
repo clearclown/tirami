@@ -1,8 +1,8 @@
-# Forge — Agent Integration Guide
+# Tirami — Agent Integration Guide
 
 ## For AI Agent Developers
 
-Forge gives your agent a compute budget. The agent can earn TRM by serving inference and spend TRM to access larger models. No credit card, no API key, no human in the loop.
+Tirami gives your agent a compute budget. The agent can earn TRM by serving inference and spend TRM to access larger models. No credit card, no API key, no human in the loop.
 
 ## Quick Integration
 
@@ -11,33 +11,33 @@ Forge gives your agent a compute budget. The agent can earn TRM by serving infer
 ```python
 import requests
 
-FORGE = "http://127.0.0.1:3000"
+TIRAMI = "http://127.0.0.1:3000"
 
 # Check if agent can afford a request
-balance = requests.get(f"{FORGE}/v1/tirami/balance").json()
+balance = requests.get(f"{TIRAMI}/v1/tirami/balance").json()
 if balance["effective_balance"] > 100:
-    # Run inference (costs CU)
-    r = requests.post(f"{FORGE}/v1/chat/completions", json={
+    # Run inference (costs TRM)
+    r = requests.post(f"{TIRAMI}/v1/chat/completions", json={
         "messages": [{"role": "user", "content": "What is gravity?"}],
         "max_tokens": 256
     }).json()
     print(r["choices"][0]["message"]["content"])
-    print(f"Cost: {r['x_forge']['cu_cost']} CU")
+    print(f"Cost: {r['x_tirami']['trm_cost']} TRM")
 ```
 
 ### Python SDK
 
 ```python
-from forge_sdk import ForgeClient, ForgeAgent
+from tirami_sdk import TiramiClient, TiramiAgent
 
 # Simple client
-forge = ForgeClient()
-result = forge.chat("Explain quantum computing")
+tirami = TiramiClient()
+result = tirami.chat("Explain quantum computing")
 print(f"Answer: {result['content']}")
-print(f"Cost: {result['cu_cost']} CU, Balance: {result['balance']} CU")
+print(f"Cost: {result['trm_cost']} TRM, Balance: {result['balance']} TRM")
 
 # Autonomous agent with budget management
-agent = ForgeAgent(max_cu_per_task=500)
+agent = TiramiAgent(max_trm_per_task=500)
 while agent.has_budget():
     result = agent.think("What should I do next?")
     if result is None:
@@ -50,15 +50,15 @@ Add to your MCP settings:
 ```json
 {
   "mcpServers": {
-    "forge": {
+    "tirami": {
       "command": "python",
-      "args": ["path/to/forge/mcp/tirami-mcp-server.py"]
+      "args": ["path/to/tirami/mcp/tirami-mcp-server.py"]
     }
   }
 }
 ```
 
-The AI assistant can then use tools like `forge_balance`, `forge_pricing`, `forge_inference`.
+The AI assistant can then use tools like `tirami_balance`, `tirami_pricing`, `tirami_inference`.
 
 ### LangChain
 
@@ -71,7 +71,7 @@ llm = ChatOpenAI(
     model="qwen2.5-0.5b-instruct-q4_k_m"
 )
 response = llm.invoke("Hello")
-# x_forge metadata available in response headers
+# x_tirami metadata available in response headers
 ```
 
 ### curl
@@ -94,21 +94,21 @@ curl localhost:3000/v1/tirami/trades
 The recommended pattern for an autonomous agent:
 
 ```python
-from forge_sdk import ForgeClient
+from tirami_sdk import TiramiClient
 
-forge = ForgeClient()
+tirami = TiramiClient()
 
 def agent_loop():
     while True:
         # 1. Check budget
-        balance = forge.balance()
+        balance = tirami.balance()
         if balance["effective_balance"] < 50:
             print("Low TRM balance. Waiting to earn more...")
             time.sleep(60)
             continue
 
         # 2. Check pricing
-        pricing = forge.pricing()
+        pricing = tirami.pricing()
         cost_per_100 = pricing["estimated_cost_100_tokens"]
 
         # 3. Decide if task is worth the cost
@@ -118,11 +118,11 @@ def agent_loop():
             continue
 
         # 4. Execute
-        result = forge.chat("Analyze this data...", max_tokens=200)
-        print(f"Done. Cost: {result['cu_cost']} CU")
+        result = tirami.chat("Analyze this data...", max_tokens=200)
+        print(f"Done. Cost: {result['trm_cost']} TRM")
 
         # 5. Check safety
-        safety = forge.safety()
+        safety = tirami.safety()
         if safety["circuit_tripped"]:
             print("Circuit breaker tripped. Pausing...")
             time.sleep(300)
@@ -133,7 +133,7 @@ def agent_loop():
 ### Set Budget Policies
 
 ```bash
-# Limit an agent to 1000 TRM per hour
+# Limit an agent to 1000 TRM per hour (budget policy)
 curl -X POST localhost:3000/v1/tirami/policy \
   -H "Content-Type: application/json" \
   -d '{
@@ -177,23 +177,23 @@ curl -X POST localhost:3000/v1/tirami/kill \
 When an agent's TRM balance is insufficient for a task, it can borrow:
 
 ```python
-from forge_sdk import ForgeClient
+from tirami_sdk import TiramiClient
 
-forge = ForgeClient()
+tirami = TiramiClient()
 
 def agent_with_borrowing():
-    balance = forge.balance()
-    pricing = forge.pricing()
+    balance = tirami.balance()
+    pricing = tirami.pricing()
     
     task_cost = pricing["estimated_cost_1000_tokens"] * 2  # ~2K tokens needed
     
     if balance["effective_balance"] < task_cost:
         # Check credit score
-        credit = forge.credit()
+        credit = tirami.credit()
         if credit["score"] > 0.3:
             # Borrow the shortfall
             shortfall = task_cost - balance["effective_balance"]
-            loan = forge.borrow(
+            loan = tirami.borrow(
                 amount=shortfall,
                 term_hours=4,
                 collateral=shortfall // 3
@@ -201,11 +201,11 @@ def agent_with_borrowing():
             print(f"Borrowed {loan['principal_cu']} TRM at {loan['interest_rate']}%/hr")
     
     # Execute the task
-    result = forge.chat("Complex analysis task...", max_tokens=2000)
-    print(f"Cost: {result['cu_cost']} CU")
+    result = tirami.chat("Complex analysis task...", max_tokens=2000)
+    print(f"Cost: {result['trm_cost']} TRM")
     
     # Repay from earnings
-    forge.repay(loan_id=loan["id"])
+    tirami.repay(loan_id=loan["id"])
     print(f"Loan repaid. Credit score improving.")
 ```
 
@@ -214,19 +214,19 @@ def agent_with_borrowing():
 New agents start with a credit score of 0.3. To build credit:
 
 ```python
-def build_credit(forge):
+def build_credit(tirami):
     """Gradually build credit through reliable behavior."""
     
     # Phase 1: Earn through inference (builds trade history)
     # Serve inference normally -- every completed trade improves trade_score
     
     # Phase 2: Small borrow-repay cycles (builds repayment history)
-    loan = forge.borrow(amount=100, term_hours=1, collateral=50)
+    loan = tirami.borrow(amount=100, term_hours=1, collateral=50)
     # ... do useful work ...
-    forge.repay(loan_id=loan["id"])
+    tirami.repay(loan_id=loan["id"])
     
     # Phase 3: Check progress
-    credit = forge.credit()
+    credit = tirami.credit()
     print(f"Credit score: {credit['score']}")
     print(f"  Trade score:     {credit['components']['trade']}")
     print(f"  Repayment score: {credit['components']['repayment']}")
@@ -245,9 +245,9 @@ def build_credit(forge):
 |-----------------|----------|--------|
 | "What's my credit score?" | `/v1/tirami/credit` | GET |
 | "How much can I borrow?" | `/v1/tirami/pool` | GET |
-| "Borrow CU" | `/v1/tirami/borrow` | POST |
+| "Borrow TRM" | `/v1/tirami/borrow` | POST |
 | "Repay my loan" | `/v1/tirami/repay` | POST |
-| "Lend my idle CU" | `/v1/tirami/lend` | POST |
+| "Lend my idle TRM" | `/v1/tirami/lend` | POST |
 | "View my loans" | `/v1/tirami/loans` | GET |
 
 ## Credit Score Factors

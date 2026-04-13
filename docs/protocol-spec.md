@@ -1,8 +1,8 @@
-# Forge — Wire Protocol Specification
+# Tirami — Wire Protocol Specification
 
 ## Overview
 
-Forge nodes exchange bincode-serialized control messages over encrypted QUIC connections established by Iroh. Activation tensors are carried as raw bytes inside `Forward` messages. The current v1 implementation uses the same envelope for local seed/requester inference and for future multi-hop pipeline messages.
+Tirami nodes exchange bincode-serialized control messages over encrypted QUIC connections established by Iroh. Activation tensors are carried as raw bytes inside `Forward` messages. The current v1 implementation uses the same envelope for local seed/requester inference and for future multi-hop pipeline messages.
 
 ## Message Envelope
 
@@ -237,7 +237,7 @@ pub struct Rebalance {
 
 ## Trade Signing (Proof of Useful Work)
 
-Forge uses dual-signed trades to prove that computation was performed and received. Both the provider and consumer must sign the same canonical trade bytes.
+Tirami uses dual-signed trades to prove that computation was performed and received. Both the provider and consumer must sign the same canonical trade bytes.
 
 ### TradeProposal
 
@@ -343,7 +343,7 @@ Requester                       Seed
   |--- Hello ------------------->|
   |<-- Welcome ------------------|
   |--- InferenceRequest -------->|
-  |                              | [CU reserved]
+  |                              | [TRM reserved]
   |<-- TokenStreamMsg ---------- |
   |<-- TokenStreamMsg ---------- |
   |<-- TokenStreamMsg (final) -- |

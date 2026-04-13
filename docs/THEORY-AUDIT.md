@@ -1,4 +1,4 @@
-# Forge Theory ↔ Implementation Audit
+# Tirami Theory ↔ Implementation Audit
 
 *Date: 2026-04-08*
 *Spec version: forge-economics/spec/parameters.md v0.2*

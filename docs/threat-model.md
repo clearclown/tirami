@@ -1,4 +1,4 @@
-# Forge — Threat Model
+# Tirami — Threat Model
 
 ## Security Goals
 
@@ -134,23 +134,23 @@ Layer assignment should follow this hierarchy once split inference exists:
 
 ## Privacy Guarantees
 
-**What Forge guarantees today:**
+**What Tirami guarantees today:**
 - prompts and responses are encrypted in transit between directly connected peers
 - relays and passive network observers do not see decrypted prompt or response contents
 - there is no mandatory central server in the data path
 - the current seed/worker trust boundary is explicit
 
-**What Forge does not guarantee today:**
+**What Tirami does not guarantee today:**
 - that the seed cannot read the prompt or response
 - that split inference hides plaintext from all remote compute providers
 - that incorrect remote inference is detected automatically
 
-**What Forge is aiming to guarantee later:**
+**What Tirami is aiming to guarantee later:**
 - middle-stage peers do not receive plaintext prompts
 - activation tensors are encrypted in transit between pipeline stages
 - prompt visibility is reduced to the minimal set of trusted boundary nodes
 
-Those later guarantees depend on shipping actual split inference first. Until then, Forge should be described as encrypted remote inference with an honest trust boundary.
+Those later guarantees depend on shipping actual split inference first. Until then, Tirami should be described as encrypted remote inference with an honest trust boundary.
 
 ## Economic Threats
 

@@ -1,4 +1,4 @@
-# Forge — Strategy
+# Tirami — Strategy
 
 ## Competitive Landscape
 
@@ -18,25 +18,25 @@
 
 **What every competitor has in common:** A speculative token as the settlement layer. None use compute itself as currency.
 
-## Forge's Three Differentiators
+## Tirami's Three Differentiators
 
-### 1. CU-Native Economics (No Speculative Token)
+### 1. TRM-Native Economics (No Speculative Token)
 
 Every competitor settles in a tradeable token (TAO, AKT, GLM, RENDER, IO). Token value is driven by speculation, not utility. When token prices crash, provider incentives evaporate.
 
-Forge settles in TRM — a unit backed by verified useful computation. TRM cannot be pre-mined, ICO'd, or speculated on. Its value is intrinsic: 1 TRM represents real inference work that someone actually needed.
+Tirami settles in TRM — a unit backed by verified useful computation. TRM cannot be pre-mined, ICO'd, or speculated on. Its value is intrinsic: 1 TRM represents real inference work that someone actually needed.
 
 ### 2. Compute Lending With Interest
 
 **No other distributed inference project offers this.** This was confirmed through comprehensive competitive analysis.
 
-Existing projects: you either have compute hardware or you don't participate. Forge enables nodes without sufficient resources to borrow CU, access larger models, earn from better inference, and repay with interest. This is the key to lowering the participation barrier and solving the demand-side problem.
+Existing projects: you either have compute hardware or you don't participate. Tirami enables nodes without sufficient resources to borrow TRM, access larger models, earn from better inference, and repay with interest. This is the key to lowering the participation barrier and solving the demand-side problem.
 
 ### 3. Agent-First Budget Management
 
 No major AI agent framework (AutoGPT, CrewAI, LangGraph, LangChain) has a built-in economic layer. Agents cannot autonomously manage compute budgets, borrow resources, or make cost/quality tradeoffs.
 
-Forge's `/v1/tirami/balance`, `/pricing`, `/credit`, and `/borrow` endpoints let agents operate as fully autonomous economic actors within human-set policy limits.
+Tirami's `/v1/tirami/balance`, `/pricing`, `/credit`, and `/borrow` endpoints let agents operate as fully autonomous economic actors within human-set policy limits.
 
 ## 5-Layer Architecture
 
@@ -54,7 +54,7 @@ Forge's `/v1/tirami/balance`, `/pricing`, `/credit`, and `/borrow` endpoints let
 │  TRM lending, yield optimization, credit,        │
 │  futures, insurance, derivatives                │
 ├─────────────────────────────────────────────────┤
-│  Layer 1: Economy (forge — this repo)           │
+│  Layer 1: Economy (tirami — this repo)           │
 │  TRM ledger, dual-signed trades, dynamic pricing,│
 │  lending primitives, safety controls            │
 ├─────────────────────────────────────────────────┤
@@ -70,16 +70,16 @@ Forge's `/v1/tirami/balance`, `/pricing`, `/credit`, and `/borrow` endpoints let
 
 | Repository | Language | Status | Layer | Purpose |
 |-----------|----------|--------|-------|---------|
-| **forge** | Rust | Active | L1 | Protocol core: TRM ledger, trades, lending primitives, safety |
-| **forge-mesh** | Rust | Active | L0 | mesh-llm + Forge economic layer = production runtime |
-| **tirami-sdk** | Python | Published (PyPI) | Client | Python SDK for Forge API |
+| **tirami** | Rust | Active | L1 | Protocol core: TRM ledger, trades, lending primitives, safety |
+| **forge-mesh** | Rust | Active | L0 | mesh-llm + Tirami economic layer = production runtime |
+| **tirami-sdk** | Python | Published (PyPI) | Client | Python SDK for Tirami API |
 | **forge-cu-mcp** | Python | Published (PyPI) | Client | MCP server for AI tools (Claude, ChatGPT, Cursor) |
 | **tirami-bank** | Rust + Python | Planned | L2 | Advanced financial instruments (futures, insurance) |
 | **tirami-mind** | Python | Planned | L3 | AutoAgent self-improvement + TRM economy |
 | **tirami-agora** | Python/TypeScript | Planned | L4 | Agent marketplace, Nostr NIP-90, A2A |
 
 **Naming rationale:**
-- **forge** — The foundry. Where value is created from raw compute.
+- **tirami** — The foundry. Where value is created from raw compute.
 - **forge-mesh** — The network mesh. Physical inference execution.
 - **tirami-bank** — Financial services layer.
 - **tirami-mind** — Intelligence. Self-improving agents.
@@ -89,7 +89,7 @@ Forge's `/v1/tirami/balance`, `/pricing`, `/credit`, and `/borrow` endpoints let
 
 ### Problem
 
-To participate in Forge, you need hardware capable of running LLM inference. This creates a participation barrier identical to Bitcoin's ASIC problem. Lending solves this by enabling economic participation without upfront hardware investment.
+To participate in Tirami, you need hardware capable of running LLM inference. This creates a participation barrier identical to Bitcoin's ASIC problem. Lending solves this by enabling economic participation without upfront hardware investment.
 
 ### Participation Paths (enabled by lending)
 
@@ -100,7 +100,7 @@ To participate in Forge, you need hardware capable of running LLM inference. Thi
 | **C: Skills only** | No hardware | Contribute harnesses/curation → earn TRM → participate |
 | **D: Capital only** | Money, no hardware | Buy TRM via Lightning → lend to pool → earn yield |
 
-Path B is critical — without it, Forge cannot achieve network effects.
+Path B is critical — without it, Tirami cannot achieve network effects.
 
 ### LoanRecord Structure
 
@@ -207,7 +207,7 @@ Nodes that repay the "welcome loan" start building credit immediately. Nodes tha
 
 ### Model Tiers
 
-| Tier | Parameters | Base CU/token | Examples |
+| Tier | Parameters | Base TRM/token | Examples |
 |------|-----------|---------------|---------|
 | Small | < 3B | 1 | Qwen 2.5 0.5B, Phi-3 Mini |
 | Medium | 3B - 14B | 3 | Qwen 3 8B, Gemma 3 9B, Llama 3.2 8B |
@@ -270,23 +270,23 @@ where:
 
 mesh-llm already uses Nostr for peer discovery. NIP-90 ("Data Vending Machines") extends this naturally:
 
-| NIP-90 Concept | Forge Mapping |
+| NIP-90 Concept | Tirami Mapping |
 |---------------|---------------|
 | Job request (kind 5050) | Inference request with TRM budget |
-| Service provider | Forge node serving inference |
+| Service provider | Tirami node serving inference |
 | Job result (kind 6050) | Inference response with TRM cost |
 | Payment (Lightning zap) | TRM transfer (or Lightning via bridge) |
 | Provider discovery | Nostr relay + Agent Card |
 
 ### Integration approach
 
-1. Forge providers publish NIP-90 `kind:31990` handler events advertising models and TRM pricing
+1. Tirami providers publish NIP-90 `kind:31990` handler events advertising models and TRM pricing
 2. Consumers discover providers via Nostr relays
-3. Job requests include `X-Forge-Max-CU` tag
-4. Responses include `X-Forge-CU-Cost` tag
+3. Job requests include `X-Tirami-Max-TRM` tag
+4. Responses include `X-Tirami-TRM-Cost` tag
 5. Settlement happens via TRM protocol (bilateral signed trade) or Lightning (NIP-57 zap)
 
-This gives Forge instant access to Nostr's existing relay infrastructure without building a separate discovery network.
+This gives Tirami instant access to Nostr's existing relay infrastructure without building a separate discovery network.
 
 ## Phased Roadmap
 
@@ -297,14 +297,14 @@ This gives Forge instant access to Nostr's existing relay infrastructure without
 | 3 | Operator Ledger | Done | TRM accounting, HMAC-SHA256 integrity |
 | 4 | Economic API | Done | OpenAI-compatible API, TRM metering, agent endpoints |
 | **5** | **mesh-llm Fork** | **Next** | Replace inference layer, inherit pipeline parallelism, MoE, Nostr |
-| **5.5** | **CU Lending** | **Planned** | LoanRecord, credit score, lending API, collateral, safety |
+| **5.5** | **TRM Lending** | **Planned** | LoanRecord, credit score, lending API, collateral, safety |
 | **6** | **Multi-Model Pricing** | **Planned** | Model tiers, MoE discount, routing API |
 | **7** | **Discovery + Marketplace** | **Planned** | Reputation gossip, NIP-90, tirami-agora |
 | **8** | **Agent Intelligence** | **Planned** | tirami-mind, AutoAgent loops, self-reinforcement |
 
 See [roadmap.md](roadmap.md) for detailed deliverables per phase.
 
-## What Forge Is NOT
+## What Tirami Is NOT
 
 1. **Not a speculative token.** TRM is earned by performing useful work, not purchased or traded on exchanges. There is no ICO, no governance token, no token sale.
 
@@ -312,13 +312,13 @@ See [roadmap.md](roadmap.md) for detailed deliverables per phase.
 
 3. **Not a centralized authority.** No single entity controls TRM issuance, pricing, or access. Market prices emerge from local supply and demand observations.
 
-4. **Not a general compute platform.** Forge is optimized for LLM inference, not arbitrary computation. This focus enables inference-specific optimizations (model-aware pricing, MoE discounts, quality verification).
+4. **Not a general compute platform.** Tirami is optimized for LLM inference, not arbitrary computation. This focus enables inference-specific optimizations (model-aware pricing, MoE discounts, quality verification).
 
 5. **Not dependent on Bitcoin.** Lightning is an optional off-ramp for operators who need external liquidity. The protocol functions with zero external currency.
 
 ## Local AI Context
 
-The economic viability of running a Forge node on consumer hardware is crossing a threshold:
+The economic viability of running a Tirami node on consumer hardware is crossing a threshold:
 
 | Hardware | Cost | Model | Speed | Monthly electricity |
 |----------|------|-------|-------|-------------------|
@@ -332,4 +332,4 @@ The economic viability of running a Forge node on consumer hardware is crossing 
 - M5 Max (expected mid-2026) projects ~4x faster TTFT, ~12% faster decode
 - Cloud API costs ($5-15/M tokens) vs local inference ($5-10/month electricity) — local wins within months
 
-**Implication:** A $600 Mac Mini running 24/7 as a Forge node is economically viable as a "compute rental property" — generating TRM yield while the owner sleeps. TRM lending makes this accessible even to nodes that can't afford upfront hardware investment.
+**Implication:** A $600 Mac Mini running 24/7 as a Tirami node is economically viable as a "compute rental property" — generating TRM yield while the owner sleeps. TRM lending makes this accessible even to nodes that can't afford upfront hardware investment.

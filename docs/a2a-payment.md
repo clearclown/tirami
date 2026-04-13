@@ -1,4 +1,4 @@
-# Forge TRM Payment Extension for Agent-to-Agent (A2A) Protocol
+# Tirami TRM Payment Extension for Agent-to-Agent (A2A) Protocol
 
 *Proposal for adding compute payment to agent communication standards*
 
@@ -22,9 +22,9 @@ Agent A adds payment headers when requesting work:
 
 ```http
 POST /v1/chat/completions HTTP/1.1
-X-Forge-Consumer-Id: <agent-a-node-id>
-X-Forge-Max-CU: 500
-X-Forge-Consumer-Sig: <ed25519-signature-of-request-hash>
+X-Tirami-Consumer-Id: <agent-a-node-id>
+X-Tirami-Max-TRM: 500
+X-Tirami-Consumer-Sig: <ed25519-signature-of-request-hash>
 ```
 
 ### Response
@@ -33,9 +33,9 @@ Agent B includes cost information:
 
 ```http
 HTTP/1.1 200 OK
-X-Forge-Provider-Id: <agent-b-node-id>
-X-Forge-CU-Cost: 47
-X-Forge-Provider-Sig: <ed25519-signature-of-response-hash>
+X-Tirami-Provider-Id: <agent-b-node-id>
+X-Tirami-TRM-Cost: 47
+X-Tirami-Provider-Sig: <ed25519-signature-of-response-hash>
 ```
 
 ### Trade Record
@@ -46,7 +46,7 @@ Both agents independently record:
 {
   "provider": "<agent-b>",
   "consumer": "<agent-a>",
-  "cu_amount": 47,
+  "trm_amount": 47,
   "tokens_processed": 47,
   "timestamp": 1775289254032,
   "provider_sig": "<sig>",
@@ -69,10 +69,10 @@ Add to the A2A `Task` object:
   "id": "task-123",
   "status": "completed",
   "payment": {
-    "protocol": "forge-cu",
+    "protocol": "tirami-trm",
     "consumer": "<node-id>",
     "provider": "<node-id>",
-    "cu_amount": 47,
+    "trm_amount": 47,
     "consumer_sig": "<sig>",
     "provider_sig": "<sig>"
   }
@@ -81,13 +81,13 @@ Add to the A2A `Task` object:
 
 ### Anthropic MCP
 
-Add a `forge_payment` resource to MCP servers:
+Add a `tirami_payment` resource to MCP servers:
 
 ```json
 {
   "resources": [{
-    "uri": "forge://payment/balance",
-    "name": "CU Balance",
+    "uri": "tirami://payment/balance",
+    "name": "TRM Balance",
     "mimeType": "application/json"
   }]
 }
@@ -95,18 +95,18 @@ Add a `forge_payment` resource to MCP servers:
 
 ### OpenAI Function Calling
 
-Agents using function calling can include Forge tools:
+Agents using function calling can include Tirami tools:
 
 ```json
 {
   "tools": [{
     "type": "function",
     "function": {
-      "name": "forge_pay",
+      "name": "tirami_pay",
       "description": "Pay TRM for a compute task",
       "parameters": {
         "provider": "string",
-        "cu_amount": "integer"
+        "trm_amount": "integer"
       }
     }
   }]
@@ -123,7 +123,7 @@ Agents using function calling can include Forge tools:
 
 ## Comparison
 
-| Feature | Stripe | Bitcoin Lightning | **Forge CU** |
+| Feature | Stripe | Bitcoin Lightning | **Tirami TRM** |
 |---------|--------|-------------------|-------------|
 | Agent-to-agent | No (needs human) | Partial (needs channel) | **Yes** |
 | Settlement speed | Days | Seconds | **Instant** |
@@ -133,7 +133,7 @@ Agents using function calling can include Forge tools:
 
 ## Implementation
 
-Reference implementation: [github.com/clearclown/forge](https://github.com/clearclown/forge)
+Reference implementation: [github.com/clearclown/tirami](https://github.com/clearclown/tirami)
 
 - Python SDK: `pip install tirami-sdk`
 - MCP Server: `pip install tirami-mcp`

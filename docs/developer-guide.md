@@ -1,4 +1,4 @@
-# Forge — Developer Guide
+# Tirami — Developer Guide
 
 - [Repo layout](#repo-layout)
 - [Build](#build)
@@ -15,9 +15,9 @@
 ## Repo layout
 
 ```
-forge/
+tirami/
 ├── crates/                     (12 Rust crates)
-│   ├── tirami-core              shared types (NodeId, CU, Config)
+│   ├── tirami-core              shared types (NodeId, TRM, Config)
 │   ├── tirami-ledger            L1 economy — THE highest-value code
 │   ├── tirami-proto             wire protocol (bincode, 27+ message types)
 │   ├── tirami-net               P2P transport (iroh QUIC + Noise)
@@ -25,12 +25,12 @@ forge/
 │   ├── forge-shard             topology planner (layer assignment)
 │   ├── tirami-node              HTTP API + node orchestrator (all 5 layers)
 │   ├── tirami-cli               reference CLI (chat, seed, worker, settle)
-│   ├── tirami-lightning         CU↔BTC bridge (LDK wallet, Lightning)
+│   ├── tirami-lightning         TRM↔BTC bridge (LDK wallet, Lightning)
 │   ├── tirami-bank              L2 finance (strategies, portfolios, futures, insurance)
 │   ├── tirami-mind              L3 self-improvement (harness, CuBudget, MetaOptimizer)
 │   └── tirami-agora             L4 marketplace (AgentRegistry, ReputationCalculator)
 ├── sdk/python/                 tirami-sdk (PyPI, 20 methods)
-├── mcp/                        forge-cu-mcp (PyPI, MCP server, 20 tools)
+├── mcp/                        tirami-mcp (PyPI, MCP server, 20 tools)
 ├── docs/                       technical documentation
 └── scripts/
     ├── demo-e2e.sh             one-command end-to-end demo
@@ -42,7 +42,7 @@ The crate dependency order is: `tirami-core` → `tirami-ledger` → `tirami-lig
 When choosing where to make a change:
 - Economic logic always lives in `tirami-ledger`.
 - HTTP routing always lives in `tirami-node/src/api.rs` and `tirami-node/src/handlers/`.
-- Shared types (NodeId, TRM amounts, Config) always live in `tirami-core/src/types.rs`.
+- Shared types (NodeId, TRM amounts, Config) live in `tirami-core/src/types.rs`.
 - Wire protocol additions always go in `tirami-proto/src/messages.rs`.
 
 ---
@@ -96,7 +96,7 @@ This script greps the source tree for specific constant values, struct names, an
 bash scripts/demo-e2e.sh
 ```
 
-Downloads SmolLM2-135M (~100 MB), starts a real forge node, runs 3 real chat completions through llama.cpp, then exercises every Phase 1-12 endpoint with live data. Takes about 30 seconds after the binary is built. Verified on Apple Silicon Metal GPU.
+Downloads SmolLM2-135M (~100 MB), starts a real tirami node, runs 3 real chat completions through llama.cpp, then exercises every Phase 1-12 endpoint with live data. Takes about 30 seconds after the binary is built. Verified on Apple Silicon Metal GPU.
 
 ---
 
@@ -104,12 +104,12 @@ Downloads SmolLM2-135M (~100 MB), starts a real forge node, runs 3 real chat com
 
 - **Formatting**: default `rustfmt` (no `rustfmt.toml`). Run `cargo fmt --all` before committing.
 - **Linting**: `cargo clippy --workspace`. There are 71 baseline warnings in the current codebase that are accepted; do not introduce new clippy errors.
-- **Error handling**: `ForgeError` enum for all library-level errors (defined in `tirami-core/src/lib.rs`). Use `anyhow` only in `tirami-cli`. Never use `.unwrap()` or `.expect()` in library code — propagate with `?`.
+- **Error handling**: `TiramiError` enum for all library-level errors (defined in `tirami-core/src/lib.rs`). Use `anyhow` only in `tirami-cli`. Never use `.unwrap()` or `.expect()` in library code — propagate with `?`.
 - **Async**: tokio runtime everywhere. `Arc<Mutex<T>>` for shared state accessed across tasks.
 - **Logging**: `tracing` crate. INFO for user-visible events, DEBUG for protocol details. Do not log sensitive data (bearer tokens, prompt content) at INFO or above.
 - **Serialization**: `serde` with `#[derive(Serialize, Deserialize)]` for JSON and config. `bincode` for wire protocol. Do not mix the two on the same type.
 - **No unsafe**: unless absolutely necessary and documented with a safety comment explaining why the invariant holds.
-- **No panics in library code**: `Result<T, ForgeError>` everywhere in `tirami-ledger`, `tirami-bank`, `tirami-mind`, `tirami-agora`. Panics are acceptable only in tests and in CLI `main()`.
+- **No panics in library code**: `Result<T, TiramiError>` everywhere in `tirami-ledger`, `tirami-bank`, `tirami-mind`, `tirami-agora`. Panics are acceptable only in tests and in CLI `main()`.
 
 ---
 
@@ -156,7 +156,7 @@ Follow the pattern in `crates/tirami-node/src/handlers/bank.rs`:
 
 Follow the pattern in `crates/tirami-ledger/src/lending.rs`:
 
-1. **Update the spec first.** Add the numeric constants to `forge-economics/spec/parameters.md` with a PR against the `clearclown/forge-economics` repo. Do not hard-code values in Rust before they exist in the spec.
+1. **Update the spec first.** Add the numeric constants to `forge-economics/spec/parameters.md` with a PR against the `clearclown/forge-economics` repo (repo name unchanged). Do not hard-code values in Rust before they exist in the spec.
 
 2. **Implement with matching constants.** In `tirami-ledger` (or the appropriate L2/L3/L4 crate), declare:
 
@@ -233,3 +233,4 @@ Rules:
 ---
 
 See also: [forge-economics/papers/compute-standard.md](https://github.com/clearclown/forge-economics) for the theoretical underpinnings, [CLAUDE.md](../CLAUDE.md) for current implementation status, and [docs/operator-guide.md](operator-guide.md) for deployment concerns.
+

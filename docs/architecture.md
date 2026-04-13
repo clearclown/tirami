@@ -1,12 +1,12 @@
-# Forge — Architecture
+# Tirami — Architecture
 
 ## Overview
 
-Forge is a two-layer system: **inference** and **economy**.
+Tirami is a two-layer system: **inference** and **economy**.
 
 The inference layer handles model distribution, mesh networking, and API serving. It is built on [mesh-llm](https://github.com/michaelneale/mesh-llm).
 
-The economy layer handles TRM accounting, trade recording, pricing, and agent budgets. This is Forge's original contribution.
+The economy layer handles TRM accounting, trade recording, pricing, and agent budgets. This is Tirami's original contribution.
 
 ```
 ┌─────────────────────────────────────────────────┐
@@ -16,7 +16,7 @@ The economy layer handles TRM accounting, trade recording, pricing, and agent bu
 └──────────────────┬──────────────────────────────┘
                    │
 ┌──────────────────▼──────────────────────────────┐
-│  Economic Layer (Forge-original)                │
+│  Economic Layer (Tirami-original)                │
 │                                                  │
 │  ┌──────────────┐ ┌──────────┐ ┌─────────────┐ │
 │  │ tirami-ledger │ │ pricing  │ │ agent       │ │
@@ -53,9 +53,9 @@ The inference layer is responsible for:
 - **Inference execution**: llama.cpp via llama-server and rpc-server subprocesses
 - **API serving**: OpenAI-compatible `/v1/chat/completions` and `/v1/models`
 
-Forge inherits all of this from mesh-llm. The inference layer does not know about CU, trades, or pricing.
+Tirami inherits all of this from mesh-llm. The inference layer does not know about TRM, trades, or pricing.
 
-## Economic Layer (Forge)
+## Economic Layer (Tirami)
 
 The economic layer sits above inference and is responsible for:
 
@@ -72,7 +72,7 @@ pub struct ComputeLedger {
 
 Core responsibilities:
 - Track per-node TRM balance (contributed, consumed, reserved)
-- Record every inference trade (provider, consumer, TRM amount, tokens)
+- Record every inference trade (provider, consumer, TRM amount, tokens processed)
 - Compute dynamic market prices from supply/demand
 - Apply yield to contributing nodes
 - Export settlement statements for off-protocol bridges
@@ -80,7 +80,7 @@ Core responsibilities:
 
 ### forge-verify — Proof of Useful Work (target)
 
-Ensures TRM claims are legitimate:
+Ensures trade claims are legitimate:
 - Dual-sign protocol: both provider and consumer sign each TradeRecord
 - Gossip sync: signed trades propagate across the network
 - Verification: any node can validate both signatures
@@ -99,7 +99,7 @@ The bridge layer is outside the core protocol. Different operators can use diffe
 
 | Route | Layer | Description |
 |-------|-------|-------------|
-| `POST /v1/chat/completions` | Inference + Economy | Run inference, record TRM trade |
+| `POST /v1/chat/completions` | Inference + Economy | Run inference, record trade |
 | `GET /v1/models` | Inference | List loaded models |
 | `GET /v1/tirami/balance` | Economy | TRM balance, reputation |
 | `GET /v1/tirami/pricing` | Economy | Market price, cost estimates |
@@ -124,21 +124,21 @@ Inference layer executes (llama-server / rpc-server)
 Tokens stream back to consumer
     ↓
 Ledger records trade:
-  - provider.contributed += cu_cost
-  - consumer.consumed += cu_cost
+  - provider.contributed += trm_cost
+  - consumer.consumed += trm_cost
   - trade_log.push(TradeRecord)
     ↓
-Response includes x_forge: { cu_cost, effective_balance }
+Response includes x_tirami: { trm_cost, effective_balance }
 ```
 
 ### Settlement Export
 
 ```
-Operator runs: forge settle --hours 24
+Operator runs: tirami settle --hours 24
     ↓
 API reads trade_log for time window
     ↓
-Aggregates per-node: gross_earned, gross_spent, net_cu
+Aggregates per-node: gross_earned, gross_spent, net_trm
     ↓
 Exports JSON statement with optional reference price
     ↓
@@ -159,17 +159,17 @@ Each layer protects against different threats:
 - Layer 4: Model integrity (GGUF hash verification)
 - Layer 3: Transport confidentiality (eavesdropping)
 - Layer 2: Local tampering (file modification)
-- Layer 1: Network fraud (fake TRM claims)
+- Layer 1: Network fraud (fake trade claims)
 - Layer 0: Historical immutability (optional Bitcoin anchor)
 
 ## Crate Dependencies
 
 ```
-tirami-core ← shared types (NodeId, CU, Config)
+tirami-core ← shared types (NodeId, TRM, Config)
     ↑
 tirami-ledger ← economic engine (trades, pricing, yield)
     ↑
-tirami-lightning ← external bridge (LDK wallet, CU↔sats)
+tirami-lightning ← external bridge (LDK wallet, TRM↔sats)
     ↑
 tirami-node ← orchestrator (HTTP API, pipeline, ledger integration)
     ↑
@@ -178,5 +178,5 @@ tirami-cli ← reference CLI (chat, seed, worker, settle)
 tirami-net ← P2P transport (iroh, QUIC, Noise, mDNS)
 tirami-proto ← wire messages (bincode, 14 payload types)
 tirami-infer ← inference engine (llama.cpp, GGUF loader)
-forge-shard ← topology planner (layer assignment, rebalancing)
+tirami-shard ← topology planner (layer assignment, rebalancing)
 ```

@@ -1,11 +1,11 @@
-# Forge — Roadmap
+# Tirami — Roadmap
 
 ## Phase 1: Local Inference ✅
 
 - `tirami-core`: Type system (NodeId, LayerRange, ModelManifest, PeerCapability)
 - `tirami-infer`: llama.cpp engine, GGUF loader, streaming token generation
 - `tirami-node`: HTTP API (/chat, /chat/stream, /health)
-- `tirami-cli`: `forge chat` command with model auto-download
+- `tirami-cli`: `tirami chat` command with model auto-download
 
 ## Phase 2: P2P Protocol ✅
 
@@ -27,17 +27,17 @@
 - OpenAI-compatible API: `POST /v1/chat/completions`, `GET /v1/models`
 - TRM metering: every inference records a trade with `x_forge` extension
 - Agent budget endpoints: `GET /v1/tirami/balance`, `GET /v1/tirami/pricing`
-- CU→Lightning settlement bridge: `forge settle --pay`
+- TRM→Lightning settlement bridge: `tirami settle --pay`
 - Seed model auto-resolve from HF Hub
 - Graceful Ctrl-C shutdown with ledger persistence
 
 ## Phase 5: mesh-llm Fork Integration (next)
 
-**Goal:** Replace Forge's inference layer with mesh-llm's proven distributed engine.
+**Goal:** Replace Tirami's inference layer with mesh-llm's proven distributed engine.
 
 | Deliverable | Description |
 |---|---|
-| Fork mesh-llm | Create forge as a mesh-llm fork with economic layer |
+| Fork mesh-llm | Create tirami as a mesh-llm fork with economic layer |
 | Integrate tirami-ledger | Hook TRM recording into mesh-llm's inference pipeline |
 | Preserve economic API | Keep /v1/tirami/* endpoints in the new codebase |
 | Web console extension | Add TRM balance and trade visibility to mesh-llm's console |
@@ -65,7 +65,7 @@
 
 | Deliverable | Description |
 |---|---|
-| Model tier pricing | CU/token rates per model size class (small/medium/large/frontier) |
+| Model tier pricing | TRM/token rates per model size class (small/medium/large/frontier) |
 | MoE discount | Reduced pricing for mixture-of-experts models (active params / total params) |
 | Routing API | GET /v1/tirami/route for cost/quality-optimal provider selection |
 | Provider ranking | Multi-factor scoring (reputation, price, latency, model quality) |
@@ -73,7 +73,7 @@
 ## Phase 7: L2/L3/L4 Rust rewrite ✅ (2026-04-07)
 
 **Goal:** Replace the Python scaffolds for tirami-bank/mind/agora with Rust
-workspace crates inside `clearclown/forge`. Bit-for-bit semantic preservation.
+workspace crates inside `clearclown/tirami`. Bit-for-bit semantic preservation.
 
 | Deliverable | Status |
 |---|---|
@@ -81,13 +81,13 @@ workspace crates inside `clearclown/forge`. Bit-for-bit semantic preservation.
 | tirami-mind Rust crate (53 tests) | ✅ Harness, CuBudget, Benchmark, MetaOptimizer, ImprovementCycleRunner, ForgeMindAgent |
 | tirami-agora Rust crate (42 tests) | ✅ AgentRegistry, ReputationCalculator (4 sub-scores), CapabilityMatcher, Marketplace |
 | forge-economics §10/§11/§12 | ✅ All L2/L3/L4 constants centralized as single source of truth |
-| Python repos archived | ✅ Tagged v0.1.0-python-scaffold, redirect READMEs in clearclown/forge-{bank,mind,agora} |
+| Python repos archived | ✅ Tagged v0.1.0-python-scaffold, redirect READMEs in clearclown/tirami-{bank,mind,agora} |
 | Workspace tests | ✅ 291 passing (was 143) |
 
 ## Phase 8: L2/L3/L4 wired into tirami-node ✅ (2026-04-08)
 
-**Goal:** Make L2/L3/L4 first-class citizens of the running forge node.
-A single `forge node --port 3000` exposes the full 5-layer Forge ecosystem
+**Goal:** Make L2/L3/L4 first-class citizens of the running tirami node.
+A single `tirami node --port 3000` exposes the full 5-layer Tirami ecosystem
 over HTTP, real TRM is consumed by the self-improvement loop.
 
 | Deliverable | Status |
@@ -134,9 +134,9 @@ forge-mesh running CI, Compute Standard paper drafted, Prometheus + Bitcoin anch
 | P5 Prometheus metrics export | ✅ | `tirami_ledger::metrics::ForgeMetrics` + `/metrics` endpoint; 11 metric series including collusion scores |
 | P6 Bitcoin OP_RETURN anchoring | ✅ | `tirami_ledger::anchor` + `/v1/tirami/anchor` endpoint; 40-byte FRGE payload, 80-byte standard limit |
 | P7 Compute Standard paper v0.1 | ✅ | 7,000-word preprint in `forge-economics/papers/compute-standard.md`, arXiv-ready |
-| Workspace tests | ✅ | 337 → **359** (+22) |
+| Workspace tests | ✅ | 337 → **785** |
 | forge-mesh tests | ✅ | 641 → **646** (+5) |
-| verify-impl.sh | ✅ | 72 → **80 GREEN** |
+| verify-impl.sh | ✅ | 72 → **123 GREEN** |
 
 ## Phase 11: v0.4+ research frontier (planned)
 
@@ -163,6 +163,6 @@ and the A2A / MCP market layer.
 | Protocol v2 | Lessons from v1, backward-compatible evolution |
 | Cross-architecture | NVIDIA GPU, AMD ROCm, RISC-V support (via mesh-llm) |
 | Federated training | Distributed fine-tuning, not just inference |
-| Compute Standard paper | Academic publication on CU-native economics |
+| Compute Standard paper | Academic publication on TRM-native economics |
 
 > The protocol is the platform. The computation is the currency. The agents are the economy.

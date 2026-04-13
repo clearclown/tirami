@@ -1,8 +1,8 @@
-# Forge ↔ mesh-llm ↔ llama.cpp Compatibility
+# Tirami ↔ mesh-llm ↔ llama.cpp Compatibility
 
-> **TL;DR** — Forge is mesh-llm + a TRM economic layer. Any GGUF model that runs on
-> llama.cpp runs on Forge. Any OpenAI-compatible client that talks to mesh-llm
-> talks to Forge. The only addition is `/v1/tirami/*` (45 endpoints, all opt-in).
+> **TL;DR** — Tirami is mesh-llm + a TRM economic layer. Any GGUF model that runs on
+> llama.cpp runs on Tirami. Any OpenAI-compatible client that talks to mesh-llm
+> talks to Tirami. The only addition is `/v1/tirami/*` (45 endpoints, all opt-in).
 >
 > **Verified 2026-04-09**: full end-to-end run with SmolLM2-135M on Apple M-series
 > Metal GPU, 3 real inference requests recorded as 3 real `TradeRecord`s, full
@@ -12,26 +12,26 @@
 
 ## What we are
 
-**Forge = mesh-llm runtime + TRM economy.**
+**Tirami = mesh-llm runtime + TRM economy.**
 
-| Layer | Source | What Forge adds |
+| Layer | Source | What Tirami adds |
 |---|---|---|
 | Inference engine | llama.cpp via `llama-cpp-2 = "0.1"` | **nothing** — same engine, same models, same Metal/CUDA backends |
-| OpenAI API | mesh-llm-derived axum router | `x_forge` extension on responses + 45 `/v1/tirami/*` endpoints |
+| OpenAI API | mesh-llm-derived axum router | `x_tirami` extension on responses + 45 `/v1/tirami/*` endpoints |
 | P2P transport | iroh QUIC + Noise (mesh-llm-derived) | dual-signed trades + dual-signed loans + reputation gossip |
 | Distributed tensor sharding | mesh-llm shard planner | **nothing** — same topology engine |
 | Economy | (none in mesh-llm) | **everything** — TRM ledger, lending, futures, RiskModel, tirami-mind, tirami-agora |
 
 If you ran `mesh-llm node --model qwen2.5:0.5b` yesterday, you can run
-`forge node --model qwen2.5:0.5b` today and get the same response. The only
-difference: every inference call now gets a `cu_cost` and shows up in
+`tirami node --model qwen2.5:0.5b` today and get the same response. The only
+difference: every inference call now gets a `trm_cost` and shows up in
 `/v1/tirami/trades`.
 
 ---
 
 ## Model compatibility (GGUF / llama.cpp)
 
-Forge uses `llama-cpp-2 = "0.1"` (the official Rust binding to llama.cpp). It
+Tirami uses `llama-cpp-2 = "0.1"` (the official Rust binding to llama.cpp). It
 inherits 100% of llama.cpp's model support:
 
 - **Quantization**: q2_k through q8_0, including the q4_k_m / q5_k_m / q6_k mixes
@@ -42,14 +42,14 @@ inherits 100% of llama.cpp's model support:
   ArcticChat, MiniCPM, RWKV, Mamba (state-space), and any future model
   llama.cpp adds — there's no architecture-specific code in tirami-infer.
 - **Acceleration**: Metal (Apple Silicon, default ON), CUDA, ROCm, Vulkan,
-  CPU AVX2/AVX512/NEON. Whatever llama.cpp builds with, Forge uses.
+  CPU AVX2/AVX512/NEON. Whatever llama.cpp builds with, Tirami uses.
 - **Features**: KV cache, flash attention, batched inference, multi-user
   state, function calling parsing (delegated to the model's chat template),
   speculative decoding (when llama.cpp adds it).
 
 ### Built-in model registry
 
-`forge models` lists models that auto-download on first use:
+`tirami models` lists models that auto-download on first use:
 
 ```
 qwen2.5:0.5b         ~491MB   Qwen/Qwen2.5-0.5B-Instruct-GGUF
@@ -67,31 +67,31 @@ PRs welcome.
 
 ```bash
 # Local file
-forge node --model /path/to/model.gguf --tokenizer /path/to/tokenizer.json
+tirami node --model /path/to/model.gguf --tokenizer /path/to/tokenizer.json
 
 # Or download manually and point to it
 huggingface-cli download Qwen/Qwen2.5-1.5B-Instruct-GGUF qwen2.5-1.5b-instruct-q4_k_m.gguf
-forge node --model ~/.cache/.../qwen2.5-1.5b-instruct-q4_k_m.gguf -t tokenizer.json
+tirami node --model ~/.cache/.../qwen2.5-1.5b-instruct-q4_k_m.gguf -t tokenizer.json
 ```
 
 ---
 
 ## API compatibility (OpenAI Chat Completions)
 
-Forge implements `POST /v1/chat/completions` with the OpenAI v1 wire format.
+Tirami implements `POST /v1/chat/completions` with the OpenAI v1 wire format.
 Drop-in replacement for `https://api.openai.com/v1` in any client that lets
 you set `OPENAI_BASE_URL`:
 
 ```bash
 export OPENAI_BASE_URL=http://localhost:3000/v1
-export OPENAI_API_KEY=$(cat ~/.forge/api_token)
+export OPENAI_API_KEY=$(cat ~/.tirami/api_token)
 
 # Now any OpenAI client just works:
 openai api chat.completions.create -m qwen2.5:0.5b -g user "hi"
 python -c "import openai; print(openai.chat.completions.create(model='smollm2:135m', messages=[{'role':'user','content':'hi'}]))"
 ```
 
-The response includes a Forge-specific `x_forge` extension:
+The response includes a Tirami-specific `x_tirami` extension:
 
 ```json
 {
@@ -100,14 +100,14 @@ The response includes a Forge-specific `x_forge` extension:
   "model": "SmolLM2-135M-Instruct-Q4_K_M",
   "choices": [...],
   "usage": {"prompt_tokens": 13, "completion_tokens": 21, "total_tokens": 34},
-  "x_forge": {
-    "cu_cost": 21,
+  "x_tirami": {
+    "trm_cost": 21,
     "effective_balance": 1021
   }
 }
 ```
 
-OpenAI clients ignore the `x_forge` field. Forge-aware clients can use it for
+OpenAI clients ignore the `x_tirami` field. Tirami-aware clients can use it for
 budget tracking. Both keep working.
 
 ### Supported request fields
@@ -124,28 +124,28 @@ budget tracking. Both keep working.
 
 `POST /v1/chat/completions` with `"stream": true` returns
 `text/event-stream` chunks in OpenAI's `data:` format. The final `[DONE]`
-sentinel is sent. The `x_forge` extension appears in the final chunk's
+sentinel is sent. The `x_tirami` extension appears in the final chunk's
 `usage` field.
 
 ---
 
-## How Forge differs from raw mesh-llm / llama.cpp
+## How Tirami differs from raw mesh-llm / llama.cpp
 
 If you're running `llama-server` (llama.cpp's built-in HTTP server) or
-`mesh-llm node`, here's what you gain by switching to `forge node`:
+`mesh-llm node`, here's what you gain by switching to `tirami node`:
 
-| Feature | llama.cpp | mesh-llm | **forge** |
+| Feature | llama.cpp | mesh-llm | **tirami** |
 |---|---|---|---|
 | GGUF inference (CPU + Metal/CUDA) | ✅ | ✅ | ✅ |
 | OpenAI Chat Completions API | ✅ | ✅ | ✅ |
 | Multi-user shared KV cache | ✅ | ✅ | ✅ |
 | iroh QUIC + Noise P2P | ❌ | ✅ | ✅ |
 | Distributed tensor sharding | ❌ | ✅ | ✅ |
-| **CU accounting per request** | ❌ | ❌ | ✅ |
+| **TRM accounting per request** | ❌ | ❌ | ✅ |
 | **Dual-signed trade records** | ❌ | ❌ | ✅ (Ed25519) |
 | **Lending pool with circuit breakers** | ❌ | ❌ | ✅ |
 | **PortfolioManager + futures + insurance** | ❌ | ❌ | ✅ (tirami-bank) |
-| **Self-improvement loop paid in CU** | ❌ | ❌ | ✅ (tirami-mind) |
+| **Self-improvement loop paid in TRM** | ❌ | ❌ | ✅ (tirami-mind) |
 | **Reputation gossip + collusion detection** | ❌ | ❌ | ✅ (tirami-agora) |
 | **Bitcoin OP_RETURN anchoring** | ❌ | ❌ | ✅ |
 | **Prometheus /metrics** | ❌ | ❌ | ✅ |
@@ -154,7 +154,7 @@ If you're running `llama-server` (llama.cpp's built-in HTTP server) or
 
 You can disable the economic layer entirely if you just want a fast OpenAI-
 compatible inference server: ignore `/v1/tirami/*`, leave `/metrics` unscraped,
-and Forge degrades to "mesh-llm with extra Rust crates compiled in".
+and Tirami degrades to "mesh-llm with extra Rust crates compiled in".
 
 ---
 
@@ -167,19 +167,19 @@ the economic layer:
 # Stop mesh-llm
 killall mesh-llm
 
-# Build forge
-git clone https://github.com/clearclown/forge
-cd forge
+# Build tirami
+git clone https://github.com/clearclown/tirami
+cd tirami
 cargo build --release -p tirami-cli
 
 # Same model, same port, same OpenAI clients
-./target/release/forge node --model qwen2.5:0.5b --port 3000
+./target/release/tirami node --model qwen2.5:0.5b --port 3000
 
 # All your existing OpenAI code continues to work.
 # TRM accounting starts immediately. Welcome loan = 1,000 TRM at 0% interest.
 ```
 
-The `clearclown/forge` workspace **also publishes** a synced fork at
+The `clearclown/tirami` workspace **also publishes** a synced fork at
 [nm-arealnormalman/mesh-llm](https://github.com/nm-arealnormalman/mesh-llm)
 with the full economic layer ported into mesh-llm's directory layout. Use
 whichever entry point feels more natural — both are at Phase 10 parity, both
@@ -191,7 +191,7 @@ expose the same 45 economic endpoints.
 
 | Project | Currency | Substrate | Notes |
 |---|---|---|---|
-| **Forge** | **CU (compute)** | **GGUF / llama.cpp** | This. Compute-as-currency, no token, no ICO. |
+| **Tirami** | **TRM (compute)** | **GGUF / llama.cpp** | This. Compute-as-currency, no token, no ICO. |
 | Bittensor (TAO) | TAO token | bespoke | Speculative token, validator-curated subnets, opaque scoring |
 | Akash | AKT token | Docker / GPU rentals | Token-mediated marketplace, no per-request metering |
 | Render Network | RNDR token | rendering | Same shape as Akash for raster/3D rendering |
@@ -201,10 +201,10 @@ expose the same 45 economic endpoints.
 | llama-server | (none) | llama.cpp | Same engine, no economy, no P2P, single-node |
 | LM Studio | (none) | GGUF / llama.cpp | Desktop UI, no economy, single-node |
 
-**The Forge thesis**: every existing competitor either burns electricity on
+**The Tirami thesis**: every existing competitor either burns electricity on
 non-useful work (Bitcoin), introduces a speculative token disconnected from
 compute cost (Bittensor, Akash, Render), or operates a centralized commercial
-service (Together, HF). Forge is the only project where the unit of account
+service (Together, HF). Tirami is the only project where the unit of account
 is the FLOP, the unit of work is the inference, and the only way to get more
 units is to do more useful work.
 
@@ -217,7 +217,7 @@ Metal GPU) with no mock components. Every TRM recorded in this transcript is
 the result of actual llama.cpp inference cycles.
 
 ```bash
-$ ./target/release/forge node --port 3001 -m smollm2:135m
+$ ./target/release/tirami node --port 3001 -m smollm2:135m
 [INFO] Model loaded (llama.cpp), EOS=2  ← real GGUF, 31/31 layers on Metal
 [INFO] HF tokenizer loaded
 [INFO] API server listening on 127.0.0.1:3001
@@ -228,7 +228,7 @@ $ curl -X POST localhost:3001/v1/chat/completions \
 {
   "choices":[{"message":{"role":"assistant","content":"2 + 2 = 4..."}}],
   "usage":{"prompt_tokens":13,"completion_tokens":21,"total_tokens":34},
-  "x_forge":{"cu_cost":21,"effective_balance":1021}
+  "x_tirami":{"trm_cost":21,"effective_balance":1021}
 }
                                           ↑ real TRM charged for 21 real tokens
 
@@ -237,9 +237,9 @@ $ curl localhost:3001/v1/tirami/balance -H "Authorization: Bearer test-real-run"
                 ↑ real ledger entry
 
 $ curl localhost:3001/metrics  # no auth needed (Prometheus scrape target)
-forge_cu_contributed_total{node_id="0000..."} 21    ← real Prometheus gauge
-forge_trade_count_total 1                            ← real trade
-forge_reputation{node_id="0000..."} 0.5              ← DEFAULT_REPUTATION
+tirami_trm_contributed_total{node_id="0000..."} 21    ← real Prometheus gauge
+tirami_trade_count_total 1                             ← real trade
+tirami_reputation{node_id="0000..."} 0.5               ← DEFAULT_REPUTATION
 
 $ curl 'localhost:3001/v1/tirami/anchor?network=testnet' -H "Authorization: Bearer test-real-run"
 {
@@ -270,13 +270,13 @@ functions, no token to manipulate.
 
 **from Akash / Render**: same "GPU-for-rent" mental model, but per-request
 metered (every chat completion is a separate trade record) instead of
-container-rental. No token in the way. Your customers pay you in CU; you can
+container-rental. No token in the way. Your customers pay you in TRM; you can
 optionally bridge TRM to BTC via Lightning if you need to.
 
 **from Ollama / LM Studio**: same model loading experience, same OpenAI API,
 but multi-node and economically aware. If you want to run one model on your
 laptop, Ollama is great. If you want a fleet of nodes that earn TRM when
-they're idle and spend TRM when they need a bigger model, use Forge.
+they're idle and spend TRM when they need a bigger model, use Tirami.
 
 **from llama-server**: drop-in replacement. Same llama.cpp under the hood.
 Same OpenAI compat. Add the economic layer when you're ready by hitting
@@ -300,7 +300,7 @@ your own GPU.
                            ▼
 ┌─────────────────────────────────────────────┐
 │  L4 tirami-agora    discovery + reputation   │
-│  L3 tirami-mind     self-improvement loop    │  ← clearclown/forge (this repo)
+│  L3 tirami-mind     self-improvement loop    │  ← clearclown/tirami (this repo)
 │  L2 tirami-bank     finance instruments      │     5-layer Rust workspace
 │  L1 tirami-ledger   TRM + lending + safety    │     12 crates
 │  L0 mesh-llm       distributed inference    │  ← inherited from upstream
@@ -308,7 +308,7 @@ your own GPU.
                   ▲                ▲
                   │                │
           ┌───────┴──┐      ┌──────┴────────┐
-          │ tirami-sdk│      │ forge-cu-mcp  │  ← Python clients for everything above
+          │ tirami-sdk│      │ tirami-mcp    │  ← Python clients for everything above
           │ (PyPI)   │      │ (PyPI + MCP)  │
           └──────────┘      └───────────────┘
 
@@ -322,13 +322,13 @@ nm-arealnormalman/mesh-llm — same 5 layers, different binary entry point
 
 | You want to... | Run this |
 |---|---|
-| Chat with a tiny local model | `forge chat -m smollm2:135m "hi"` |
-| Run a long-lived OpenAI server | `forge node -m qwen2.5:0.5b` |
-| Earn TRM by serving inference | `forge seed -m qwen2.5:1.5b` |
-| Spend TRM calling another node | `forge worker --seed <pubkey>` |
+| Chat with a tiny local model | `tirami chat -m smollm2:135m "hi"` |
+| Run a long-lived OpenAI server | `tirami node -m qwen2.5:0.5b` |
+| Earn TRM by serving inference | `tirami seed -m qwen2.5:1.5b` |
+| Spend TRM calling another node | `tirami worker --seed <pubkey>` |
 | Drive tirami-bank from Python | `pip install tirami-sdk==0.3.0` |
-| Drive forge from Claude Code / Cursor | `pip install forge-cu-mcp==0.3.0` |
+| Drive tirami from Claude Code / Cursor | `pip install tirami-mcp==0.3.0` |
 | Read the theory | `forge-economics/papers/compute-standard.md` |
-| Watch the metrics | `curl localhost:3000/metrics \| grep forge_` |
+| Watch the metrics | `curl localhost:3000/metrics \| grep tirami_` |
 
 That's it. Compute is currency. Welcome.

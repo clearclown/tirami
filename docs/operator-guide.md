@@ -1,4 +1,4 @@
-# Forge — Operator Guide
+# Tirami — Operator Guide
 
 - [Hardware requirements](#hardware-requirements)
 - [Install](#install)
@@ -91,12 +91,12 @@ All configuration fields come from `crates/tirami-core/src/config.rs`. The daemo
 
 ## Start the node
 
-### Single-node HTTP API (`forge node`)
+### Single-node HTTP API (`tirami node`)
 
 No P2P. Serves the full 5-layer API locally. Use for local development, as an OpenAI-compatible drop-in, or when you don't want to expose P2P ports.
 
 ```bash
-./target/release/forge node \
+./target/release/tirami node \
   --model qwen2.5:0.5b \
   --port 3000 \
   --api-token "change-me-in-production" \
@@ -105,12 +105,12 @@ No P2P. Serves the full 5-layer API locally. Use for local development, as an Op
 
 On first start with a model shortname, the GGUF is downloaded from HuggingFace into the default cache (typically `~/.cache/huggingface/`). Subsequent starts load from cache.
 
-### P2P seed node (`forge seed`)
+### P2P seed node (`tirami seed`)
 
 Holds a model, earns TRM by serving inference requests from worker nodes. Requires public reachability on the QUIC port (or a relay address configured via `--relay`).
 
 ```bash
-./target/release/forge seed \
+./target/release/tirami seed \
   --model qwen2.5:1.5b \
   --port 3001 \
   --api-token "change-me-in-production" \
@@ -119,19 +119,19 @@ Holds a model, earns TRM by serving inference requests from worker nodes. Requir
 
 The public key printed at startup is what workers use to connect. Keep it stable (tied to the Ed25519 keypair stored on first launch).
 
-### P2P worker node (`forge worker`)
+### P2P worker node (`tirami worker`)
 
 Connects to a seed, offloads inference, spends TRM from its own ledger to pay the seed.
 
 ```bash
-./target/release/forge worker \
+./target/release/tirami worker \
   --seed <seed-public-key-hex>
 ```
 
 Optional relay for NAT traversal:
 
 ```bash
-./target/release/forge worker \
+./target/release/tirami worker \
   --seed <seed-public-key-hex> \
   --relay "https://relay.example.com"
 ```
@@ -144,7 +144,7 @@ A worker node starts with 1,000 TRM (welcome loan, 0% interest, 72-hour term per
 
 Prometheus metrics are exported at `/metrics` with no authentication required. The scrape target is intentionally unauthenticated so it can be added to a standard Prometheus config without token management.
 
-**11 metric series exported** (from `tirami_ledger::metrics::ForgeMetrics`):
+**11 metric series exported** (from `tirami_ledger::metrics::TiramiMetrics`):
 
 | Metric | Type | Description |
 |---|---|---|
@@ -201,10 +201,10 @@ This triggers immediate persistence of `bank_state_path`, `marketplace_state_pat
 Or with tirami-sdk:
 
 ```python
-from forge_sdk import ForgeClient
+from forge_sdk import TiramiClient
 import schedule, time
 
-client = ForgeClient(base_url="http://localhost:3000", token=open("/etc/forge/api_token").read().strip())
+client = TiramiClient(base_url="http://localhost:3000", token=open("/etc/forge/api_token").read().strip())
 schedule.every(5).minutes.do(client.save_state)
 while True:
     schedule.run_pending()
@@ -223,7 +223,7 @@ while True:
 
 ## Anchoring to Bitcoin
 
-Every forge node maintains a Merkle root of its trade log. This root can be published to Bitcoin as an OP_RETURN transaction for immutable audit — no one can later deny that a set of trades existed at a given block height.
+Every tirami node maintains a Merkle root of its trade log. This root can be published to Bitcoin as an OP_RETURN transaction for immutable audit — no one can later deny that a set of trades existed at a given block height.
 
 **Get the anchor payload**:
 
@@ -265,9 +265,9 @@ The `script_hex` is a valid 40-byte Bitcoin OP_RETURN payload (`6a28 FRGE <versi
 
 **High CPU on inference**: reduce `max_tokens` in requests. Switch to a smaller model tier (Small tier = 1 CU/token per parameters.md §2 vs Frontier = 20 CU/token). If on CPU-only, this is expected — GPU offload is the primary path to fast inference.
 
-**Ledger corruption (HMAC-SHA256 fail)**: the ledger file was modified outside of Forge, or the disk had a write error. Restore from the last known-good backup. If no backup exists, delete `tirami-ledger.json` and start fresh (balance resets to 0, welcome loan issued again). All trades before the corruption are unrecoverable from the local file.
+**Ledger corruption (HMAC-SHA256 fail)**: the ledger file was modified outside of Tirami, or the disk had a write error. Restore from the last known-good backup. If no backup exists, delete `tirami-ledger.json` and start fresh (balance resets to 0, welcome loan issued again). All trades before the corruption are unrecoverable from the local file.
 
-**Reputation stuck at 0.5**: this is `DEFAULT_REPUTATION` (parameters.md §7) — the correct starting value for a new node. Reputation only moves after remote observations from peers are received and gossip-synced. Verify that P2P is working (`forge status --url http://localhost:3000`) and that at least one other node has observed your trades. In single-node mode (`forge node`), reputation stays at 0.5 indefinitely — that is expected.
+**Reputation stuck at 0.5**: this is `DEFAULT_REPUTATION` (parameters.md §7) — the correct starting value for a new node. Reputation only moves after remote observations from peers are received and gossip-synced. Verify that P2P is working (`tirami status --url http://localhost:3000`) and that at least one other node has observed your trades. In single-node mode (`tirami node`), reputation stays at 0.5 indefinitely — that is expected.
 
 **`/metrics` returns empty GaugeVec**: some metrics only populate after the first trade. Run a test inference request, then re-scrape.
 
@@ -277,7 +277,7 @@ The `script_hex` is a valid 40-byte Bitcoin OP_RETURN payload (`6a28 FRGE <versi
 
 - Set `--api-token` to a long random string (32+ chars). Never commit it to source control.
 - Rotate the API token if it appears in logs, process listings, or is shared accidentally. After rotation, restart the node.
-- Expose the HTTP API over HTTPS via a reverse proxy (nginx or Caddy) when accepting traffic from outside localhost. Forge does not handle TLS termination.
+- Expose the HTTP API over HTTPS via a reverse proxy (nginx or Caddy) when accepting traffic from outside localhost. Tirami does not handle TLS termination.
 - Firewall the QUIC port to only allow connections from expected peers if you're running a private mesh. Public seed nodes must leave the QUIC port open.
 - Back up `tirami-ledger.json` off-host. A stolen or corrupted ledger file means a lost TRM balance.
 - Never run `--bind 0.0.0.0` without `--api-token`. The default `127.0.0.1` binding protects against accidental public exposure.

@@ -17,7 +17,7 @@ fn schema(value: serde_json::Value) -> Arc<rmcp::model::JsonObject> {
     )
 }
 
-/// Build the complete list of 36 Forge MCP tools.
+/// Build the complete list of 40 Forge MCP tools.
 pub fn build_tool_list() -> Vec<Tool> {
     vec![
         // ====================================================================
@@ -629,6 +629,107 @@ pub fn build_tool_list() -> Vec<Tool> {
             schema(json!({
                 "type": "object",
                 "properties": {}
+            })),
+        ),
+        // ====================================================================
+        // Governance (4 tools)
+        // ====================================================================
+        Tool::new(
+            "tirami_governance_propose",
+            "Create a governance proposal to change a protocol parameter or policy. Specify \
+             the proposer NodeId, proposal kind (e.g. 'parameter_change'), optional parameter \
+             name and new value, a human-readable description, and a deadline in Unix \
+             milliseconds.",
+            schema(json!({
+                "type": "object",
+                "properties": {
+                    "proposer": {
+                        "type": "string",
+                        "description": "64-char hex NodeId of the proposer"
+                    },
+                    "kind": {
+                        "type": "string",
+                        "description": "Proposal kind, e.g. 'parameter_change'"
+                    },
+                    "name": {
+                        "type": "string",
+                        "description": "Parameter name to change (optional)"
+                    },
+                    "new_value": {
+                        "type": "number",
+                        "description": "Proposed new value for the parameter (optional)"
+                    },
+                    "description": {
+                        "type": "string",
+                        "description": "Human-readable description of the proposal (optional)"
+                    },
+                    "deadline_ms": {
+                        "type": "integer",
+                        "description": "Voting deadline as Unix milliseconds"
+                    }
+                },
+                "required": ["proposer", "kind", "deadline_ms"]
+            })),
+        ),
+        Tool::new(
+            "tirami_governance_vote",
+            "Cast a vote on an active governance proposal. The vote weight is derived from \
+             stake, reputation, and participation history. Approve or reject the proposal.",
+            schema(json!({
+                "type": "object",
+                "properties": {
+                    "voter": {
+                        "type": "string",
+                        "description": "64-char hex NodeId of the voter"
+                    },
+                    "proposal_id": {
+                        "type": "integer",
+                        "description": "ID of the proposal to vote on"
+                    },
+                    "approve": {
+                        "type": "boolean",
+                        "description": "true to approve, false to reject"
+                    },
+                    "stake": {
+                        "type": "number",
+                        "description": "Voter's current CU stake"
+                    },
+                    "reputation": {
+                        "type": "number",
+                        "description": "Voter's reputation score [0.0, 1.0]"
+                    },
+                    "epochs_participated": {
+                        "type": "integer",
+                        "description": "Number of governance epochs the voter has participated in"
+                    }
+                },
+                "required": ["voter", "proposal_id", "approve", "stake", "reputation", "epochs_participated"]
+            })),
+        ),
+        Tool::new(
+            "tirami_governance_proposals",
+            "List all active governance proposals. Each proposal includes its ID, kind, \
+             proposer, description, deadline, and current vote counts. Use this to discover \
+             proposals before voting.",
+            schema(json!({
+                "type": "object",
+                "properties": {}
+            })),
+        ),
+        Tool::new(
+            "tirami_governance_tally",
+            "Get the tally result for a specific governance proposal by ID. Returns the \
+             weighted approve/reject totals, quorum status, and whether the proposal has \
+             passed or failed.",
+            schema(json!({
+                "type": "object",
+                "properties": {
+                    "proposal_id": {
+                        "type": "integer",
+                        "description": "ID of the proposal to tally"
+                    }
+                },
+                "required": ["proposal_id"]
             })),
         ),
     ]

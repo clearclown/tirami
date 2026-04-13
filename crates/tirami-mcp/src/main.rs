@@ -1,6 +1,6 @@
 //! Forge MCP Server — Rust implementation
 //!
-//! Exposes all 36 Forge compute-economy endpoints as MCP tools for Claude Code,
+//! Exposes all 40 Forge compute-economy endpoints as MCP tools for Claude Code,
 //! Cursor, and other MCP-compatible AI clients.
 //!
 //! Usage:
@@ -320,6 +320,44 @@ impl ForgeMcpServer {
             "tirami_mind_budget" => self.client.post("/v1/tirami/mind/budget", args).await,
             "tirami_mind_stats" => self.client.get("/v1/tirami/mind/stats").await,
 
+            // ----------------------------------------------------------------
+            // Governance (4 tools)
+            // ----------------------------------------------------------------
+            "tirami_governance_propose" => {
+                let mut body = serde_json::json!({
+                    "proposer": obj.get("proposer").and_then(|v| v.as_str()).unwrap_or(""),
+                    "kind": obj.get("kind").and_then(|v| v.as_str()).unwrap_or(""),
+                    "deadline_ms": obj.get("deadline_ms").and_then(|v| v.as_u64()).unwrap_or(0),
+                });
+                if let Some(n) = obj.get("name") {
+                    body["name"] = n.clone();
+                }
+                if let Some(v) = obj.get("new_value") {
+                    body["new_value"] = v.clone();
+                }
+                if let Some(d) = obj.get("description") {
+                    body["description"] = d.clone();
+                }
+                self.client
+                    .post("/v1/tirami/governance/propose", body)
+                    .await
+            }
+            "tirami_governance_vote" => {
+                self.client.post("/v1/tirami/governance/vote", args).await
+            }
+            "tirami_governance_proposals" => {
+                self.client.get("/v1/tirami/governance/proposals").await
+            }
+            "tirami_governance_tally" => {
+                let id = obj
+                    .get("proposal_id")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
+                self.client
+                    .get(&format!("/v1/tirami/governance/tally/{id}"))
+                    .await
+            }
+
             other => {
                 return Self::error_result(format!("Unknown tool: {other}"));
             }
@@ -408,9 +446,9 @@ mod tests {
     use super::tools;
 
     #[test]
-    fn test_tool_list_has_36_tools() {
+    fn test_tool_list_has_40_tools() {
         let tools = tools::build_tool_list();
-        assert_eq!(tools.len(), 36, "expected 36 tools, got {}", tools.len());
+        assert_eq!(tools.len(), 40, "expected 40 tools, got {}", tools.len());
     }
 
     #[test]
@@ -524,6 +562,15 @@ mod tests {
             "tirami_mind_stats",
         ] {
             assert!(names.contains(*n), "missing mind tool: {n}");
+        }
+        // Governance
+        for n in &[
+            "tirami_governance_propose",
+            "tirami_governance_vote",
+            "tirami_governance_proposals",
+            "tirami_governance_tally",
+        ] {
+            assert!(names.contains(*n), "missing governance tool: {n}");
         }
     }
 }

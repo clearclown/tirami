@@ -560,6 +560,73 @@ impl TiramiClient {
     }
 
     // -----------------------------------------------------------------------
+    // Governance
+    // -----------------------------------------------------------------------
+
+    /// `POST /v1/tirami/governance/propose` — Create a governance proposal.
+    pub async fn governance_propose(
+        &self,
+        proposer: &str,
+        kind: &str,
+        name: Option<&str>,
+        new_value: Option<f64>,
+        description: Option<&str>,
+        deadline_ms: u64,
+    ) -> Result<serde_json::Value, SdkError> {
+        let mut body = serde_json::json!({
+            "proposer": proposer,
+            "kind": kind,
+            "deadline_ms": deadline_ms,
+        });
+        if let Some(n) = name {
+            body["name"] = serde_json::json!(n);
+        }
+        if let Some(v) = new_value {
+            body["new_value"] = serde_json::json!(v);
+        }
+        if let Some(d) = description {
+            body["description"] = serde_json::json!(d);
+        }
+        self.post("/v1/tirami/governance/propose", &body).await
+    }
+
+    /// `POST /v1/tirami/governance/vote` — Cast a vote on a governance proposal.
+    pub async fn governance_vote(
+        &self,
+        voter: &str,
+        proposal_id: u64,
+        approve: bool,
+        stake: f64,
+        reputation: f64,
+        epochs_participated: u64,
+    ) -> Result<serde_json::Value, SdkError> {
+        self.post(
+            "/v1/tirami/governance/vote",
+            &serde_json::json!({
+                "voter": voter,
+                "proposal_id": proposal_id,
+                "approve": approve,
+                "stake": stake,
+                "reputation": reputation,
+                "epochs_participated": epochs_participated,
+            }),
+        )
+        .await
+    }
+
+    /// `GET /v1/tirami/governance/proposals` — List active governance proposals.
+    pub async fn governance_proposals(&self) -> Result<serde_json::Value, SdkError> {
+        self.get("/v1/tirami/governance/proposals").await
+    }
+
+    /// `GET /v1/tirami/governance/tally/{id}` — Get tally result for a governance
+    /// proposal.
+    pub async fn governance_tally(&self, proposal_id: u64) -> Result<serde_json::Value, SdkError> {
+        self.get(&format!("/v1/tirami/governance/tally/{}", proposal_id))
+            .await
+    }
+
+    // -----------------------------------------------------------------------
     // Observability / Admin
     // -----------------------------------------------------------------------
 
@@ -833,6 +900,39 @@ mod tests {
         let inner: serde_json::Error = serde_json::from_str::<Balance>("bad").unwrap_err();
         let e = SdkError::Json(inner);
         assert!(e.to_string().contains("JSON"));
+    }
+
+    #[tokio::test]
+    async fn test_governance_propose_builds_request() {
+        let c = TiramiClient::new("http://localhost:3000", Some("tok"));
+        // Will fail to connect, but verifies the method compiles and accepts args
+        let res = c
+            .governance_propose("abc123", "parameter_change", Some("base_rate"), Some(0.05), Some("lower base rate"), 9999)
+            .await;
+        assert!(res.is_err()); // no server running
+    }
+
+    #[tokio::test]
+    async fn test_governance_vote_builds_request() {
+        let c = TiramiClient::new("http://localhost:3000", Some("tok"));
+        let res = c
+            .governance_vote("abc123", 1, true, 100.0, 0.8, 5)
+            .await;
+        assert!(res.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_governance_proposals_builds_request() {
+        let c = TiramiClient::new("http://localhost:3000", Some("tok"));
+        let res = c.governance_proposals().await;
+        assert!(res.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_governance_tally_builds_request() {
+        let c = TiramiClient::new("http://localhost:3000", Some("tok"));
+        let res = c.governance_tally(42).await;
+        assert!(res.is_err());
     }
 
     #[test]

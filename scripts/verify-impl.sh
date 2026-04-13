@@ -345,6 +345,9 @@ assert "#P13-gov-constants" "Governance constants match §19" \
 assert "#P13-gov-seniority" "Seniority bonuses 1.5 / 2.0" \
   "grep -q '1\\.5' crates/tirami-ledger/src/governance.rs && \
    grep -q '2\\.0' crates/tirami-ledger/src/governance.rs"
+assert "#P13-gov-prom"     "Governance Prometheus gauges (active_proposals, total_votes)" \
+  "grep -q 'tirami_active_proposals' crates/tirami-ledger/src/metrics.rs && \
+   grep -q 'tirami_total_votes' crates/tirami-ledger/src/metrics.rs"
 
 # === Phase 13: Tokenomics API endpoints ===
 assert "#P13-api-supply"    "/v1/tirami/su/supply endpoint registered" \

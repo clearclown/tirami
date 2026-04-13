@@ -705,6 +705,7 @@ mod security_tests {
             Arc::new(Mutex::new(None::<tirami_mind::TiramiMindAgent>)),
             Arc::new(Mutex::new(tirami_ledger::StakingPool::new())),
             Arc::new(Mutex::new(tirami_ledger::ReferralTracker::new())),
+            Arc::new(Mutex::new(tirami_ledger::GovernanceState::new(0))),
         );
         let _ = state; // suppress unused warning
 

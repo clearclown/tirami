@@ -34,6 +34,8 @@ pub struct TiramiNode {
     pub staking_pool: Arc<Mutex<tirami_ledger::StakingPool>>,
     /// Phase 13 — referral tracker for sponsor bonuses.
     pub referral_tracker: Arc<Mutex<tirami_ledger::ReferralTracker>>,
+    /// Phase 13 — governance state for stake-weighted voting.
+    pub governance: Arc<Mutex<tirami_ledger::GovernanceState>>,
 }
 
 impl TiramiNode {
@@ -121,6 +123,7 @@ impl TiramiNode {
             mind_agent: Arc::new(Mutex::new(mind_agent)),
             staking_pool: Arc::new(Mutex::new(tirami_ledger::StakingPool::new())),
             referral_tracker: Arc::new(Mutex::new(tirami_ledger::ReferralTracker::new())),
+            governance: Arc::new(Mutex::new(tirami_ledger::GovernanceState::new(0))),
         }
     }
 
@@ -170,6 +173,7 @@ impl TiramiNode {
             self.mind_agent.clone(),
             self.staking_pool.clone(),
             self.referral_tracker.clone(),
+            self.governance.clone(),
         );
         let addr = self.config.api_socket_addr();
         tracing::info!("API server listening on {}", addr);
@@ -229,6 +233,7 @@ impl TiramiNode {
         let mind_agent_api = self.mind_agent.clone();
         let staking_pool_api = self.staking_pool.clone();
         let referral_tracker_api = self.referral_tracker.clone();
+        let governance_api = self.governance.clone();
         let api_config = self.config.clone();
         tokio::spawn(async move {
             let app = crate::api::create_router_with_services(
@@ -245,6 +250,7 @@ impl TiramiNode {
                 mind_agent_api,
                 staking_pool_api,
                 referral_tracker_api,
+                governance_api,
             );
             let addr = api_config.api_socket_addr();
             if let Ok(listener) = tokio::net::TcpListener::bind(&addr).await {

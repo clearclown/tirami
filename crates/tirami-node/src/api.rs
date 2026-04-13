@@ -54,6 +54,8 @@ pub(crate) struct AppState {
     pub staking_pool: Arc<Mutex<tirami_ledger::StakingPool>>,
     /// Phase 13 — referral tracker for sponsor bonuses.
     pub referral_tracker: Arc<Mutex<tirami_ledger::ReferralTracker>>,
+    /// Phase 13 — governance state for stake-weighted voting.
+    pub governance: Arc<Mutex<tirami_ledger::GovernanceState>>,
 }
 
 /// Simple rate limiter for authentication failures.
@@ -148,6 +150,7 @@ pub fn create_router(
         Arc::new(Mutex::new(None::<tirami_mind::TiramiMindAgent>)),
         Arc::new(Mutex::new(tirami_ledger::StakingPool::new())),
         Arc::new(Mutex::new(tirami_ledger::ReferralTracker::new())),
+        Arc::new(Mutex::new(tirami_ledger::GovernanceState::new(0))),
     )
 }
 
@@ -167,6 +170,7 @@ pub fn create_router_with_services(
     mind_agent: Arc<Mutex<Option<tirami_mind::TiramiMindAgent>>>,
     staking_pool: Arc<Mutex<tirami_ledger::StakingPool>>,
     referral_tracker: Arc<Mutex<tirami_ledger::ReferralTracker>>,
+    governance: Arc<Mutex<tirami_ledger::GovernanceState>>,
 ) -> Router {
     // Derive local node ID from cluster or generate a deterministic one.
     let local_node_id = cluster
@@ -193,6 +197,7 @@ pub fn create_router_with_services(
         mind_agent,
         staking_pool,
         referral_tracker,
+        governance,
     };
     let api_max_request_body_bytes = state.config.api_max_request_body_bytes;
 
@@ -261,6 +266,11 @@ pub fn create_router_with_services(
         .route("/v1/tirami/su/unstake", post(crate::handlers::tokenomics::su_unstake))
         .route("/v1/tirami/su/refer", post(crate::handlers::tokenomics::su_refer))
         .route("/v1/tirami/su/referrals", get(crate::handlers::tokenomics::su_referrals))
+        // Phase 13 — governance (stake-weighted voting)
+        .route("/v1/tirami/governance/propose", post(crate::handlers::governance::governance_propose))
+        .route("/v1/tirami/governance/vote", post(crate::handlers::governance::governance_vote))
+        .route("/v1/tirami/governance/proposals", get(crate::handlers::governance::governance_proposals))
+        .route("/v1/tirami/governance/tally/{id}", get(crate::handlers::governance::governance_tally))
         // Phase 10 P6 — Bitcoin OP_RETURN anchoring
         .route("/v1/tirami/anchor", get(crate::handlers::anchor::anchor_handler))
         // Admin: manual state persistence trigger (Phase 9)
@@ -2524,6 +2534,7 @@ pub(crate) fn test_router_default(config: Config) -> Router {
         Arc::new(Mutex::new(None::<tirami_mind::TiramiMindAgent>)),
         Arc::new(Mutex::new(tirami_ledger::StakingPool::new())),
         Arc::new(Mutex::new(tirami_ledger::ReferralTracker::new())),
+        Arc::new(Mutex::new(tirami_ledger::GovernanceState::new(0))),
     )
 }
 

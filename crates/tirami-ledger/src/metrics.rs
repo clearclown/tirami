@@ -33,6 +33,9 @@ pub struct TiramiMetrics {
     pub collusion_spike: GaugeVec,
     pub collusion_robin: GaugeVec,
     pub collusion_penalty: GaugeVec,
+    // Phase 13 governance metrics
+    pub active_proposals: IntGauge,
+    pub total_votes: IntGauge,
     // Phase 13 tokenomics metrics
     pub total_minted: IntGauge,
     pub supply_factor: Gauge,
@@ -132,6 +135,19 @@ impl TiramiMetrics {
         )
         .expect("valid gauge vec opts");
 
+        // Phase 13 governance gauges
+        let active_proposals = IntGauge::with_opts(Opts::new(
+            "tirami_active_proposals",
+            "Number of currently active governance proposals",
+        ))
+        .expect("valid gauge opts");
+
+        let total_votes = IntGauge::with_opts(Opts::new(
+            "tirami_total_votes",
+            "Total votes cast across all governance proposals",
+        ))
+        .expect("valid gauge opts");
+
         // Phase 13 tokenomics gauges
         let total_minted = IntGauge::with_opts(Opts::new(
             "tirami_total_minted",
@@ -210,6 +226,12 @@ impl TiramiMetrics {
             .register(Box::new(collusion_penalty.clone()))
             .expect("register collusion_penalty");
         registry
+            .register(Box::new(active_proposals.clone()))
+            .expect("register active_proposals");
+        registry
+            .register(Box::new(total_votes.clone()))
+            .expect("register total_votes");
+        registry
             .register(Box::new(total_minted.clone()))
             .expect("register total_minted");
         registry
@@ -244,6 +266,8 @@ impl TiramiMetrics {
             collusion_spike,
             collusion_robin,
             collusion_penalty,
+            active_proposals,
+            total_votes,
             total_minted,
             supply_factor,
             current_epoch,
@@ -276,6 +300,18 @@ impl TiramiMetrics {
         now_ms: u64,
         staking_pool: Option<&crate::staking::StakingPool>,
         referral_tracker: Option<&crate::referral::ReferralTracker>,
+    ) {
+        self.observe_full(ledger, now_ms, staking_pool, referral_tracker, None);
+    }
+
+    /// Full observe including governance state.
+    pub fn observe_full(
+        &self,
+        ledger: &ComputeLedger,
+        now_ms: u64,
+        staking_pool: Option<&crate::staking::StakingPool>,
+        referral_tracker: Option<&crate::referral::ReferralTracker>,
+        governance: Option<&crate::governance::GovernanceState>,
     ) {
         // Per-node balance and reputation metrics.
         for balance in ledger.balances.values() {
@@ -366,6 +402,14 @@ impl TiramiMetrics {
         if let Some(tracker) = referral_tracker {
             self.referral_bonus_minted
                 .set(tracker.total_bonus_minted as i64);
+        }
+
+        // Optional governance state.
+        if let Some(gov) = governance {
+            self.active_proposals
+                .set(gov.active_proposals().len() as i64);
+            let total_v: usize = gov.votes.values().map(|v| v.len()).sum();
+            self.total_votes.set(total_v as i64);
         }
     }
 
@@ -567,6 +611,37 @@ mod tests {
         let metrics = TiramiMetrics::new();
         metrics.observe_with_tokenomics(&ledger, now_ms, None, Some(&tracker));
         assert_eq!(metrics.referral_bonus_minted.get(), crate::referral::REFERRAL_BONUS_TRM as i64);
+    }
+
+    #[test]
+    fn test_governance_gauges_with_state() {
+        let ledger = ComputeLedger::new();
+        let mut gov = crate::governance::GovernanceState::new(0);
+        let proposer = NodeId([1u8; 32]);
+        let now_ms = 1_000_000_000u64;
+        let deadline = now_ms + 86_400_000;
+        let pid = gov.create_proposal(
+            proposer,
+            crate::governance::ProposalKind::EmergencyPause,
+            now_ms,
+            deadline,
+        ).unwrap();
+        let voter = NodeId([2u8; 32]);
+        gov.cast_vote(voter, pid, true, 5000, 0.9, 2).unwrap();
+        let metrics = TiramiMetrics::new();
+        metrics.observe_full(&ledger, now_ms, None, None, Some(&gov));
+        assert_eq!(metrics.active_proposals.get(), 1);
+        assert_eq!(metrics.total_votes.get(), 1);
+    }
+
+    #[test]
+    fn test_governance_gauges_appear_in_encoded_output() {
+        let metrics = TiramiMetrics::new();
+        metrics.active_proposals.set(3);
+        metrics.total_votes.set(42);
+        let output = metrics.encode().unwrap();
+        assert!(output.contains("tirami_active_proposals"), "missing tirami_active_proposals");
+        assert!(output.contains("tirami_total_votes"), "missing tirami_total_votes");
     }
 
     #[test]

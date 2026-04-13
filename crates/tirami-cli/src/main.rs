@@ -4,8 +4,8 @@ use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
 
 #[derive(Parser)]
-#[command(name = "forge")]
-#[command(about = "Forge — self-expanding LLM over encrypted P2P networks")]
+#[command(name = "tirami")]
+#[command(about = "Tirami — distributed LLM inference where compute is currency")]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -183,6 +183,49 @@ enum Commands {
         #[arg(long)]
         pay: bool,
     },
+
+    /// Tirami Su (TRM tokenomics) — supply, staking, referrals
+    Su {
+        #[command(subcommand)]
+        action: SuCommands,
+
+        /// Base URL of the Tirami node
+        #[arg(short, long, default_value = "http://127.0.0.1:3000")]
+        url: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum SuCommands {
+    /// Show TRM supply stats (total supply, mint rate, epoch info)
+    Supply,
+
+    /// Stake TRM for yield
+    Stake {
+        /// Amount of TRM to stake
+        amount: f64,
+
+        /// Lock duration: 7d, 30d, 90d, or 365d
+        duration: String,
+    },
+
+    /// Unstake a previously staked position
+    Unstake {
+        /// Index of the stake to unstake
+        stake_index: usize,
+    },
+
+    /// Record a referral between two nodes
+    Refer {
+        /// Referrer node ID (hex)
+        referrer: String,
+
+        /// Referred node ID (hex)
+        referred: String,
+    },
+
+    /// Show referral stats
+    Referrals,
 }
 
 #[derive(Subcommand)]
@@ -773,6 +816,116 @@ async fn main() -> anyhow::Result<()> {
                     }
                 } else {
                     println!("\nNo provider with positive net CU in this window.");
+                }
+            }
+        }
+        Commands::Su { action, url } => {
+            let base = url.trim_end_matches('/');
+            let client = reqwest::Client::new();
+            let placeholder_node_id =
+                "0000000000000000000000000000000000000000000000000000000000000000";
+
+            match action {
+                SuCommands::Supply => {
+                    let resp = client
+                        .get(format!("{base}/v1/tirami/su/supply"))
+                        .send()
+                        .await?;
+                    if !resp.status().is_success() {
+                        let status = resp.status();
+                        let body = resp.text().await.unwrap_or_default();
+                        eprintln!("Error: HTTP {} — {}", status, body);
+                        std::process::exit(1);
+                    }
+                    let json: serde_json::Value = resp.json().await?;
+                    println!("TRM Supply");
+                    println!("──────────────────────────────────");
+                    println!("  Total supply:       {}", json["total_supply"]);
+                    println!("  Total minted:       {}", json["total_minted"]);
+                    println!("  Supply factor:      {}", json["supply_factor"]);
+                    println!("  Current epoch:      {}", json["current_epoch"]);
+                    println!("  Epoch yield rate:   {}", json["epoch_yield_rate"]);
+                    println!("  Effective mint rate: {}", json["effective_mint_rate"]);
+                }
+                SuCommands::Stake { amount, duration } => {
+                    let body = serde_json::json!({
+                        "node_id": placeholder_node_id,
+                        "amount": amount,
+                        "duration": duration,
+                    });
+                    let resp = client
+                        .post(format!("{base}/v1/tirami/su/stake"))
+                        .json(&body)
+                        .send()
+                        .await?;
+                    if !resp.status().is_success() {
+                        let status = resp.status();
+                        let body = resp.text().await.unwrap_or_default();
+                        eprintln!("Error: HTTP {} — {}", status, body);
+                        std::process::exit(1);
+                    }
+                    let json: serde_json::Value = resp.json().await?;
+                    println!("Stake created");
+                    println!("──────────────────────────────────");
+                    println!("{}", serde_json::to_string_pretty(&json)?);
+                }
+                SuCommands::Unstake { stake_index } => {
+                    let body = serde_json::json!({
+                        "node_id": placeholder_node_id,
+                        "stake_index": stake_index,
+                    });
+                    let resp = client
+                        .post(format!("{base}/v1/tirami/su/unstake"))
+                        .json(&body)
+                        .send()
+                        .await?;
+                    if !resp.status().is_success() {
+                        let status = resp.status();
+                        let body = resp.text().await.unwrap_or_default();
+                        eprintln!("Error: HTTP {} — {}", status, body);
+                        std::process::exit(1);
+                    }
+                    let json: serde_json::Value = resp.json().await?;
+                    println!("Unstake complete");
+                    println!("──────────────────────────────────");
+                    println!("{}", serde_json::to_string_pretty(&json)?);
+                }
+                SuCommands::Refer { referrer, referred } => {
+                    let body = serde_json::json!({
+                        "referrer": referrer,
+                        "referred": referred,
+                    });
+                    let resp = client
+                        .post(format!("{base}/v1/tirami/su/refer"))
+                        .json(&body)
+                        .send()
+                        .await?;
+                    if !resp.status().is_success() {
+                        let status = resp.status();
+                        let body = resp.text().await.unwrap_or_default();
+                        eprintln!("Error: HTTP {} — {}", status, body);
+                        std::process::exit(1);
+                    }
+                    let json: serde_json::Value = resp.json().await?;
+                    println!("Referral recorded");
+                    println!("──────────────────────────────────");
+                    println!("{}", serde_json::to_string_pretty(&json)?);
+                }
+                SuCommands::Referrals => {
+                    let resp = client
+                        .get(format!("{base}/v1/tirami/su/referrals"))
+                        .send()
+                        .await?;
+                    if !resp.status().is_success() {
+                        let status = resp.status();
+                        let body = resp.text().await.unwrap_or_default();
+                        eprintln!("Error: HTTP {} — {}", status, body);
+                        std::process::exit(1);
+                    }
+                    let json: serde_json::Value = resp.json().await?;
+                    println!("Referral Stats");
+                    println!("──────────────────────────────────");
+                    println!("{}", serde_json::to_string_pretty(&json)?);
                 }
             }
         }

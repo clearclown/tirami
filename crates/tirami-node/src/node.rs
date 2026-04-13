@@ -30,6 +30,10 @@ pub struct TiramiNode {
     pub marketplace: Arc<Mutex<Marketplace>>,
     /// forge-mind L3 agent (persisted via mind_state_path; None until init).
     pub mind_agent: Arc<Mutex<Option<tirami_mind::TiramiMindAgent>>>,
+    /// Phase 13 — staking pool for TRM lock-up.
+    pub staking_pool: Arc<Mutex<tirami_ledger::StakingPool>>,
+    /// Phase 13 — referral tracker for sponsor bonuses.
+    pub referral_tracker: Arc<Mutex<tirami_ledger::ReferralTracker>>,
 }
 
 impl TiramiNode {
@@ -115,6 +119,8 @@ impl TiramiNode {
             bank: Arc::new(Mutex::new(bank)),
             marketplace: Arc::new(Mutex::new(marketplace)),
             mind_agent: Arc::new(Mutex::new(mind_agent)),
+            staking_pool: Arc::new(Mutex::new(tirami_ledger::StakingPool::new())),
+            referral_tracker: Arc::new(Mutex::new(tirami_ledger::ReferralTracker::new())),
         }
     }
 
@@ -162,6 +168,8 @@ impl TiramiNode {
             self.marketplace.clone(),
             Arc::new(Mutex::new(0usize)),
             self.mind_agent.clone(),
+            self.staking_pool.clone(),
+            self.referral_tracker.clone(),
         );
         let addr = self.config.api_socket_addr();
         tracing::info!("API server listening on {}", addr);
@@ -219,6 +227,8 @@ impl TiramiNode {
         let bank_api = self.bank.clone();
         let marketplace_api = self.marketplace.clone();
         let mind_agent_api = self.mind_agent.clone();
+        let staking_pool_api = self.staking_pool.clone();
+        let referral_tracker_api = self.referral_tracker.clone();
         let api_config = self.config.clone();
         tokio::spawn(async move {
             let app = crate::api::create_router_with_services(
@@ -233,6 +243,8 @@ impl TiramiNode {
                 marketplace_api,
                 Arc::new(Mutex::new(0usize)),
                 mind_agent_api,
+                staking_pool_api,
+                referral_tracker_api,
             );
             let addr = api_config.api_socket_addr();
             if let Ok(listener) = tokio::net::TcpListener::bind(&addr).await {

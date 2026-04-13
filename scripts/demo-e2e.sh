@@ -27,7 +27,7 @@ while [ $# -gt 0 ]; do
 done
 
 REPO_ROOT=$(cd "$(dirname "$0")/.." && pwd)
-BIN="$REPO_ROOT/target/release/forge"
+BIN="$REPO_ROOT/target/release/tirami"
 BASE="http://127.0.0.1:$PORT"
 H="Authorization: Bearer $TOKEN"
 
@@ -49,7 +49,7 @@ trap cleanup EXIT
 
 step "build"
 if [ ! -x "$BIN" ]; then
-  cargo build --release -p forge-cli >/dev/null 2>&1 && ok "compiled forge"
+  cargo build --release -p tirami-cli >/dev/null 2>&1 && ok "compiled tirami"
 else
   ok "binary already built at $BIN"
 fi

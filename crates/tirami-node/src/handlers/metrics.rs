@@ -24,8 +24,12 @@ pub(crate) async fn metrics_handler(
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
     let now_ms = now_millis_pub();
     let ledger = state.ledger.lock().await;
+    let staking = state.staking_pool.lock().await;
+    let referrals = state.referral_tracker.lock().await;
     let metrics = metrics_instance();
-    metrics.observe(&ledger, now_ms);
+    metrics.observe_with_tokenomics(&ledger, now_ms, Some(&*staking), Some(&*referrals));
+    drop(referrals);
+    drop(staking);
     drop(ledger);
     let body = metrics
         .encode()

@@ -33,6 +33,14 @@ pub struct TiramiMetrics {
     pub collusion_spike: GaugeVec,
     pub collusion_robin: GaugeVec,
     pub collusion_penalty: GaugeVec,
+    // Phase 13 tokenomics metrics
+    pub total_minted: IntGauge,
+    pub supply_factor: Gauge,
+    pub current_epoch: IntGauge,
+    pub yield_rate: Gauge,
+    pub total_staked: IntGauge,
+    pub total_burned: IntGauge,
+    pub referral_bonus_minted: IntGauge,
 }
 
 impl TiramiMetrics {
@@ -124,6 +132,49 @@ impl TiramiMetrics {
         )
         .expect("valid gauge vec opts");
 
+        // Phase 13 tokenomics gauges
+        let total_minted = IntGauge::with_opts(Opts::new(
+            "tirami_total_minted",
+            "Total TRM minted so far (counts toward 21B cap)",
+        ))
+        .expect("valid gauge opts");
+
+        let supply_factor = Gauge::with_opts(Opts::new(
+            "tirami_supply_factor",
+            "Supply factor: fraction of TRM cap remaining (1.0 at genesis, 0.0 at cap)",
+        ))
+        .expect("valid gauge opts");
+
+        let current_epoch = IntGauge::with_opts(Opts::new(
+            "tirami_current_epoch",
+            "Current halving epoch (0 = genesis, increases as supply is consumed)",
+        ))
+        .expect("valid gauge opts");
+
+        let yield_rate = Gauge::with_opts(Opts::new(
+            "tirami_yield_rate",
+            "Current availability yield rate per hour (halves each epoch)",
+        ))
+        .expect("valid gauge opts");
+
+        let total_staked = IntGauge::with_opts(Opts::new(
+            "tirami_total_staked",
+            "Total TRM currently locked in staking contracts",
+        ))
+        .expect("valid gauge opts");
+
+        let total_burned = IntGauge::with_opts(Opts::new(
+            "tirami_total_burned",
+            "Total TRM burned via slashing (permanently removed from circulation)",
+        ))
+        .expect("valid gauge opts");
+
+        let referral_bonus_minted = IntGauge::with_opts(Opts::new(
+            "tirami_referral_bonus_minted",
+            "Total TRM minted as referral bonuses",
+        ))
+        .expect("valid gauge opts");
+
         // Register all metrics with the isolated registry.
         registry
             .register(Box::new(cu_contributed.clone()))
@@ -158,6 +209,27 @@ impl TiramiMetrics {
         registry
             .register(Box::new(collusion_penalty.clone()))
             .expect("register collusion_penalty");
+        registry
+            .register(Box::new(total_minted.clone()))
+            .expect("register total_minted");
+        registry
+            .register(Box::new(supply_factor.clone()))
+            .expect("register supply_factor");
+        registry
+            .register(Box::new(current_epoch.clone()))
+            .expect("register current_epoch");
+        registry
+            .register(Box::new(yield_rate.clone()))
+            .expect("register yield_rate");
+        registry
+            .register(Box::new(total_staked.clone()))
+            .expect("register total_staked");
+        registry
+            .register(Box::new(total_burned.clone()))
+            .expect("register total_burned");
+        registry
+            .register(Box::new(referral_bonus_minted.clone()))
+            .expect("register referral_bonus_minted");
 
         Self {
             registry,
@@ -172,6 +244,13 @@ impl TiramiMetrics {
             collusion_spike,
             collusion_robin,
             collusion_penalty,
+            total_minted,
+            supply_factor,
+            current_epoch,
+            yield_rate,
+            total_staked,
+            total_burned,
+            referral_bonus_minted,
         }
     }
 
@@ -179,7 +258,25 @@ impl TiramiMetrics {
     ///
     /// This is idempotent and cheap to call — Prometheus gauges are set (not
     /// incremented), so calling `observe` twice in a row is safe.
-    pub fn observe(&self, ledger: &ComputeLedger, now_ms: u64) {
+    ///
+    /// `staking_pool` and `referral_tracker` are optional — if None the Phase 13
+    /// tokenomics gauges remain at their last set value (zero at startup).
+    pub fn observe(
+        &self,
+        ledger: &ComputeLedger,
+        now_ms: u64,
+    ) {
+        self.observe_with_tokenomics(ledger, now_ms, None, None);
+    }
+
+    /// Extended observe that also snapshots Phase 13 tokenomics state.
+    pub fn observe_with_tokenomics(
+        &self,
+        ledger: &ComputeLedger,
+        now_ms: u64,
+        staking_pool: Option<&crate::staking::StakingPool>,
+        referral_tracker: Option<&crate::referral::ReferralTracker>,
+    ) {
         // Per-node balance and reputation metrics.
         for balance in ledger.balances.values() {
             let hex = balance.node_id.to_hex();
@@ -247,6 +344,28 @@ impl TiramiMetrics {
                     .with_label_values(&label)
                     .set(report.trust_penalty);
             }
+        }
+
+        // Phase 13 tokenomics gauges — ledger-derived.
+        let minted = ledger.total_minted;
+        self.total_minted.set(minted as i64);
+        self.supply_factor
+            .set(crate::tokenomics::supply_factor(minted));
+        self.current_epoch
+            .set(crate::tokenomics::current_epoch(minted) as i64);
+        self.yield_rate
+            .set(crate::tokenomics::epoch_yield_rate(minted));
+
+        // Optional staking pool data.
+        if let Some(pool) = staking_pool {
+            self.total_staked.set(pool.total_staked() as i64);
+            self.total_burned.set(pool.total_burned as i64);
+        }
+
+        // Optional referral tracker data.
+        if let Some(tracker) = referral_tracker {
+            self.referral_bonus_minted
+                .set(tracker.total_bonus_minted as i64);
         }
     }
 
@@ -407,5 +526,61 @@ mod tests {
         metrics.observe(&ledger, now_ms);
         // trade_count should have been incremented to 5.
         assert_eq!(metrics.trade_count.get(), 5);
+    }
+
+    #[test]
+    fn test_tokenomics_gauges_populated_at_genesis() {
+        let ledger = ComputeLedger::new();
+        let metrics = TiramiMetrics::new();
+        metrics.observe(&ledger, 1_700_000_000_000);
+        // At genesis: total_minted=0, supply_factor=1.0, epoch=0, yield=0.001
+        assert_eq!(metrics.total_minted.get(), 0);
+        assert!((metrics.supply_factor.get() - 1.0).abs() < 1e-9);
+        assert_eq!(metrics.current_epoch.get(), 0);
+        assert!((metrics.yield_rate.get() - 0.001).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_tokenomics_staking_gauges_with_pool() {
+        let ledger = ComputeLedger::new();
+        let mut pool = crate::staking::StakingPool::new();
+        let node = NodeId([5u8; 32]);
+        let now_ms: u64 = 1_000_000_000;
+        pool.stake(node, 10_000, crate::staking::StakeDuration::Days90, now_ms).unwrap();
+        let metrics = TiramiMetrics::new();
+        metrics.observe_with_tokenomics(&ledger, now_ms, Some(&pool), None);
+        assert_eq!(metrics.total_staked.get(), 10_000);
+        assert_eq!(metrics.total_burned.get(), 0);
+    }
+
+    #[test]
+    fn test_tokenomics_referral_gauge_with_tracker() {
+        let ledger = ComputeLedger::new();
+        let mut tracker = crate::referral::ReferralTracker::new();
+        let sponsor = NodeId([1u8; 32]);
+        let referred = NodeId([2u8; 32]);
+        let now_ms: u64 = 1_000_000_000;
+        tracker.register(sponsor, referred.clone(), now_ms).unwrap();
+        tracker.mark_loan_repaid(&referred);
+        tracker.mark_earn_threshold(&referred);
+        // total_bonus_minted = REFERRAL_BONUS_TRM = 100
+        let metrics = TiramiMetrics::new();
+        metrics.observe_with_tokenomics(&ledger, now_ms, None, Some(&tracker));
+        assert_eq!(metrics.referral_bonus_minted.get(), crate::referral::REFERRAL_BONUS_TRM as i64);
+    }
+
+    #[test]
+    fn test_tokenomics_metrics_appear_in_encoded_output() {
+        let ledger = ComputeLedger::new();
+        let metrics = TiramiMetrics::new();
+        metrics.observe(&ledger, 1_700_000_000_000);
+        let output = metrics.encode().unwrap();
+        assert!(output.contains("tirami_total_minted"), "missing tirami_total_minted");
+        assert!(output.contains("tirami_supply_factor"), "missing tirami_supply_factor");
+        assert!(output.contains("tirami_current_epoch"), "missing tirami_current_epoch");
+        assert!(output.contains("tirami_yield_rate"), "missing tirami_yield_rate");
+        assert!(output.contains("tirami_total_staked"), "missing tirami_total_staked");
+        assert!(output.contains("tirami_total_burned"), "missing tirami_total_burned");
+        assert!(output.contains("tirami_referral_bonus_minted"), "missing tirami_referral_bonus_minted");
     }
 }

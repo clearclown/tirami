@@ -6,9 +6,71 @@ numbers follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Phase 14 — Unified Scheduler (2026-04-14 → 2026-04-17)
+
+Brings the v2 reference implementation's "Ledger-as-Brain" architecture
+into the production v1 codebase. The pipeline and economic engine now
+share state through the PeerRegistry + InferenceTicket pattern.
+
+**14.1 — PeerRegistry + PriceSignal gossip**
+- `tirami_core::PriceSignal`, `AuditTier` types.
+- `tirami_ledger::peer_registry::{PeerRegistry, PeerState}`.
+- New `Payload::PriceSignalGossip` wire variant.
+- 30-second periodic gossip loop in `TiramiNode::run_seed`.
+- New `GET /v1/tirami/peers` endpoint.
+
+**14.2 — select_provider + InferenceTicket**
+- `ComputeLedger::select_provider / begin_inference / settle_inference`.
+- Atomic schedule + reserve + settle flow via `InferenceTicket`.
+- New `TiramiError` variants: `SchedulingError`, `InsufficientBalance`.
+- New `POST /v1/tirami/schedule` read-only probe.
+
+**14.3 — Audit protocol skeleton**
+- `Payload::AuditChallenge / AuditResponse` wire messages + validation.
+- `peer_registry::record_audit_result` tier progression.
+- Pipeline dispatch scaffolds (full loop deferred to Phase E).
+- Issue #61 fix: `X-Tirami-Node-Id` attributes bilateral trades.
+
+### Phase 15 — Product redefinition (2026-04-17)
+
+- **15.1** `tirami-economics` README rewrite (139→96 lines):
+  "GPU Airbnb × AI Agent Economy". New chapters 15 (hybrid chain)
+  and 16 (agent economy). `spec/parameters.md` §20-§21.
+- **15.2** `tirami start` one-command bootstrap: auto keygen + model
+  download + welcome loan + API in ~30 seconds.
+- **15.3** FLOP measurement: `tirami_core::MeterReading`,
+  `ModelManifest::flops_per_token()`, `TradeRecord::flops_estimated`.
+  Anchors principle 1 "1 TRM = 10⁹ FLOP" in measured data.
+
+### Phase 16 — tirami-anchor crate (skeleton, 2026-04-17)
+
+- New `tirami-anchor` crate (15th in workspace).
+- `ChainClient` trait + `MockChainClient`.
+- `Anchorer<C>` periodic batcher (default 10 min, 10 k trades/batch).
+- `BatchDeltas` / `NodeDelta` payload structs.
+- Full daemon integration deferred to Phase F.
+
+### SDK + MCP bindings
+
+- `tirami-sdk`: `peers()`, `schedule()`, `chat_as()`, new types.
+- `tirami-mcp`: `tirami_peers`, `tirami_schedule`, `tirami_chat_as`.
+  Tool count 40 → 43.
+
+### Aggregate
+
+- **Tests: 785 → 877 passing** (+92).
+- **verify-impl.sh**: 123/123 GREEN.
+- **E2E verified** on 2-node setup — see `docs/e2e-demo-phase-15.md`.
+
+### Deferred to future phases
+
 - Phase 13 research frontier: real zkML backend (ezkl or risc0), real
   BitVM covenants, real federated training backend, forge-mesh full
   sync (ledger.rs 3-way merge, streaming + tools port)
+- Phase E: full audit challenge-response loop (deterministic
+  `generate_audit()` + challenger/responder daemon tasks)
+- Phase F: tirami-anchor daemon integration + tirami-contracts
+  (Solidity + Foundry) + Base L2 deployment
 - Crates.io publish after `tirami-core` / `tirami-cli` name rename
 - Docker image + Homebrew tap
 - Structured docs hosting (ReadTheDocs or Sphinx)

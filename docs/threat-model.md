@@ -59,14 +59,29 @@
 - Rate limiting on new node joins from same IP range
 
 ### T4: Byzantine Inference
-**Threat**: A malicious node returns incorrect activation tensors.
+**Threat**: A malicious node returns incorrect activation tensors or "lazy" inference output.
 
-**Mitigation (MVP)**: Accept the risk. For most use cases, a subtly wrong inference result is detectable by the user.
+**Status as of Phase 14.3 (2026-04-17)**: ⚠️ **Partial mitigation** (was: accepted risk).
 
-**Mitigation (future)**:
-- Redundant computation on critical layers (2 nodes compute same layers, compare)
-- Verifiable computation using TEE attestation (Apple Silicon Secure Enclave)
-- Statistical anomaly detection on activation tensor distributions
+**Mitigation (current, Phase 14.1-14.3)**:
+- **AuditTier gradient** (`tirami_core::AuditTier`): new providers get 100% audit
+  probability, veterans 0.1%. Reputation is economically material — high-trust providers
+  win more scheduling via `select_provider`.
+- **AuditChallenge/AuditResponse wire protocol** (`tirami_proto::messages::Payload::AuditChallenge`):
+  challenger pre-computes expected output hash, sends input + expected hash, target computes
+  and returns their hash. Scaffold currently ships (pipeline handlers are no-op) —
+  full challenger/responder loop lands in Phase E.
+- **`record_audit_result`** updates the tier on pass/fail, naturally incorporating audit
+  outcomes into provider routing. Failed providers are demoted → see fewer inference
+  requests → lose TRM revenue.
+
+**Mitigation (future, Phase E)**:
+- Deterministic `generate_audit()` (temperature=0, fixed sampler path) so challenger and
+  target produce bit-exact output hashes. Current llama.cpp Metal/CUDA paths have minor
+  nondeterminism; may fall back to first-N-tokens hash comparison instead of full sequence.
+- Slashing stake on failed audit (`tirami_ledger::staking` already has the primitive).
+- Verifiable computation using TEE attestation (Apple Silicon Secure Enclave).
+- Statistical anomaly detection on activation tensor distributions.
 
 ### T5: Traffic Analysis
 **Threat**: Observer monitors encrypted traffic patterns to infer usage.

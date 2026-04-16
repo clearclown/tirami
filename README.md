@@ -6,8 +6,9 @@
 
 [![Crates.io](https://img.shields.io/crates/v/tirami-core?label=crates.io&color=e6522c)](https://crates.io/crates/tirami-core)
 [![License: MIT](https://img.shields.io/badge/License-MIT-brightgreen.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-785_passing-brightgreen)]()
+[![Tests](https://img.shields.io/badge/tests-877_passing-brightgreen)]()
 [![verify-impl](https://img.shields.io/badge/verify--impl-123%2F123_GREEN-brightgreen)]()
+[![Phase](https://img.shields.io/badge/phase-14--16_unified_scheduler-blue)]()
 
 ---
 
@@ -23,40 +24,61 @@ The distributed inference engine is built on [mesh-llm](https://github.com/micha
 
 ## Live Demo
 
-This is real output from a running Tirami node. Every inference costs TRM. Every TRM is earned by useful computation.
+Tirami is the **GPU Airbnb × AI Agent Economy**: spare compute earns TRM rent; AI agents are the tenants. Real output from a running Tirami node:
 
 ```
-$ tirami node -m "qwen2.5:0.5b" --ledger tirami-ledger.json
-  Model loaded: Qwen2.5-0.5B (Metal-accelerated, 491MB)
-  API server listening on 127.0.0.1:3000
+$ tirami start                                       # Phase 15 — one-command bootstrap
+🔑 Generated new node key at /Users/ablaze/.tirami/node.key
+
+╔══════════════════════════════════════════════════════════════╗
+║         🌱 Tirami — GPU Airbnb × AI Agent Economy            ║
+╚══════════════════════════════════════════════════════════════╝
+
+   Data dir:  /Users/ablaze/.tirami
+   Model:     qwen2.5:0.5b
+   API:       http://127.0.0.1:3000
+
+✅ Model loaded
+🟢 Tirami node is running. Press Ctrl-C to stop.
 ```
 
-**Check balance — every new node gets a 1,000 TRM welcome loan:**
+**See who's on the market — PeerRegistry (Phase 14.1):**
 ```
-$ curl localhost:3000/v1/tirami/balance
-{
-  "effective_balance": 1000,
-  "contributed": 0,
-  "consumed": 0,
-  "reputation": 0.5
-}
+$ curl localhost:3000/v1/tirami/peers
+{ "count": 1, "peers": [{
+    "node_id": "48b5c0f2...", "price_multiplier": 1.0,
+    "available_cu": 1000, "audit_tier": "Unverified",
+    "models": ["qwen2.5-0.5b-instruct-q4_k_m"]
+}] }
 ```
 
-**Ask a question — inference costs TRM:**
+**Ask the Ledger-as-Brain who it would pick (Phase 14.2):**
+```
+$ curl localhost:3000/v1/tirami/schedule -d '{"model_id":"qwen2.5-0.5b-instruct-q4_k_m","max_tokens":100}'
+{ "provider": "48b5c0f2...", "estimated_trm_cost": 100 }
+```
+
+**Run inference billed to a specific agent — bilateral trade (Phase 14.3):**
 ```
 $ curl localhost:3000/v1/chat/completions \
+    -H "X-Tirami-Node-Id: 06d91e56..." \
     -d '{"messages":[{"role":"user","content":"Say hello in Japanese"}]}'
 {
-  "choices": [{"message": {"content": "こんにちは！ (konnichiwa!)"}}],
-  "usage": {"completion_tokens": 9},
-  "x_forge": {
-    "cu_cost": 9,
-    "effective_balance": 1009
-  }
+  "choices": [{"message": {"content": "こんにちは！"}}],
+  "x_tirami": {"trm_cost": 9, "effective_balance": 1009}
 }
 ```
 
-Every response includes `x_forge` — **the cost of that computation in TRM** and the remaining balance. The provider earned 9 TRM. The consumer spent 9 TRM. Physics backed every unit.
+**Trade record now includes FLOP measurement (Phase 15.3):**
+```
+$ curl localhost:3000/v1/tirami/trades
+[{ "provider": "48b5c0f2...", "consumer": "06d91e56...",
+   "trm_amount": 9, "tokens_processed": 9, "flops_estimated": 1040449536 }]
+```
+
+Every response includes `x_tirami` — **the cost in TRM** + the remaining balance. The
+`flops_estimated` field anchors the principle "1 TRM = 10⁹ FLOP" with **measured data**.
+Provider earns, consumer spends, physics bookkept.
 
 **Check tokenomics — Bitcoin-inspired supply curve:**
 ```

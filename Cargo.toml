@@ -14,6 +14,7 @@ members = [
     "crates/tirami-agora",
     "crates/tirami-sdk",
     "crates/tirami-mcp",
+    "crates/tirami-anchor",
 ]
 resolver = "2"
 

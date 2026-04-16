@@ -161,6 +161,34 @@ impl PeerRegistry {
     pub fn record_verified_trade(&mut self, node_id: &NodeId) {
         let state = self.peers.entry(node_id.clone()).or_default();
         state.verified_trade_count = state.verified_trade_count.saturating_add(1);
+        // Promote to next tier every 10 verified trades without a failure.
+        // This is a simple threshold rule; Phase 15 might make it dynamic.
+        match state.audit_tier {
+            AuditTier::Unverified if state.verified_trade_count >= 1 => {
+                state.audit_tier = AuditTier::Probationary;
+            }
+            AuditTier::Probationary if state.verified_trade_count >= 10 => {
+                state.audit_tier = AuditTier::Established;
+            }
+            AuditTier::Established if state.verified_trade_count >= 100 => {
+                state.audit_tier = AuditTier::Trusted;
+            }
+            _ => {}
+        }
+    }
+
+    /// Phase 14.3 — record an audit outcome for a peer.
+    /// `passed = true` promotes the tier; `false` demotes it.
+    pub fn record_audit_result(&mut self, node_id: &NodeId, passed: bool) {
+        let state = self.peers.entry(node_id.clone()).or_default();
+        if passed {
+            state.audit_tier = state.audit_tier.promote();
+            state.verified_trade_count = state.verified_trade_count.saturating_add(1);
+        } else {
+            state.audit_tier = state.audit_tier.demote();
+            // Don't zero out verified_trade_count — one failure shouldn't
+            // erase all history, just downgrade.
+        }
     }
 
     /// Return all peers that currently advertise `model_id` with non-zero
@@ -303,6 +331,32 @@ mod tests {
         r.record_verified_trade(&node);
         r.record_verified_trade(&node);
         assert_eq!(r.get(&node).unwrap().verified_trade_count, 3);
+    }
+
+    #[test]
+    fn record_audit_result_passes_promote_tier() {
+        let mut r = PeerRegistry::new();
+        let node = sample_node(1);
+        r.record_audit_result(&node, true);
+        assert_eq!(r.get(&node).unwrap().audit_tier, AuditTier::Probationary);
+    }
+
+    #[test]
+    fn record_audit_result_failure_demotes() {
+        let mut r = PeerRegistry::new();
+        let node = sample_node(1);
+        r.record_audit_result(&node, true); // → Probationary
+        r.record_audit_result(&node, true); // → Established
+        r.record_audit_result(&node, false); // → Probationary (demoted)
+        assert_eq!(r.get(&node).unwrap().audit_tier, AuditTier::Probationary);
+    }
+
+    #[test]
+    fn verified_trade_auto_promotes_unverified() {
+        let mut r = PeerRegistry::new();
+        let node = sample_node(1);
+        r.record_verified_trade(&node);
+        assert_eq!(r.get(&node).unwrap().audit_tier, AuditTier::Probationary);
     }
 
     #[test]

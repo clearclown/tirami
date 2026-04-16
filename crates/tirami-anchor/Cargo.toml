@@ -1,0 +1,23 @@
+[package]
+name = "tirami-anchor"
+description = "On-chain anchoring layer — periodic Merkle root commitment for Tirami off-chain ledger"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+readme.workspace = true
+authors.workspace = true
+
+[dependencies]
+tirami-core = { workspace = true }
+tirami-ledger = { workspace = true }
+async-trait = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+hex = { workspace = true }
+sha2 = { workspace = true }

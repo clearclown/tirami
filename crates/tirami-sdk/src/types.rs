@@ -53,3 +53,43 @@ pub struct TiramiUsage {
     pub trm_cost: u64,
     pub effective_balance: i64,
 }
+
+// ---------------------------------------------------------------------------
+// Phase 14.1 — PeerRegistry response
+// ---------------------------------------------------------------------------
+
+/// A single peer entry from `GET /v1/tirami/peers`.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct PeerInfo {
+    pub node_id: String,
+    pub price_multiplier: f64,
+    pub available_cu: u64,
+    pub models: Vec<String>,
+    pub latency_hint_ms: u64,
+    pub latency_ema_ms: f64,
+    pub last_seen: u64,
+    pub audit_tier: String,
+    pub verified_trades: u64,
+}
+
+/// Response from `GET /v1/tirami/peers`.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct PeersResponse {
+    pub count: usize,
+    pub peers: Vec<PeerInfo>,
+}
+
+// ---------------------------------------------------------------------------
+// Phase 14.2 — Schedule probe response
+// ---------------------------------------------------------------------------
+
+/// Response from `POST /v1/tirami/schedule` — what the ledger would pick.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct Schedule {
+    /// Hex NodeId of the provider that `select_provider` would choose.
+    pub provider: String,
+    /// TRM the consumer would need to reserve.
+    pub estimated_trm_cost: u64,
+    pub model_id: String,
+    pub max_tokens: u64,
+}

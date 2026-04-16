@@ -87,12 +87,24 @@ impl TiramiClient {
     }
 
     async fn post(&self, path: &str, body: Value) -> Result<Value, String> {
+        self.post_with_header(path, body, "", "").await
+    }
+
+    /// Phase 14.3 — POST with an additional header (e.g. X-Tirami-Node-Id).
+    /// Pass `""` for name or value to skip.
+    async fn post_with_header(
+        &self,
+        path: &str,
+        body: Value,
+        header_name: &str,
+        header_value: &str,
+    ) -> Result<Value, String> {
         let url = format!("{}{}", self.base_url, path);
-        self.http
-            .post(&url)
-            .headers(self.auth_header())
-            .json(&body)
-            .send()
+        let mut req = self.http.post(&url).headers(self.auth_header()).json(&body);
+        if !header_name.is_empty() && !header_value.is_empty() {
+            req = req.header(header_name, header_value);
+        }
+        req.send()
             .await
             .map_err(|e| e.to_string())?
             .json::<Value>()
@@ -156,6 +168,51 @@ impl ForgeMcpServer {
                             "messages": [{"role": "user", "content": prompt}],
                             "max_tokens": max_tokens
                         }),
+                    )
+                    .await
+            }
+
+            // ----------------------------------------------------------------
+            // Phase 14.1 / 14.2 — PeerRegistry + unified scheduling
+            // ----------------------------------------------------------------
+            "tirami_peers" => self.client.get("/v1/tirami/peers").await,
+            "tirami_schedule" => {
+                let model_id = obj
+                    .get("model_id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let max_tokens = obj.get("max_tokens").and_then(|v| v.as_u64()).unwrap_or(256);
+                let mut body = serde_json::json!({
+                    "model_id": model_id,
+                    "max_tokens": max_tokens,
+                });
+                if let Some(consumer) = obj.get("consumer").and_then(|v| v.as_str()) {
+                    body["consumer"] = serde_json::Value::String(consumer.to_string());
+                }
+                self.client.post("/v1/tirami/schedule", body).await
+            }
+            "tirami_chat_as" => {
+                let consumer_hex = obj
+                    .get("consumer_hex")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let prompt = obj
+                    .get("prompt")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let max_tokens = obj.get("max_tokens").and_then(|v| v.as_i64()).unwrap_or(256);
+                self.client
+                    .post_with_header(
+                        "/v1/chat/completions",
+                        serde_json::json!({
+                            "messages": [{"role": "user", "content": prompt}],
+                            "max_tokens": max_tokens,
+                        }),
+                        "X-Tirami-Node-Id",
+                        &consumer_hex,
                     )
                     .await
             }
@@ -446,9 +503,22 @@ mod tests {
     use super::tools;
 
     #[test]
-    fn test_tool_list_has_40_tools() {
+    fn test_tool_list_has_43_tools() {
+        // Phase 15 added 3 tools: tirami_peers, tirami_schedule, tirami_chat_as.
         let tools = tools::build_tool_list();
-        assert_eq!(tools.len(), 40, "expected 40 tools, got {}", tools.len());
+        assert_eq!(tools.len(), 43, "expected 43 tools, got {}", tools.len());
+    }
+
+    #[test]
+    fn test_phase_15_tools_present() {
+        let tools = tools::build_tool_list();
+        let names: std::collections::HashSet<String> = tools
+            .iter()
+            .map(|t| t.name.as_ref().to_string())
+            .collect();
+        assert!(names.contains("tirami_peers"), "tirami_peers missing");
+        assert!(names.contains("tirami_schedule"), "tirami_schedule missing");
+        assert!(names.contains("tirami_chat_as"), "tirami_chat_as missing");
     }
 
     #[test]

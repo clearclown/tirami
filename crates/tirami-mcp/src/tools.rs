@@ -99,6 +99,70 @@ pub fn build_tool_list() -> Vec<Tool> {
         ),
 
         // ====================================================================
+        // Phase 14.1 / 14.2 — PeerRegistry + unified scheduling
+        // ====================================================================
+        Tool::new(
+            "tirami_peers",
+            "List peers known to the local node's PeerRegistry (Phase 14.1). Each entry \
+             contains price_multiplier, available_cu, audit_tier, latency_ema_ms, and \
+             advertised models. Use this to inspect the current market state across the \
+             mesh before scheduling work.",
+            schema(json!({
+                "type": "object",
+                "properties": {}
+            })),
+        ),
+        Tool::new(
+            "tirami_schedule",
+            "Phase 14.2 Ledger-as-Brain probe: given model_id + max_tokens, return which \
+             provider would be chosen and the estimated TRM cost. Read-only — does NOT \
+             reserve TRM. Agents use this to comparison-shop before committing to inference.",
+            schema(json!({
+                "type": "object",
+                "properties": {
+                    "model_id": {
+                        "type": "string",
+                        "description": "Model identifier (e.g. \"qwen2.5-0.5b-instruct-q4_k_m\")"
+                    },
+                    "max_tokens": {
+                        "type": "integer",
+                        "description": "Token budget for the hypothetical request"
+                    },
+                    "consumer": {
+                        "type": "string",
+                        "description": "Optional 64-char hex NodeId of the consumer. If omitted, the local node acts as consumer."
+                    }
+                },
+                "required": ["model_id", "max_tokens"]
+            })),
+        ),
+        Tool::new(
+            "tirami_chat_as",
+            "Phase 14.3 — Run inference billed to a specific consumer NodeId instead of \
+             the anonymous default. Sets the X-Tirami-Node-Id header so the resulting \
+             bilateral trade is properly attributed. Required for cross-node AI agent \
+             economies.",
+            schema(json!({
+                "type": "object",
+                "properties": {
+                    "consumer_hex": {
+                        "type": "string",
+                        "description": "64-char hex NodeId to bill the inference to"
+                    },
+                    "prompt": {
+                        "type": "string",
+                        "description": "Prompt text"
+                    },
+                    "max_tokens": {
+                        "type": "integer",
+                        "description": "Maximum output tokens"
+                    }
+                },
+                "required": ["consumer_hex", "prompt", "max_tokens"]
+            })),
+        ),
+
+        // ====================================================================
         // Safety (2 tools)
         // ====================================================================
         Tool::new(

@@ -54,10 +54,34 @@ impl TiramiClient {
         path: &str,
         body: &serde_json::Value,
     ) -> Result<serde_json::Value, SdkError> {
+        self.post_json_with_header(path, body, "", "").await
+    }
+
+    /// Phase 15 Step 2 alias for `post` — same behavior, clearer name.
+    async fn post_json(
+        &self,
+        path: &str,
+        body: &serde_json::Value,
+    ) -> Result<serde_json::Value, SdkError> {
+        self.post_json_with_header(path, body, "", "").await
+    }
+
+    /// Phase 14.3 fix — POST with an additional header (e.g. X-Tirami-Node-Id).
+    /// Pass `""` for either header arg to skip.
+    async fn post_json_with_header(
+        &self,
+        path: &str,
+        body: &serde_json::Value,
+        header_name: &str,
+        header_value: &str,
+    ) -> Result<serde_json::Value, SdkError> {
         let url = format!("{}{}", self.base_url, path);
         let mut req = self.client.post(&url).json(body);
         if let Some(token) = &self.token {
             req = req.bearer_auth(token);
+        }
+        if !header_name.is_empty() && !header_value.is_empty() {
+            req = req.header(header_name, header_value);
         }
         let resp = req.send().await?;
         let status = resp.status().as_u16();
@@ -99,6 +123,78 @@ impl TiramiClient {
     /// `GET /v1/tirami/providers` — Providers ranked by reputation and cost.
     pub async fn providers(&self) -> Result<serde_json::Value, SdkError> {
         self.get("/v1/tirami/providers").await
+    }
+
+    // -----------------------------------------------------------------------
+    // Phase 14.1 / 14.2 — PeerRegistry + scheduling
+    // -----------------------------------------------------------------------
+
+    /// `GET /v1/tirami/peers` — Phase 14.1 PeerRegistry dump.
+    ///
+    /// Returns every peer the local node has observed via PriceSignal gossip.
+    /// Each entry includes `price_multiplier`, `available_cu`, `audit_tier`,
+    /// `latency_ema_ms`, and the models advertised. Returns `PeersResponse`
+    /// for easy field access.
+    pub async fn peers(&self) -> Result<PeersResponse, SdkError> {
+        let v = self.get("/v1/tirami/peers").await?;
+        Ok(serde_json::from_value(v)?)
+    }
+
+    /// `POST /v1/tirami/schedule` — Phase 14.2 Ledger-as-Brain probe.
+    ///
+    /// Asks the node "given this model + token budget, who would you pick
+    /// as provider and what's the estimated cost?" Does NOT reserve TRM —
+    /// read-only. Useful for agents to shop around before committing.
+    ///
+    /// - `consumer` — optional hex NodeId (64 chars). If `None`, the node's
+    ///   own `local_node_id` is used.
+    pub async fn schedule(
+        &self,
+        model_id: &str,
+        max_tokens: u64,
+        consumer: Option<&str>,
+    ) -> Result<Schedule, SdkError> {
+        let mut body = serde_json::json!({
+            "model_id": model_id,
+            "max_tokens": max_tokens,
+        });
+        if let Some(c) = consumer {
+            body["consumer"] = serde_json::Value::String(c.to_string());
+        }
+        let v = self.post_json("/v1/tirami/schedule", &body).await?;
+        Ok(serde_json::from_value(v)?)
+    }
+
+    // -----------------------------------------------------------------------
+    // Phase 14.3 (fix #61) — consumer identity header
+    // -----------------------------------------------------------------------
+
+    /// Run a chat completion on behalf of a specific consumer NodeId.
+    ///
+    /// Equivalent to [`chat`] but sends the `X-Tirami-Node-Id` header so the
+    /// resulting trade is recorded with the given consumer instead of the
+    /// anonymous `0xff…` fallback. Essential for cross-node economy.
+    ///
+    /// - `consumer_hex` — 64-char hex NodeId of the consumer.
+    pub async fn chat_as(
+        &self,
+        consumer_hex: &str,
+        model: &str,
+        prompt: &str,
+        max_tokens: u32,
+    ) -> Result<serde_json::Value, SdkError> {
+        let body = serde_json::json!({
+            "model": model,
+            "messages": [{"role": "user", "content": prompt}],
+            "max_tokens": max_tokens,
+        });
+        self.post_json_with_header(
+            "/v1/chat/completions",
+            &body,
+            "X-Tirami-Node-Id",
+            consumer_hex,
+        )
+        .await
     }
 
     /// Check whether this node can afford a request of `estimated_tokens` output

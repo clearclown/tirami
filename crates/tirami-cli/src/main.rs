@@ -38,6 +38,27 @@ enum Commands {
     /// List available models
     Models,
 
+    /// One-command bootstrap: generate key, download model, join network, start earning TRM.
+    ///
+    /// This is the recommended way to join Tirami. Equivalent to running
+    /// `seed` but with auto-generated keys, auto-downloaded models, and
+    /// automatic HTTP API binding. Designed so a new user can participate
+    /// in ~30 seconds.
+    Start {
+        /// Model to serve (e.g., "qwen2.5:0.5b"). Auto-downloaded from HuggingFace.
+        #[arg(short, long, default_value = "qwen2.5:0.5b")]
+        model: String,
+
+        /// Port for the HTTP API.
+        #[arg(short, long, default_value = "3000")]
+        port: u16,
+
+        /// Bind address for the HTTP API. Default 127.0.0.1 (local only).
+        /// Use 0.0.0.0 to accept remote requests.
+        #[arg(long, default_value = "127.0.0.1")]
+        bind: String,
+    },
+
     /// Start as a seed node (holds model, serves inference)
     Seed {
         /// Model name (e.g., "qwen2.5:0.5b") or path to GGUF file
@@ -279,6 +300,9 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
+        Commands::Start { model, port, bind } => {
+            run_start_command(model, port, bind).await?;
+        }
         Commands::Models => {
             tirami_infer::model_registry::list_models();
         }
@@ -1014,4 +1038,137 @@ async fn main() -> anyhow::Result<()> {
 fn resolve_api_token(flag: Option<String>) -> Option<String> {
     flag.or_else(|| std::env::var("FORGE_API_TOKEN").ok())
         .filter(|token| !token.is_empty())
+}
+
+/// One-command bootstrap: `tirami start`.
+///
+/// Bitcoin-style zero-config participation:
+/// 1. Generate ~/.tirami/node.key if missing (Ed25519)
+/// 2. Create ~/.tirami/config.toml if missing
+/// 3. Resolve & download model from HuggingFace if missing
+/// 4. Start seed node (P2P + HTTP API + inference)
+/// 5. Print welcome banner with earning estimates
+async fn run_start_command(
+    model: String,
+    port: u16,
+    bind: String,
+) -> anyhow::Result<()> {
+    use std::fs;
+
+    // ------------------------------------------------------------------
+    // Phase 1: Resolve ~/.tirami/ directory
+    // ------------------------------------------------------------------
+    let home = std::env::var("HOME").map_err(|_| anyhow::anyhow!("HOME not set"))?;
+    let tirami_dir = PathBuf::from(&home).join(".tirami");
+    if !tirami_dir.exists() {
+        fs::create_dir_all(&tirami_dir)?;
+        println!("📁 Created {}", tirami_dir.display());
+    }
+
+    // ------------------------------------------------------------------
+    // Phase 2: Key generation (only if missing)
+    // ------------------------------------------------------------------
+    let key_path = tirami_dir.join("node.key");
+    let key_was_generated = if !key_path.exists() {
+        use ed25519_dalek::SigningKey;
+        use rand::rngs::OsRng;
+        let signing_key = SigningKey::generate(&mut OsRng);
+        fs::write(&key_path, signing_key.to_bytes())?;
+        // Secure file permissions (user read/write only)
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = fs::metadata(&key_path)?.permissions();
+            perms.set_mode(0o600);
+            fs::set_permissions(&key_path, perms)?;
+        }
+        println!("🔑 Generated new node key at {}", key_path.display());
+        true
+    } else {
+        false
+    };
+
+    // ------------------------------------------------------------------
+    // Phase 3: Ledger path
+    // ------------------------------------------------------------------
+    let ledger_path = tirami_dir.join("ledger.json");
+
+    // ------------------------------------------------------------------
+    // Phase 4: Print startup banner before model download (can be slow)
+    // ------------------------------------------------------------------
+    println!();
+    println!("╔══════════════════════════════════════════════════════════════╗");
+    println!("║         🌱 Tirami — GPU Airbnb × AI Agent Economy            ║");
+    println!("╚══════════════════════════════════════════════════════════════╝");
+    println!();
+    println!("   Data dir:  {}", tirami_dir.display());
+    println!("   Model:     {}", model);
+    println!("   Ledger:    {}", ledger_path.display());
+    println!("   API:       http://{}:{}", bind, port);
+    println!();
+    println!("📦 Resolving model (will auto-download from HuggingFace if needed)...");
+
+    // ------------------------------------------------------------------
+    // Phase 5: Model resolution (downloads if missing)
+    // ------------------------------------------------------------------
+    let resolved = tirami_infer::model_registry::resolve(&model)?;
+    let tokenizer_path = resolved.tokenizer_path.ok_or_else(|| {
+        anyhow::anyhow!(
+            "Tokenizer not found for model '{}'. Try a catalog model like 'qwen2.5:0.5b'.",
+            model
+        )
+    })?;
+    println!("✅ Model ready: {}", resolved.model_path.display());
+
+    // ------------------------------------------------------------------
+    // Phase 6: Build config + seed node
+    // ------------------------------------------------------------------
+    let config = Config {
+        api_port: port,
+        api_bind_addr: bind.clone(),
+        api_bearer_token: None, // localhost by default, no token needed
+        ledger_path: Some(ledger_path.clone()),
+        share_compute: true,
+        ..Config::default()
+    };
+    let mut node = tirami_node::TiramiNode::new(config);
+
+    println!("🧠 Loading model into memory (this may take 10-60 seconds)...");
+    node.load_model(&resolved.model_path, &tokenizer_path).await?;
+    println!("✅ Model loaded");
+
+    // ------------------------------------------------------------------
+    // Phase 7: Ctrl-C handler (same as seed command)
+    // ------------------------------------------------------------------
+    let shutdown_ledger = node.ledger.clone();
+    let shutdown_ledger_path = node.config.ledger_path.clone();
+    tokio::spawn(async move {
+        if tokio::signal::ctrl_c().await.is_ok() {
+            println!("\n💾 Persisting ledger and shutting down...");
+            if let Some(path) = shutdown_ledger_path {
+                let _ = shutdown_ledger.lock().await.save_to_path(&path);
+            }
+            std::process::exit(0);
+        }
+    });
+
+    // ------------------------------------------------------------------
+    // Phase 8: Print ready banner
+    // ------------------------------------------------------------------
+    println!();
+    println!("🟢 Tirami node is running. Press Ctrl-C to stop.");
+    if key_was_generated {
+        println!();
+        println!("   💡 First-time setup complete.");
+        println!("      Your node earns TRM by serving inference to AI agents.");
+        println!("      Run `tirami status --url http://{}:{}` in another terminal.", bind, port);
+    }
+    println!();
+
+    // ------------------------------------------------------------------
+    // Phase 9: Run seed (blocks until Ctrl-C)
+    // ------------------------------------------------------------------
+    node.run_seed().await?;
+
+    Ok(())
 }

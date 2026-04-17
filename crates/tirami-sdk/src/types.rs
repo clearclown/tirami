@@ -93,3 +93,25 @@ pub struct Schedule {
     pub model_id: String,
     pub max_tokens: u64,
 }
+
+// ---------------------------------------------------------------------------
+// Phase 16 — Anchor history response
+// ---------------------------------------------------------------------------
+
+/// A single batch submission observed via ChainClient.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct AnchorSubmission {
+    pub batch_id: u64,
+    pub tx_hash: String,
+    pub merkle_root_hex: String,
+    pub submitted_at_ms: u64,
+    pub node_count: usize,
+    pub flops_total: u64,
+}
+
+/// Response from `GET /v1/tirami/anchors`.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct AnchorsResponse {
+    pub count: usize,
+    pub anchors: Vec<AnchorSubmission>,
+}

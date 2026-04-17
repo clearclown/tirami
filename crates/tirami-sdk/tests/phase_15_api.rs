@@ -1,8 +1,8 @@
-//! Phase 14-15 SDK additions: Schedule / Peers / chat_as (consumer header).
+//! Phase 14-16 SDK additions: Schedule / Peers / chat_as / anchors.
 //!
 //! These are deserialization smoke tests — no live node required.
 
-use tirami_sdk::{PeerInfo, PeersResponse, Schedule, TiramiUsage};
+use tirami_sdk::{AnchorSubmission, AnchorsResponse, PeerInfo, PeersResponse, Schedule, TiramiUsage};
 
 #[test]
 fn schedule_deserializes_from_api_response() {
@@ -93,4 +93,59 @@ fn peers_empty_registry() {
     let r: PeersResponse = serde_json::from_value(json).expect("deserialize");
     assert_eq!(r.count, 0);
     assert!(r.peers.is_empty());
+}
+
+// --- Phase 16 — anchors ---
+
+#[test]
+fn anchors_response_deserializes() {
+    let json = serde_json::json!({
+        "count": 2,
+        "anchors": [
+            {
+                "batch_id": 0,
+                "tx_hash": "mock_0000000000000000000000000000000000000000000000000000000000000000",
+                "merkle_root_hex": "ac2050945bdae994baa9ee4e6aca0b6e56e9ea67fdf04258275da13d368a31a4",
+                "submitted_at_ms": 1776379712432u64,
+                "node_count": 2,
+                "flops_total": 50_000_000_000u64
+            },
+            {
+                "batch_id": 1,
+                "tx_hash": "mock_...",
+                "merkle_root_hex": "ff".to_string().repeat(32),
+                "submitted_at_ms": 1776379722432u64,
+                "node_count": 3,
+                "flops_total": 75_000_000_000u64
+            }
+        ]
+    });
+    let r: AnchorsResponse = serde_json::from_value(json).expect("deserialize");
+    assert_eq!(r.count, 2);
+    assert_eq!(r.anchors.len(), 2);
+    assert_eq!(r.anchors[0].batch_id, 0);
+    assert_eq!(r.anchors[1].flops_total, 75_000_000_000);
+}
+
+#[test]
+fn anchor_submission_parses_single() {
+    let json = serde_json::json!({
+        "batch_id": 42,
+        "tx_hash": "mock_abc",
+        "merkle_root_hex": "0000000000000000000000000000000000000000000000000000000000000001",
+        "submitted_at_ms": 1u64,
+        "node_count": 1,
+        "flops_total": 1_000_000_000u64
+    });
+    let s: AnchorSubmission = serde_json::from_value(json).expect("deserialize");
+    assert_eq!(s.batch_id, 42);
+    assert_eq!(s.flops_total, 1_000_000_000);
+}
+
+#[test]
+fn anchors_empty_history() {
+    let json = serde_json::json!({ "count": 0, "anchors": [] });
+    let r: AnchorsResponse = serde_json::from_value(json).expect("deserialize");
+    assert_eq!(r.count, 0);
+    assert!(r.anchors.is_empty());
 }

@@ -140,6 +140,16 @@ impl TiramiClient {
         Ok(serde_json::from_value(v)?)
     }
 
+    /// `GET /v1/tirami/anchors` — Phase 16 anchor history.
+    ///
+    /// Lists every on-chain batch submission this node has observed from
+    /// its configured `ChainClient`. MockChainClient returns in-memory
+    /// history; a real Base L2 client would return the chain-side record.
+    pub async fn anchors(&self) -> Result<AnchorsResponse, SdkError> {
+        let v = self.get("/v1/tirami/anchors").await?;
+        Ok(serde_json::from_value(v)?)
+    }
+
     /// `POST /v1/tirami/schedule` — Phase 14.2 Ledger-as-Brain probe.
     ///
     /// Asks the node "given this model + token budget, who would you pick

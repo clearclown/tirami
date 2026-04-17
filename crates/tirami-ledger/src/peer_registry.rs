@@ -207,6 +207,41 @@ impl PeerRegistry {
         self.peers.retain(|_, s| now_ms.saturating_sub(s.last_seen) < stale_threshold_ms);
         before - self.peers.len()
     }
+
+    /// Phase 14.3 — probabilistically select peers for audit based on their
+    /// `AuditTier`. Each peer is rolled independently against its tier
+    /// probability. Returns cloned NodeIds plus the ModelId they advertise
+    /// (required for a challenge).
+    ///
+    /// - `now_ms` — used to skip peers that haven't been seen in > 24h.
+    /// - `rng_sample` — callback returning a uniform float in `[0, 1)`.
+    ///   Tests pass a deterministic sampler; production uses `rand::random`.
+    pub fn select_audit_targets<F>(
+        &self,
+        now_ms: u64,
+        mut rng_sample: F,
+    ) -> Vec<(NodeId, ModelId)>
+    where
+        F: FnMut() -> f64,
+    {
+        const STALE_THRESHOLD_MS: u64 = 24 * 60 * 60 * 1000; // 24h
+        self.peers
+            .iter()
+            .filter(|(_, s)| now_ms.saturating_sub(s.last_seen) < STALE_THRESHOLD_MS)
+            .filter_map(|(id, s)| {
+                let prob = s.audit_tier.audit_probability();
+                if rng_sample() < prob {
+                    // Pick any served model — audit needs a real model id.
+                    s.price_signal
+                        .as_ref()
+                        .and_then(|sig| sig.model_capabilities.first().cloned())
+                        .map(|m| (id.clone(), m))
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
 }
 
 // ===========================================================================
@@ -357,6 +392,49 @@ mod tests {
         let node = sample_node(1);
         r.record_verified_trade(&node);
         assert_eq!(r.get(&node).unwrap().audit_tier, AuditTier::Probationary);
+    }
+
+    #[test]
+    fn select_audit_targets_picks_unverified_always() {
+        let mut r = PeerRegistry::new();
+        r.ingest_price_signal(&sample_signal(sample_node(1), 1.0, 100));
+        // Even with rng returning 0.99, Unverified probability is 1.0.
+        let picks = r.select_audit_targets(200, || 0.99);
+        assert_eq!(picks.len(), 1);
+        assert_eq!(picks[0].0, sample_node(1));
+    }
+
+    #[test]
+    fn select_audit_targets_skips_trusted_on_high_roll() {
+        let mut r = PeerRegistry::new();
+        r.ingest_price_signal(&sample_signal(sample_node(1), 1.0, 100));
+        // Promote to Trusted.
+        for _ in 0..3 {
+            r.record_audit_result(&sample_node(1), true);
+        }
+        assert_eq!(r.get(&sample_node(1)).unwrap().audit_tier, AuditTier::Trusted);
+        // Trusted probability = 0.01; roll of 0.5 must skip.
+        let picks = r.select_audit_targets(200, || 0.5);
+        assert!(picks.is_empty());
+    }
+
+    #[test]
+    fn select_audit_targets_skips_stale_peers() {
+        let mut r = PeerRegistry::new();
+        r.ingest_price_signal(&sample_signal(sample_node(1), 1.0, 100));
+        // 25 hours later — stale.
+        let now = 100 + 25 * 60 * 60 * 1000;
+        let picks = r.select_audit_targets(now, || 0.0);
+        assert!(picks.is_empty());
+    }
+
+    #[test]
+    fn select_audit_targets_requires_model_advertised() {
+        let mut r = PeerRegistry::new();
+        // Peer with default state (no price_signal) — can't audit.
+        r.ensure(&sample_node(1));
+        let picks = r.select_audit_targets(100, || 0.0);
+        assert!(picks.is_empty());
     }
 
     #[test]

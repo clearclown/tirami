@@ -283,6 +283,10 @@ impl TiramiNode {
         // by default; real Base L2 wiring lands once tirami-contracts ships).
         self.spawn_anchor_loop();
 
+        // Phase 14.3 — challenger-side audit loop: periodically picks peers
+        // per their AuditTier probability and sends AuditChallenge messages.
+        self.spawn_audit_challenger_loop(transport.clone());
+
         // Run pipeline coordinator with ledger
         let coordinator = PipelineCoordinator::new(transport);
         coordinator
@@ -346,6 +350,135 @@ impl TiramiNode {
     }
 
     /// Spawn the periodic price signal broadcast task (30s default).
+    /// Phase 14.3 — challenger-side audit loop.
+    ///
+    /// Every 60s: roll each peer's `AuditTier.audit_probability()` and, for
+    /// those selected, compute the expected output hash locally (via our own
+    /// engine's `generate_audit`) then send an `AuditChallenge`. Responses
+    /// flow through the pipeline handler which calls `record_audit_result`.
+    ///
+    /// Requires a loaded model: we can only validate hashes for models we can
+    /// run ourselves. If no model is loaded the loop is a no-op.
+    fn spawn_audit_challenger_loop(&self, transport: Arc<ForgeTransport>) {
+        let ledger = self.ledger.clone();
+        let engine = self.engine.clone();
+        let model_manifest = self.model_manifest.clone();
+        let my_id = transport.tirami_node_id();
+
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(std::time::Duration::from_secs(60));
+            // Skip the immediate first tick — let peers register first.
+            ticker.tick().await;
+
+            loop {
+                ticker.tick().await;
+
+                // Only run if we have a model loaded — audit requires running
+                // the same forward pass locally.
+                let Some(local_model) = model_manifest.lock().await.as_ref().map(|m| m.id.clone())
+                else {
+                    continue;
+                };
+
+                // Select audit targets from the PeerRegistry.
+                let now_ms = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis() as u64)
+                    .unwrap_or(0);
+                let targets: Vec<_> = {
+                    let guard = ledger.lock().await;
+                    guard
+                        .peer_registry
+                        .select_audit_targets(now_ms, || rand::random::<f64>())
+                        .into_iter()
+                        // Must match our own loaded model.
+                        .filter(|(_, m)| *m == local_model)
+                        // Never audit ourselves.
+                        .filter(|(id, _)| *id != my_id)
+                        .collect()
+                };
+
+                if targets.is_empty() {
+                    continue;
+                }
+
+                // Build a deterministic challenge input. For simplicity the
+                // current revision uses a canned sequence of tokens; future
+                // versions could pick from a shared corpus.
+                let input_tokens: Vec<u32> = (1..=16).collect();
+
+                for (target, model_id) in targets {
+                    use tirami_infer::InferenceEngine;
+
+                    // Compute the expected hash with our own engine.
+                    let expected_hash = {
+                        let mut eng = engine.lock().await;
+                        match eng.generate_audit(&input_tokens) {
+                            Ok(h) => h,
+                            Err(e) => {
+                                tracing::warn!(%e, "generate_audit (challenger) failed");
+                                continue;
+                            }
+                        }
+                    };
+
+                    // Register the pending challenge.
+                    let challenge = {
+                        let mut guard = ledger.lock().await;
+                        guard.audit_tracker.issue_challenge(
+                            target.clone(),
+                            model_id.clone(),
+                            expected_hash,
+                            now_ms,
+                        )
+                    };
+
+                    // Send over P2P transport.
+                    let msg = tirami_proto::Envelope {
+                        msg_id: rand::random(),
+                        sender: my_id.clone(),
+                        timestamp: now_ms,
+                        payload: tirami_proto::Payload::AuditChallenge(
+                            tirami_proto::AuditChallengeMsg {
+                                challenge_id: challenge.challenge_id,
+                                challenger: my_id.clone(),
+                                target: target.clone(),
+                                model_id,
+                                input_tokens: input_tokens.clone(),
+                                expected_output_hash: expected_hash,
+                                timestamp: now_ms,
+                            },
+                        ),
+                    };
+
+                    // Convert target NodeId → PeerId for transport send.
+                    // tirami-net uses a stringified peer id; we match by hex.
+                    let peers = transport.connected_peers().await;
+                    if let Some(peer_id) = peers.iter().find(|p| {
+                        p.to_string().contains(&hex::encode(&target.0[..8]))
+                    }) {
+                        if let Err(e) = transport.send_to(peer_id, &msg).await {
+                            tracing::debug!(%e, "audit challenge send failed");
+                        } else {
+                            tracing::info!(
+                                target = %target.to_hex(),
+                                challenge_id = challenge.challenge_id,
+                                "sent audit challenge"
+                            );
+                        }
+                    }
+                }
+
+                // House-keeping: drop expired challenges.
+                let mut guard = ledger.lock().await;
+                let pruned = guard.audit_tracker.prune_expired(now_ms);
+                if pruned > 0 {
+                    tracing::debug!(count = pruned, "pruned expired audit challenges");
+                }
+            }
+        });
+    }
+
     /// Phase 16 — spawn the periodic on-chain anchor loop.
     ///
     /// Default uses `MockChainClient` (in-memory). The anchor interval comes

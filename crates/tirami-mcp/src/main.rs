@@ -192,6 +192,7 @@ impl ForgeMcpServer {
                 }
                 self.client.post("/v1/tirami/schedule", body).await
             }
+            "tirami_anchors" => self.client.get("/v1/tirami/anchors").await,
             "tirami_chat_as" => {
                 let consumer_hex = obj
                     .get("consumer_hex")
@@ -503,14 +504,14 @@ mod tests {
     use super::tools;
 
     #[test]
-    fn test_tool_list_has_43_tools() {
-        // Phase 15 added 3 tools: tirami_peers, tirami_schedule, tirami_chat_as.
+    fn test_tool_list_has_44_tools() {
+        // Phase 15 added 3 (peers/schedule/chat_as); Phase 16 added tirami_anchors.
         let tools = tools::build_tool_list();
-        assert_eq!(tools.len(), 43, "expected 43 tools, got {}", tools.len());
+        assert_eq!(tools.len(), 44, "expected 44 tools, got {}", tools.len());
     }
 
     #[test]
-    fn test_phase_15_tools_present() {
+    fn test_phase_15_16_tools_present() {
         let tools = tools::build_tool_list();
         let names: std::collections::HashSet<String> = tools
             .iter()
@@ -519,6 +520,7 @@ mod tests {
         assert!(names.contains("tirami_peers"), "tirami_peers missing");
         assert!(names.contains("tirami_schedule"), "tirami_schedule missing");
         assert!(names.contains("tirami_chat_as"), "tirami_chat_as missing");
+        assert!(names.contains("tirami_anchors"), "tirami_anchors missing");
     }
 
     #[test]

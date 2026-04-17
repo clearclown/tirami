@@ -161,6 +161,16 @@ pub fn build_tool_list() -> Vec<Tool> {
                 "required": ["consumer_hex", "prompt", "max_tokens"]
             })),
         ),
+        Tool::new(
+            "tirami_anchors",
+            "Phase 16 — List on-chain batch anchors submitted by this node. Each entry \
+             includes batch_id, tx_hash, merkle_root_hex, submitted_at_ms, node_count, \
+             and flops_total. Uses the configured ChainClient (MockChainClient by default).",
+            schema(json!({
+                "type": "object",
+                "properties": {}
+            })),
+        ),
 
         // ====================================================================
         // Safety (2 tools)

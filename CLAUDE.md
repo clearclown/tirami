@@ -13,7 +13,8 @@ Tirami is a distributed LLM inference protocol where **compute is currency**. Th
 
 | Repo | Language | Status | Layer | Purpose |
 |------|----------|--------|-------|---------|
-| `clearclown/tirami` (this) | Rust | Active (785 tests) | L1-L4 | Protocol core + finance, intelligence, marketplace + tokenomics + governance + staking + signed reputation gossip + collusion detection + NIP-90 relay publish + Prometheus metrics + Bitcoin OP_RETURN anchoring (Rust workspace, 14 crates) |
+| `clearclown/tirami` (this) | Rust | Active (891 tests) | L1-L4 | Protocol core + finance, intelligence, marketplace + tokenomics + governance + staking + signed reputation gossip + collusion detection + NIP-90 relay + Prometheus metrics + Bitcoin OP_RETURN anchoring + **PeerRegistry + PriceSignal + select_provider (Phase 14) + FLOP measurement + tirami start (Phase 15) + audit challenge-response + hybrid-chain anchor (Phase 16)** (Rust workspace, 15 crates) |
+| `clearclown/tirami-contracts` | Solidity (Foundry) | Skeleton | On-chain | TRM ERC-20 + TiramiBridge (Phase 16). Target: Base L2. Not deployed. |
 | `nm-arealnormalman/mesh-llm` | Rust | Active (43 tests) | L0 | mesh-llm + Tirami economy = production runtime |
 | `clearclown/tirami-bank` | Python (archived) | Scaffold v0.1 (45 tests) | — | Superseded by `crates/tirami-bank/` in this repo |
 | `clearclown/tirami-mind` | Python (archived) | Scaffold v0.1 (40 tests) | — | Superseded by `crates/tirami-mind/` in this repo |
@@ -51,7 +52,7 @@ The integrated fork at `/Users/ablaze/Projects/forge-mesh` contains mesh-llm's f
 
 ```bash
 cargo build --release          # Full build
-cargo test --workspace         # All tests (785 across 14 crates)
+cargo test --workspace         # All tests (891 across 15 crates)
 cargo check --workspace        # Fast type check
 cargo clippy --workspace       # Lint
 ```
@@ -147,6 +148,16 @@ Inference Layer (mesh-llm-derived)  ← This is inherited
 
 ### Tirami Routing (Phase 6 — implemented)
 - `GET /v1/tirami/route?model=X&max_cu=Y&mode=cost|quality|balanced` — Optimal provider selection
+
+### Tirami Unified Scheduler (Phase 14 — implemented)
+- `GET /v1/tirami/peers` — PeerRegistry dump (price_multiplier, available_cu, audit_tier, latency_ema_ms, models)
+- `POST /v1/tirami/schedule` — Ledger-as-Brain probe. `{model_id, max_tokens, consumer?}` → `{provider, estimated_trm_cost}` (read-only, no TRM reserved)
+- Chat completions now attribute trades via `X-Tirami-Node-Id` header (Phase 14.3) and record `flops_estimated` on every `TradeRecord` (Phase 15)
+
+### Tirami Hybrid Chain Anchor (Phase 16 — implemented, MockChainClient default)
+- `GET /v1/tirami/anchors` — list submitted batches: `batch_id`, `tx_hash`, `merkle_root_hex`, `submitted_at_ms`, `node_count`, `flops_total`
+- Anchor loop runs every `config.anchor_interval_secs` (default 3600 dev, 600 prod per §20)
+- Swappable `ChainClient` trait — `MockChainClient` in-memory default; future `BaseClient` for Base L2
 
 ### Tirami Bank L2 (Phase 8 — implemented)
 - `GET /v1/tirami/bank/portfolio` — Portfolio snapshot + cash/lent/borrowed/exposure

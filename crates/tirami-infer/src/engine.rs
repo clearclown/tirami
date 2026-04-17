@@ -54,6 +54,36 @@ pub trait InferenceEngine: Send + Sync {
         Ok(count)
     }
 
+    /// Phase 14.3 — run a deterministic forward pass and return a SHA-256 hash
+    /// of the resulting logits. Used by the audit challenge/response protocol:
+    /// challenger and target both run this on the same `input_tokens` and
+    /// compare hashes.
+    ///
+    /// Default implementation iterates `forward_tokens` and hashes the raw
+    /// logit bytes. Concrete engines may override for tighter determinism.
+    ///
+    /// Note: the calling side must pick input tokens whose determinism is
+    /// insensitive to Metal/CUDA non-determinism (small context, temperature=0).
+    fn generate_audit(&mut self, input_tokens: &[u32]) -> Result<[u8; 32], tirami_core::TiramiError> {
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        for i in 0..input_tokens.len() {
+            let logits = self.forward_tokens(&input_tokens[..=i], i)?;
+            // Hash bytes of each f32 little-endian; truncating mantissa noise
+            // to first 16 bits reduces FP non-determinism across backends.
+            for f in logits.iter() {
+                let bits = f.to_bits();
+                // Keep sign + exponent + top 7 mantissa bits → less jitter.
+                let stable = (bits & 0xFFFF_0000) as u32;
+                hasher.update(stable.to_le_bytes());
+            }
+        }
+        let out = hasher.finalize();
+        let mut hash = [0u8; 32];
+        hash.copy_from_slice(&out);
+        Ok(hash)
+    }
+
     /// Tokenize a prompt and return token IDs.
     fn tokenize(&self, prompt: &str) -> Result<Vec<u32>, tirami_core::TiramiError>;
 

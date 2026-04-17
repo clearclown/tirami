@@ -5207,6 +5207,7 @@ dependencies = [
  "anyhow",
  "hf-hub",
  "llama-cpp-2",
+ "sha2 0.10.9",
  "thiserror 2.0.18",
  "tirami-core",
  "tokenizers",

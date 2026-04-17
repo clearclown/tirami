@@ -427,28 +427,91 @@ impl PipelineCoordinator {
                         });
                     }
                     // Phase 14.3 — audit challenge: run deterministic
-                    // inference, reply with output hash. (Scaffolded:
-                    // current default impl uses the trait's generate_audit
-                    // which is a stub. Full deterministic path lands later.)
-                    Payload::AuditChallenge(_challenge) => {
-                        tracing::debug!(
-                            peer = %peer_id,
-                            "received audit challenge (handler scaffold — not yet responding)"
-                        );
-                        // TODO(phase-14.3 full): run generate_audit on challenge.input_tokens
-                        // and send AuditResponse. Currently a no-op to keep the protocol
-                        // variant reachable without requiring deterministic inference.
+                    // inference on the provided tokens and reply with the
+                    // output hash. Wire-format validation already happened
+                    // in Envelope::validate_with_sender.
+                    Payload::AuditChallenge(challenge) => {
+                        let engine = engine.clone();
+                        let transport = self.transport.clone();
+                        let my_id = node_id.clone();
+                        let sender = peer_id.clone();
+                        tokio::spawn(async move {
+                            use tirami_infer::InferenceEngine;
+                            let start = std::time::Instant::now();
+                            let audit_result = {
+                                let mut eng = engine.lock().await;
+                                eng.generate_audit(&challenge.input_tokens)
+                            };
+                            match audit_result {
+                                Ok(hash) => {
+                                    let msg = Envelope {
+                                        msg_id: rand::random(),
+                                        sender: my_id,
+                                        timestamp: now_millis(),
+                                        payload: Payload::AuditResponse(
+                                            tirami_proto::AuditResponseMsg {
+                                                challenge_id: challenge.challenge_id,
+                                                target: challenge.target.clone(),
+                                                output_hash: hash,
+                                                computation_time_ms: start.elapsed().as_millis() as u64,
+                                                timestamp: now_millis(),
+                                            },
+                                        ),
+                                    };
+                                    if let Err(e) = transport.send_to(&sender, &msg).await {
+                                        tracing::debug!(
+                                            peer = %sender,
+                                            error = %e,
+                                            "audit response send failed"
+                                        );
+                                    }
+                                }
+                                Err(e) => {
+                                    tracing::warn!(
+                                        challenge_id = challenge.challenge_id,
+                                        error = %e,
+                                        "generate_audit failed — skipping response"
+                                    );
+                                }
+                            }
+                        });
                     }
-                    // Phase 14.3 — audit response: compare against our expected hash
-                    // and update peer's audit tier.
+                    // Phase 14.3 — audit response: compare against our
+                    // expected hash stored in ledger.audit_tracker, then
+                    // update the responder's AuditTier.
                     Payload::AuditResponse(resp) => {
-                        tracing::debug!(
-                            peer = %peer_id,
-                            challenge_id = resp.challenge_id,
-                            "received audit response (handler scaffold)"
-                        );
-                        // TODO(phase-14.3 full): look up pending challenge, compare
-                        // hashes, call ledger.peer_registry.record_audit_result.
+                        let ledger = ledger.clone();
+                        tokio::spawn(async move {
+                            let mut guard = ledger.lock().await;
+                            let verdict = guard.audit_tracker.resolve(
+                                resp.challenge_id,
+                                &resp.target,
+                                &resp.output_hash,
+                                now_millis(),
+                            );
+                            match verdict {
+                                tirami_ledger::AuditVerdict::Passed => {
+                                    guard.peer_registry.record_audit_result(&resp.target, true);
+                                    tracing::info!(
+                                        target = %resp.target.to_hex(),
+                                        "audit passed — tier promoted"
+                                    );
+                                }
+                                tirami_ledger::AuditVerdict::Failed => {
+                                    guard.peer_registry.record_audit_result(&resp.target, false);
+                                    tracing::warn!(
+                                        target = %resp.target.to_hex(),
+                                        "audit failed — tier demoted"
+                                    );
+                                }
+                                tirami_ledger::AuditVerdict::Unknown => {
+                                    tracing::debug!(
+                                        challenge_id = resp.challenge_id,
+                                        "audit response for unknown/expired challenge"
+                                    );
+                                }
+                            }
+                        });
                     }
                     _ => {}
                 },

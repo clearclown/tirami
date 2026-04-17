@@ -65,6 +65,10 @@ pub struct ComputeLedger {
     /// Not persisted (regenerated on restart, safe because tickets are short-lived).
     #[serde(default, skip_serializing)]
     pub next_request_id: u64,
+    /// Phase 14.3 — in-flight audit challenges issued by the local node.
+    /// Ephemeral (5-min timeout), rebuilt from scratch on restart.
+    #[serde(default, skip_serializing)]
+    pub audit_tracker: crate::audit::AuditTracker,
 }
 
 /// Dynamic pricing based on supply/demand and network scale.
@@ -402,6 +406,7 @@ impl ComputeLedger {
             total_minted: 0,
             peer_registry: crate::peer_registry::PeerRegistry::new(),
             next_request_id: 0,
+            audit_tracker: crate::audit::AuditTracker::new(),
         }
     }
 
@@ -734,6 +739,7 @@ impl ComputeLedger {
             total_minted: 0,
             peer_registry: crate::peer_registry::PeerRegistry::new(), // ephemeral; rebuilt from gossip
             next_request_id: 0,
+            audit_tracker: crate::audit::AuditTracker::new(),
         }
     }
 

@@ -1,7 +1,7 @@
 use tirami_core::{NodeBalance, NodeId, WorkUnit};
 use tirami_proto::ReputationObservation;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use crate::lending::{
     self, LoanStatus, SignedLoanRecord, COLD_START_CREDIT,
@@ -69,6 +69,60 @@ pub struct ComputeLedger {
     /// Ephemeral (5-min timeout), rebuilt from scratch on restart.
     #[serde(default, skip_serializing)]
     pub audit_tracker: crate::audit::AuditTracker,
+    /// Phase 17 Wave 1.2 — provider-scoped nonce deduplication for replay defense.
+    ///
+    /// Populated by `execute_signed_trade` on each accepted v2 trade; rebuilt
+    /// from `trade_log` on `load_from_path` / `from_snapshot`. Ephemeral
+    /// (intentionally `skip_serializing`) because `trade_log` is the durable
+    /// source of truth: on restart we re-derive which nonces have already
+    /// been spent. Legacy v1 trades (nonce == `[0; 16]`) are exempt from
+    /// dedup for backward compatibility; future Phase-18 work may phase this
+    /// exemption out.
+    #[serde(default, skip_serializing)]
+    pub(crate) seen_nonces: HashMap<NodeId, NonceCache>,
+}
+
+/// Bounded per-provider nonce cache with FIFO eviction.
+///
+/// We cannot keep unbounded nonce history in RAM — a malicious provider
+/// could flood their own slot with millions of entries. Cap at
+/// [`NonceCache::CAPACITY`] per provider; when full, the oldest entry
+/// is evicted. This means the dedup window is finite, but Phase 17
+/// pairs it with the `SignedTradeRecord::MAX_TRADE_AGE_MS` timestamp
+/// check, so trades older than the bound are rejected up-front by
+/// `signed.verify()`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub(crate) struct NonceCache {
+    order: VecDeque<[u8; 16]>,
+    set: HashSet<[u8; 16]>,
+}
+
+impl NonceCache {
+    /// Maximum nonces remembered per provider before FIFO eviction.
+    /// Sized to comfortably exceed any real-world throughput within
+    /// the `MAX_TRADE_AGE_MS` signature validity window.
+    pub const CAPACITY: usize = 10_000;
+
+    /// True iff `nonce` has been observed before for this provider.
+    pub fn contains(&self, nonce: &[u8; 16]) -> bool {
+        self.set.contains(nonce)
+    }
+
+    /// Record `nonce` as seen. Evicts the oldest entry when full.
+    /// Returns `true` when the nonce was newly inserted, `false` if
+    /// it was already present (caller should have rejected the trade).
+    pub fn insert(&mut self, nonce: [u8; 16]) -> bool {
+        if !self.set.insert(nonce) {
+            return false;
+        }
+        self.order.push_back(nonce);
+        if self.order.len() > Self::CAPACITY {
+            if let Some(old) = self.order.pop_front() {
+                self.set.remove(&old);
+            }
+        }
+        true
+    }
 }
 
 /// Dynamic pricing based on supply/demand and network scale.
@@ -182,6 +236,19 @@ impl TradeRecord {
         self.nonce != [0u8; 16]
     }
 
+    /// Generate a fresh cryptographic nonce for a new v2 trade.
+    ///
+    /// Uses the OS CSPRNG so the value is unpredictable to other peers.
+    /// Callers should invoke this once per `TradeRecord` they create;
+    /// reusing a nonce for the same `provider` is a replay by definition
+    /// and will be rejected by [`ComputeLedger::execute_signed_trade`].
+    pub fn fresh_nonce() -> [u8; 16] {
+        let mut bytes = [0u8; 16];
+        use rand::RngCore;
+        rand::rngs::OsRng.fill_bytes(&mut bytes);
+        bytes
+    }
+
     /// Deterministic binary representation for signing.
     ///
     /// Format (legacy v1, `nonce == [0; 16]`): provider(32) + consumer(32)
@@ -278,6 +345,11 @@ pub enum SignatureError {
     InvalidConsumerSignature,
     #[error("trade timestamp expired: {age_ms}ms old (max {}ms)", SignedTradeRecord::MAX_TRADE_AGE_MS)]
     TimestampExpired { age_ms: u64 },
+    /// Phase 17 Wave 1.2 — a v2 signed trade presented a nonce already
+    /// observed for this provider. Signature may be valid, but accepting
+    /// the trade would be a replay (double-bill the consumer).
+    #[error("replayed nonce for provider {provider}")]
+    ReplayedNonce { provider: String },
 }
 
 /// Errors raised when creating a new loan via [`ComputeLedger::create_loan`].
@@ -443,6 +515,7 @@ impl ComputeLedger {
             peer_registry: crate::peer_registry::PeerRegistry::new(),
             next_request_id: 0,
             audit_tracker: crate::audit::AuditTracker::new(),
+            seen_nonces: HashMap::new(),
         }
     }
 
@@ -764,7 +837,7 @@ impl ComputeLedger {
             .into_iter()
             .map(|balance| (balance.node_id.clone(), balance))
             .collect();
-        Self {
+        let mut ledger = Self {
             balances,
             work_log: snapshot.work_log,
             trade_log: snapshot.trade_log,
@@ -777,7 +850,11 @@ impl ComputeLedger {
             peer_registry: crate::peer_registry::PeerRegistry::new(), // ephemeral; rebuilt from gossip
             next_request_id: 0,
             audit_tracker: crate::audit::AuditTracker::new(),
-        }
+            seen_nonces: HashMap::new(),
+        };
+        // Phase 17 Wave 1.2 — replay defense must survive a restart.
+        ledger.rebuild_nonce_cache();
+        ledger
     }
 
     /// Export an aggregate settlement statement for a time window.
@@ -934,14 +1011,48 @@ impl ComputeLedger {
         balance.consumed += cu;
     }
 
-    /// Execute a verified signed trade: verify both signatures, then record.
+    /// Execute a verified signed trade: verify both signatures, enforce
+    /// replay protection via the provider nonce cache, then record.
+    ///
+    /// Phase 17 Wave 1.2 semantics:
+    /// * v1 records (`nonce == [0; 16]`) skip the replay check so legacy
+    ///   snapshots and pre-Phase-17 peers keep working.
+    /// * v2 records are rejected with [`SignatureError::ReplayedNonce`]
+    ///   when the provider has already spent this exact nonce.
+    /// * Accepted v2 nonces are inserted into [`Self::seen_nonces`],
+    ///   which is ephemeral but rebuilt from `trade_log` on load.
     pub fn execute_signed_trade(
         &mut self,
         signed: &SignedTradeRecord,
     ) -> Result<(), SignatureError> {
         signed.verify()?;
+        if signed.trade.has_nonce() {
+            let cache = self
+                .seen_nonces
+                .entry(signed.trade.provider.clone())
+                .or_default();
+            if cache.contains(&signed.trade.nonce) {
+                return Err(SignatureError::ReplayedNonce {
+                    provider: signed.trade.provider.to_hex(),
+                });
+            }
+            cache.insert(signed.trade.nonce);
+        }
         self.execute_trade(&signed.trade);
         Ok(())
+    }
+
+    /// Rebuild the ephemeral [`Self::seen_nonces`] cache from `trade_log`.
+    /// Called after deserialization so that a restarted node still rejects
+    /// replays of already-accepted v2 nonces.
+    pub(crate) fn rebuild_nonce_cache(&mut self) {
+        self.seen_nonces.clear();
+        for trade in &self.trade_log {
+            if trade.has_nonce() {
+                let cache = self.seen_nonces.entry(trade.provider.clone()).or_default();
+                cache.insert(trade.nonce);
+            }
+        }
     }
 
     /// Execute a trade: provider earns CU, consumer spends CU.
@@ -1931,6 +2042,169 @@ mod tests {
     fn trade_record_constants_have_expected_values() {
         assert_eq!(TradeRecord::CANONICAL_V1, 0x01);
         assert_eq!(TradeRecord::CANONICAL_V2, 0x02);
+    }
+
+    #[test]
+    fn trade_record_fresh_nonce_is_nonzero_and_unique() {
+        // OS CSPRNG — two successive calls must never collide (probability
+        // 2^-128) and must never return the all-zero sentinel (2^-128 too).
+        let a = TradeRecord::fresh_nonce();
+        let b = TradeRecord::fresh_nonce();
+        assert_ne!(a, [0u8; 16]);
+        assert_ne!(b, [0u8; 16]);
+        assert_ne!(a, b);
+    }
+
+    fn build_dual_signed_trade(nonce: [u8; 16]) -> SignedTradeRecord {
+        use ed25519_dalek::{Signer, SigningKey};
+        let mut rng = rand::thread_rng();
+        let provider_key = SigningKey::generate(&mut rng);
+        let consumer_key = SigningKey::generate(&mut rng);
+        let trade = TradeRecord {
+            provider: NodeId(provider_key.verifying_key().to_bytes()),
+            consumer: NodeId(consumer_key.verifying_key().to_bytes()),
+            trm_amount: 250,
+            tokens_processed: 40,
+            timestamp: now_millis(),
+            model_id: "replay-test".to_string(),
+            flops_estimated: 0,
+            nonce,
+        };
+        let canonical = trade.canonical_bytes();
+        SignedTradeRecord {
+            trade,
+            provider_sig: provider_key.sign(&canonical).to_bytes().to_vec(),
+            consumer_sig: consumer_key.sign(&canonical).to_bytes().to_vec(),
+        }
+    }
+
+    #[test]
+    fn execute_signed_trade_rejects_replayed_nonce() {
+        // Phase 17 Wave 1.2 — replay defense. Submitting the exact same
+        // signed record twice must be rejected with ReplayedNonce on the
+        // second call, and the consumer balance must NOT be debited twice.
+        let mut ledger = ComputeLedger::new();
+        let signed = build_dual_signed_trade(TradeRecord::fresh_nonce());
+        let consumer = signed.trade.consumer.clone();
+        let amount = signed.trade.trm_amount;
+
+        assert!(ledger.execute_signed_trade(&signed).is_ok());
+        let first = ledger.get_balance(&consumer).map(|b| b.consumed).unwrap_or(0);
+        assert_eq!(first, amount);
+
+        let err = ledger.execute_signed_trade(&signed).unwrap_err();
+        assert!(matches!(err, SignatureError::ReplayedNonce { .. }));
+        let second = ledger.get_balance(&consumer).map(|b| b.consumed).unwrap_or(0);
+        assert_eq!(second, amount, "consumer must NOT be double-debited");
+    }
+
+    #[test]
+    fn execute_signed_trade_different_nonces_same_parties_both_accepted() {
+        // Two distinct trades between the same parties with different
+        // nonces are legitimate back-to-back payments and must both
+        // land on the ledger.
+        use ed25519_dalek::{Signer, SigningKey};
+        let mut rng = rand::thread_rng();
+        let provider_key = SigningKey::generate(&mut rng);
+        let consumer_key = SigningKey::generate(&mut rng);
+
+        let make = |nonce: [u8; 16]| {
+            let trade = TradeRecord {
+                provider: NodeId(provider_key.verifying_key().to_bytes()),
+                consumer: NodeId(consumer_key.verifying_key().to_bytes()),
+                trm_amount: 100,
+                tokens_processed: 10,
+                timestamp: now_millis(),
+                model_id: "m".to_string(),
+                flops_estimated: 0,
+                nonce,
+            };
+            let canonical = trade.canonical_bytes();
+            SignedTradeRecord {
+                trade,
+                provider_sig: provider_key.sign(&canonical).to_bytes().to_vec(),
+                consumer_sig: consumer_key.sign(&canonical).to_bytes().to_vec(),
+            }
+        };
+
+        let mut ledger = ComputeLedger::new();
+        let a = make(TradeRecord::fresh_nonce());
+        let b = make(TradeRecord::fresh_nonce());
+        let consumer = a.trade.consumer.clone();
+        assert!(ledger.execute_signed_trade(&a).is_ok());
+        assert!(ledger.execute_signed_trade(&b).is_ok());
+        assert_eq!(ledger.get_balance(&consumer).unwrap().consumed, 200);
+    }
+
+    #[test]
+    fn execute_signed_trade_v1_zero_nonce_is_not_dedup_gated() {
+        // Legacy v1 trades (nonce == [0;16]) intentionally skip the
+        // replay check for backward compatibility with pre-Phase-17
+        // peers. The ledger still records them; the dedup cache stays
+        // empty. Future phases may phase this carve-out out; until
+        // then, we guard the current behavior so the path is explicit.
+        use ed25519_dalek::{Signer, SigningKey};
+        let mut rng = rand::thread_rng();
+        let provider_key = SigningKey::generate(&mut rng);
+        let consumer_key = SigningKey::generate(&mut rng);
+        let trade = TradeRecord {
+            provider: NodeId(provider_key.verifying_key().to_bytes()),
+            consumer: NodeId(consumer_key.verifying_key().to_bytes()),
+            trm_amount: 50,
+            tokens_processed: 5,
+            timestamp: now_millis(),
+            model_id: "legacy".into(),
+            flops_estimated: 0,
+            nonce: [0u8; 16],
+        };
+        let canonical = trade.canonical_bytes();
+        let signed = SignedTradeRecord {
+            trade,
+            provider_sig: provider_key.sign(&canonical).to_bytes().to_vec(),
+            consumer_sig: consumer_key.sign(&canonical).to_bytes().to_vec(),
+        };
+        let mut ledger = ComputeLedger::new();
+        assert!(ledger.execute_signed_trade(&signed).is_ok());
+        // v1 path must NOT populate the nonce cache.
+        assert!(ledger.seen_nonces.is_empty());
+    }
+
+    #[test]
+    fn nonce_cache_evicts_oldest_beyond_capacity() {
+        let mut cache = NonceCache::default();
+        // Fill to capacity using deterministic nonces.
+        for i in 0..NonceCache::CAPACITY as u32 {
+            let mut n = [0u8; 16];
+            n[..4].copy_from_slice(&i.to_le_bytes());
+            assert!(cache.insert(n));
+        }
+        assert_eq!(cache.order.len(), NonceCache::CAPACITY);
+        // First nonce (key = 0) still remembered.
+        assert!(cache.contains(&[0u8; 16]));
+        // Insert one more → oldest (the 0-key) should be evicted.
+        let fresh = TradeRecord::fresh_nonce();
+        cache.insert(fresh);
+        assert!(!cache.contains(&[0u8; 16]));
+        assert!(cache.contains(&fresh));
+        assert_eq!(cache.order.len(), NonceCache::CAPACITY);
+    }
+
+    #[test]
+    fn rebuild_nonce_cache_restores_dedup_after_restart() {
+        let mut ledger = ComputeLedger::new();
+        let signed = build_dual_signed_trade(TradeRecord::fresh_nonce());
+        let nonce = signed.trade.nonce;
+        let provider = signed.trade.provider.clone();
+        ledger.execute_signed_trade(&signed).unwrap();
+        // Simulate restart: drop ephemeral cache, then rebuild.
+        ledger.seen_nonces.clear();
+        ledger.rebuild_nonce_cache();
+        // Cache must once again reject this nonce.
+        let cache = ledger.seen_nonces.get(&provider).unwrap();
+        assert!(cache.contains(&nonce));
+        // Feeding the same signed trade must now be rejected.
+        let err = ledger.execute_signed_trade(&signed).unwrap_err();
+        assert!(matches!(err, SignatureError::ReplayedNonce { .. }));
     }
 
     #[test]

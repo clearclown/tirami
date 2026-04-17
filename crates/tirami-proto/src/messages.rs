@@ -285,6 +285,12 @@ pub struct TradeProposal {
     pub model_id: String,
     /// Ed25519 signature from the provider over canonical trade bytes.
     pub provider_sig: Vec<u8>,
+    /// Phase 17 Wave 1.2 — replay-protection nonce chosen by the provider.
+    /// `#[serde(default)]` lets pre-Phase-17 peers' proposals still decode;
+    /// missing nonce is treated as legacy v1 (no replay protection for
+    /// that trade, consistent with the TradeRecord v1 canonical form).
+    #[serde(default)]
+    pub nonce: [u8; 16],
 }
 
 /// Consumer accepts the trade by counter-signing.
@@ -307,6 +313,10 @@ pub struct TradeGossip {
     pub model_id: String,
     pub provider_sig: Vec<u8>,
     pub consumer_sig: Vec<u8>,
+    /// Phase 17 Wave 1.2 — replay-protection nonce carried from the
+    /// signed `TradeRecord`. See `TradeProposal::nonce`.
+    #[serde(default)]
+    pub nonce: [u8; 16],
 }
 
 // --- Loan Signing (CU Lending — Phase 5.5) ---

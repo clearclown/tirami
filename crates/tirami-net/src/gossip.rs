@@ -187,6 +187,7 @@ pub async fn broadcast_trade(
             model_id: signed.trade.model_id.clone(),
             provider_sig: signed.provider_sig.clone(),
             consumer_sig: signed.consumer_sig.clone(),
+            nonce: signed.trade.nonce,
         }),
     };
 
@@ -218,7 +219,9 @@ pub async fn handle_trade_gossip(
         timestamp: msg.timestamp,
         model_id: msg.model_id.clone(),
         flops_estimated: 0,
-            nonce: [0u8; 16],
+        // Phase 17 Wave 1.2 — carry the provider-chosen nonce through
+        // gossip so the ledger can enforce replay dedup on receipt.
+        nonce: msg.nonce,
     };
 
     let signed = SignedTradeRecord {
@@ -662,6 +665,7 @@ mod tests {
             model_id: "test".to_string(),
             provider_sig: vec![0u8; 64], // invalid
             consumer_sig: vec![0u8; 64], // invalid
+            nonce: [0u8; 16],
         };
 
         let result = handle_trade_gossip(&gossip, &msg).await;
@@ -682,6 +686,7 @@ mod tests {
             model_id: signed.trade.model_id.clone(),
             provider_sig: signed.provider_sig.clone(),
             consumer_sig: signed.consumer_sig.clone(),
+            nonce: signed.trade.nonce,
         };
 
         let result = handle_trade_gossip(&gossip, &msg).await;
@@ -984,6 +989,7 @@ mod tests {
             model_id: "sec".to_string(),
             provider_sig: vec![0u8; 64], // all-zero → invalid
             consumer_sig: vec![0u8; 64],
+            nonce: [0u8; 16],
         };
         let result = handle_trade_gossip(&gossip, &msg).await;
         assert!(
@@ -1033,6 +1039,7 @@ mod tests {
             model_id: trade.model_id.clone(),
             provider_sig,
             consumer_sig: vec![0xFFu8; 64], // all-0xFF → invalid
+            nonce: [0u8; 16],
         };
         let result = handle_trade_gossip(&gossip, &msg).await;
         assert!(result.is_none(), "all-0xFF consumer sig must be rejected by gossip handler");

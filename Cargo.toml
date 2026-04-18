@@ -15,6 +15,7 @@ members = [
     "crates/tirami-sdk",
     "crates/tirami-mcp",
     "crates/tirami-anchor",
+    "crates/tirami-zkml-bench",
 ]
 resolver = "2"
 
@@ -45,6 +46,7 @@ tirami-agora = { path = "crates/tirami-agora", version = "0.3.0" }
 tirami-sdk = { path = "crates/tirami-sdk", version = "0.3.0" }
 tirami-mcp = { path = "crates/tirami-mcp", version = "0.3.0" }
 tirami-anchor = { path = "crates/tirami-anchor", version = "0.3.0" }
+tirami-zkml-bench = { path = "crates/tirami-zkml-bench", version = "0.3.0" }
 
 # MCP SDK
 rmcp = { version = "1.2.0", features = ["server", "transport-io"] }

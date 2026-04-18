@@ -2064,6 +2064,15 @@ impl ComputeLedger {
     /// keypair. This method only enforces the Sybil ceiling and the
     /// "no existing balance" rule.
     pub fn can_issue_welcome_loan(&self, node_id: &NodeId) -> bool {
+        // Phase 18.2 — Welcome loan sunset.
+        // Once the network has reached `WELCOME_LOAN_SUNSET_EPOCH`,
+        // the bootstrap window closes permanently. Re-opening it
+        // would re-introduce the Sybil vector that Phase 2.8 + 4.1
+        // + 18.2 closed. Constitutional: see docs/constitution.md
+        // Article XI.
+        if (self.current_epoch() as u64) >= crate::lending::WELCOME_LOAN_SUNSET_EPOCH {
+            return false;
+        }
         // Already known? then no welcome loan.
         if self.balances.contains_key(node_id) {
             return false;
@@ -2078,6 +2087,62 @@ impl ComputeLedger {
             return false;
         }
         true
+    }
+
+    /// Phase 18.2 — Stake-required mining gate.
+    ///
+    /// Returns true iff `node_id` is eligible to RECEIVE paid
+    /// inference requests. The eligibility rules:
+    ///
+    /// 1. Nodes that already hold ≥ `MIN_PROVIDER_STAKE_TRM` in
+    ///    stake are eligible (the primary path).
+    /// 2. Un-staked nodes are eligible UP TO
+    ///    `STAKELESS_EARN_CAP_TRM` cumulative earnings (bootstrap
+    ///    faucet). Beyond that, they must stake.
+    /// 3. A node that has EVER been slashed is NOT eligible via
+    ///    the stakeless path — only via real stake.
+    ///
+    /// This is the Filecoin-style "skin in the game" gate: earning
+    /// requires either lock-up (stake) or first-time bootstrap
+    /// (limited). Distinguishes Tirami from the pre-Phase-18
+    /// "anyone can earn unbounded TRM with no accountability" model.
+    ///
+    /// Called from the pipeline coordinator BEFORE settling a
+    /// trade on behalf of this provider.
+    pub fn can_provide_inference(
+        &self,
+        node_id: &NodeId,
+        staking: &crate::StakingPool,
+        now_ms: u64,
+    ) -> bool {
+        // Primary path: real stake meets the floor.
+        let staked_amount = staking
+            .stakes_for(node_id)
+            .filter(|s| s.is_locked(now_ms))
+            .map(|s| s.amount)
+            .sum::<u64>();
+        if staked_amount >= crate::lending::MIN_PROVIDER_STAKE_TRM {
+            return true;
+        }
+
+        // Bootstrap path: stakeless earn cap, but never for
+        // previously-slashed nodes.
+        let slashed_before = self
+            .slash_events
+            .iter()
+            .any(|e| &e.node_id == node_id);
+        if slashed_before {
+            return false;
+        }
+
+        // Stakeless: allowed until cumulative contribution hits
+        // the cap. After that, must stake.
+        let total_earned = self
+            .balances
+            .get(node_id)
+            .map(|b| b.contributed)
+            .unwrap_or(0);
+        total_earned < crate::lending::STAKELESS_EARN_CAP_TRM
     }
 
     /// Phase 17 Wave 4.1 — per-bucket welcome-loan eligibility.
@@ -4706,6 +4771,115 @@ mod tests {
         // Subsequent request on the same bucket is denied.
         let node_b = NodeId([0xA2u8; 32]);
         assert!(!ledger.can_issue_welcome_loan_limited(&node_b, "AS-bucket", false, now + 100));
+    }
+
+    // -------------------------------------------------------------
+    // Phase 18.2 — Stake-required mining tests
+    // -------------------------------------------------------------
+
+    #[test]
+    fn phase18_can_provide_inference_requires_stake_above_floor() {
+        use crate::{StakeDuration, StakingPool};
+        use crate::lending::MIN_PROVIDER_STAKE_TRM;
+        let ledger = ComputeLedger::new();
+        let provider = NodeId([0xA0u8; 32]);
+        let now = now_millis();
+        let mut staking = StakingPool::new();
+
+        // Un-staked new node: falls back to stakeless earn cap.
+        // With zero contributed, below cap → allowed.
+        assert!(ledger.can_provide_inference(&provider, &staking, now));
+
+        // Stake above floor → allowed (primary path).
+        staking
+            .stake(provider.clone(), MIN_PROVIDER_STAKE_TRM, StakeDuration::Days7, now)
+            .unwrap();
+        assert!(ledger.can_provide_inference(&provider, &staking, now));
+    }
+
+    #[test]
+    fn phase18_stakeless_earner_blocked_above_cap() {
+        use crate::StakingPool;
+        use crate::lending::STAKELESS_EARN_CAP_TRM;
+        let mut ledger = ComputeLedger::new();
+        let provider = NodeId([0xA1u8; 32]);
+        let staking = StakingPool::new();
+        let now = now_millis();
+
+        // Record provider having already earned up to the cap.
+        ledger.balances.insert(provider.clone(), tirami_core::NodeBalance {
+            node_id: provider.clone(),
+            contributed: STAKELESS_EARN_CAP_TRM,
+            consumed: 0,
+            reserved: 0,
+            reputation: 0.5,
+        });
+
+        // Exactly at cap → refused (must stake now).
+        assert!(!ledger.can_provide_inference(&provider, &staking, now));
+    }
+
+    #[test]
+    fn phase18_previously_slashed_node_cannot_use_stakeless_path() {
+        use crate::StakingPool;
+        let mut ledger = ComputeLedger::new();
+        let provider = NodeId([0xA2u8; 32]);
+        let staking = StakingPool::new();
+        let now = now_millis();
+
+        // Provider has never staked; has zero balance; but was
+        // previously slashed. Stakeless path MUST refuse — a
+        // slashed node forfeits the bootstrap faucet.
+        ledger.record_slash_event(provider.clone(), 0.3, 100, "collusion", now);
+        assert!(!ledger.can_provide_inference(&provider, &staking, now));
+    }
+
+    #[test]
+    fn phase18_stake_path_ignores_prior_slash() {
+        // A previously-slashed node CAN come back if they put up
+        // fresh stake. The slash history is punitive (burned TRM)
+        // but not permanent banishment.
+        use crate::{StakeDuration, StakingPool};
+        use crate::lending::MIN_PROVIDER_STAKE_TRM;
+        let mut ledger = ComputeLedger::new();
+        let provider = NodeId([0xA3u8; 32]);
+        let now = now_millis();
+        let mut staking = StakingPool::new();
+
+        ledger.record_slash_event(provider.clone(), 0.3, 100, "collusion", now);
+        staking
+            .stake(provider.clone(), MIN_PROVIDER_STAKE_TRM, StakeDuration::Days7, now)
+            .unwrap();
+        assert!(ledger.can_provide_inference(&provider, &staking, now));
+    }
+
+    #[test]
+    fn phase18_welcome_loan_sunsets_after_epoch_threshold() {
+        // After epoch >= WELCOME_LOAN_SUNSET_EPOCH, every welcome
+        // loan query returns false — the bootstrap window has
+        // permanently closed.
+        use crate::lending::WELCOME_LOAN_SUNSET_EPOCH;
+        use crate::tokenomics::TOTAL_TRM_SUPPLY;
+        let mut ledger = ComputeLedger::new();
+        let new_node = NodeId([0xBBu8; 32]);
+        assert!(ledger.can_issue_welcome_loan(&new_node));
+
+        // Fast-forward to an epoch past the sunset. Epoch 0 ↔ 50%
+        // minted, epoch 1 ↔ 75%, epoch 2 ↔ 87.5%. We need
+        // current_epoch() >= WELCOME_LOAN_SUNSET_EPOCH (which is 2).
+        // Minting ≥ 7/8 of supply puts us at epoch 2+.
+        ledger.total_minted = (TOTAL_TRM_SUPPLY / 8) * 7 + 1;
+        assert!(ledger.current_epoch() as u64 >= WELCOME_LOAN_SUNSET_EPOCH);
+        assert!(!ledger.can_issue_welcome_loan(&new_node));
+    }
+
+    #[test]
+    fn phase18_welcome_loan_before_sunset_still_works() {
+        // Epoch 0 (fresh network) should still grant welcome loans.
+        let ledger = ComputeLedger::new();
+        let new_node = NodeId([0xBCu8; 32]);
+        assert_eq!(ledger.current_epoch(), 0);
+        assert!(ledger.can_issue_welcome_loan(&new_node));
     }
 
     #[test]

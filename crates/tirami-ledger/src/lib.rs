@@ -50,7 +50,10 @@ pub use tokenomics::{
     FEE_ACTIVATION_THRESHOLD, INITIAL_YIELD_RATE, RARITY_COMMON, RARITY_LEGENDARY,
     RARITY_RARE, RARITY_UNCOMMON, TOTAL_TRM_SUPPLY, TRANSACTION_FEE_RATE,
 };
-pub use zk::{MockVerifier, ProofOfInference, ProofVerifier, VerifierRegistry, ZkError};
+pub use zk::{
+    policy_allows_trade, MockVerifier, ProofOfInference, ProofPolicy, ProofVerifier,
+    VerifierRegistry, ZkError,
+};
 pub use peer_registry::{PeerRegistry, PeerState};
 pub use audit::{AuditTracker, AuditVerdict, PendingChallenge, AUDIT_TIMEOUT_MS};
 pub use audit_snark::{

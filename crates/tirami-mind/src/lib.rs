@@ -16,6 +16,7 @@ pub mod cu_paid_optimizer;
 pub mod cycle;
 pub mod agent;
 pub mod federated;
+pub mod personal_agent;
 
 pub use errors::MindError;
 pub use types::{BenchmarkResult, CycleDecision, ImprovementCycle, ImprovementProposal, MindAgentSnapshot};
@@ -29,4 +30,8 @@ pub use agent::{TiramiMindAgent, Stats as MindStats};
 pub use federated::{
     Aggregator, AggregationResult, FederatedError, FederatedRound,
     GradientContribution, WeightedAverageAggregator,
+};
+pub use personal_agent::{
+    AgentDecision, AgentPreferences, PersonalAgent, ServingRequest, TaskCostEstimate, TaskSize,
+    TickAction, TickContext,
 };

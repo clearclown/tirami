@@ -5366,6 +5366,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "tirami-zkml-bench"
+version = "0.3.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror 2.0.18",
+ "tirami-core",
+ "tirami-ledger",
+]
+
+[[package]]
 name = "tokenizers"
 version = "0.21.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"

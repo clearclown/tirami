@@ -234,6 +234,31 @@ enum Commands {
         #[arg(short, long, default_value = "http://127.0.0.1:3000")]
         url: String,
     },
+
+    /// Phase 18.5 — personal AI agent management.
+    ///
+    /// Your agent lives on this node, manages its own TRM wallet,
+    /// and autonomously earns / spends on the Tirami mesh while
+    /// you use it for day-to-day tasks. `tirami agent status` is
+    /// the one-glance summary you'll want in your terminal.
+    Agent {
+        #[command(subcommand)]
+        action: AgentCommands,
+
+        /// Base URL of the Tirami node running locally.
+        #[arg(short, long, default_value = "http://127.0.0.1:3000")]
+        url: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum AgentCommands {
+    /// Print the personal agent's current state (balance,
+    /// today's earn/spend, preferences). Calls
+    /// `GET /v1/tirami/agent/status` on the local node.
+    Status,
+    /// Human-readable one-liner (the `summary` field only).
+    Summary,
 }
 
 #[derive(Subcommand)]
@@ -917,6 +942,66 @@ async fn main() -> anyhow::Result<()> {
                     }
                 } else {
                     println!("\nNo provider with positive net CU in this window.");
+                }
+            }
+        }
+        Commands::Agent { action, url } => {
+            let base = url.trim_end_matches('/');
+            let client = reqwest::Client::new();
+
+            let resp = client
+                .get(format!("{base}/v1/tirami/agent/status"))
+                .send()
+                .await?;
+            if !resp.status().is_success() {
+                let status = resp.status();
+                let body = resp.text().await.unwrap_or_default();
+                eprintln!("Error: HTTP {} — {}", status, body);
+                std::process::exit(1);
+            }
+            let json: serde_json::Value = resp.json().await?;
+
+            match action {
+                AgentCommands::Status => {
+                    let configured = json["configured"].as_bool().unwrap_or(false);
+                    println!("Personal Agent");
+                    println!("──────────────────────────────────");
+                    if !configured {
+                        println!("  Configured:       no");
+                        if let Some(s) = json["summary"].as_str() {
+                            println!("  Summary:          {}", s);
+                        }
+                        return Ok(());
+                    }
+                    println!("  Configured:       yes");
+                    if let Some(w) = json["wallet"].as_str() {
+                        println!("  Wallet:           {}", w);
+                    }
+                    println!("  Earned today:     {} TRM", json["earned_today_trm"]);
+                    println!("  Spent today:      {} TRM", json["spent_today_trm"]);
+                    println!("  Net today:        {} TRM", json["net_today_trm"]);
+                    if let Some(prefs) = json.get("preferences") {
+                        println!("  Preferences:");
+                        println!("    Daily cap:      {} TRM", prefs["daily_spend_limit_trm"]);
+                        println!("    Per-task cap:   {} TRM", prefs["per_task_budget_trm"]);
+                        println!("    Auto-earn:      {}", prefs["auto_earn_enabled"]);
+                        println!("    Auto-spend:     {}", prefs["auto_spend_enabled"]);
+                        println!("    Auto-stake:     {}", prefs["auto_stake_fraction"]);
+                        println!("    Idle threshold: {}", prefs["idle_utilization_threshold"]);
+                        println!("    Idle grace (s): {}", prefs["idle_grace_seconds"]);
+                        println!("    Min peer rep:   {}", prefs["min_peer_reputation"]);
+                        println!("    Content filter: {}", prefs["content_filter"]);
+                    }
+                    if let Some(s) = json["summary"].as_str() {
+                        println!("  Summary:          {}", s);
+                    }
+                }
+                AgentCommands::Summary => {
+                    if let Some(s) = json["summary"].as_str() {
+                        println!("{}", s);
+                    } else {
+                        println!("{}", serde_json::to_string(&json)?);
+                    }
                 }
             }
         }

@@ -395,8 +395,9 @@ mod tests {
         let body = serde_json::json!({
             "proposer": proposer_hex(),
             "kind": "change_parameter",
-            "name": "yield_rate",
-            "new_value": 0.05,
+            // Phase 18.1: must be a Constitutional whitelisted parameter.
+            "name": "WELCOME_LOAN_AMOUNT",
+            "new_value": 500.0,
             "deadline_ms": 9_999_999_999u64,
         })
         .to_string();
@@ -623,8 +624,9 @@ mod tests {
         let body = serde_json::json!({
             "proposer": proposer_hex(),
             "kind": "change_parameter",
-            "name": "fee_rate",
-            "new_value": 0.02,
+            // Phase 18.1: Constitutional whitelist.
+            "name": "ANCHOR_INTERVAL_SECS",
+            "new_value": 900.0,
             "deadline_ms": 9_999_999_999u64,
         })
         .to_string();

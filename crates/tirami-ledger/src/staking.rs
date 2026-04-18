@@ -201,6 +201,16 @@ impl StakingPool {
     pub fn total_staked(&self) -> u64 {
         self.stakes.values().map(|s| s.amount).sum()
     }
+
+    /// Phase 18.2 — Query every `Stake` record belonging to `node_id`.
+    /// Currently the map stores at most one stake per node, but the
+    /// return shape is iterator-typed so future designs with multiple
+    /// concurrent stakes (e.g. different durations) don't break callers.
+    pub fn stakes_for(&self, node_id: &NodeId) -> impl Iterator<Item = &Stake> {
+        self.stakes
+            .get(node_id)
+            .into_iter()
+    }
 }
 
 #[cfg(test)]

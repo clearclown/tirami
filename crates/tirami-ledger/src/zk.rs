@@ -42,6 +42,155 @@ use thiserror::Error;
 use tirami_core::NodeId;
 
 // ---------------------------------------------------------------------------
+// ProofPolicy — rollout gate (Phase 18.3)
+// ---------------------------------------------------------------------------
+
+/// Governance / operator gate on how strictly proofs are required.
+///
+/// Rollout path (Filecoin model):
+///   Disabled → Optional → Recommended → Required
+/// Each step is a protocol-level signal that zkML proofs are
+/// approaching real enforcement. An external auditor reviewing
+/// Tirami should read the current value of `Config::proof_policy`
+/// as the authoritative statement of "how seriously does the
+/// network take proof-of-inference today".
+///
+/// The policy is **mutable** by governance (operational tuning)
+/// but has a **Constitutional ratchet**: once `Required` is reached,
+/// it cannot be downgraded without a full protocol fork. This
+/// prevents a hostile majority from rolling back the proof
+/// requirement after users have built up trust on top of it.
+/// Enforced in `governance.rs` via the `PROOF_POLICY_RATCHET`
+/// Constitutional invariant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum ProofPolicy {
+    /// Phase 1 (default today): no proof expected, no gate. Legacy
+    /// trades are accepted. All inference is trust-based.
+    Disabled,
+    /// Phase 2 (next step): proofs may be attached; when present
+    /// they are verified and mismatched proofs slash the provider.
+    /// No-proof trades still accepted.
+    Optional,
+    /// Phase 3: no-proof trades accepted but publicly marked as
+    /// "lower-assurance"; reputation for provider is capped below
+    /// that of proof-attached providers.
+    Recommended,
+    /// Phase 4: every paid trade MUST attach a valid proof. No-proof
+    /// trades are rejected at `execute_signed_trade`. Once reached,
+    /// this state is Constitutional — cannot downgrade.
+    Required,
+}
+
+impl Default for ProofPolicy {
+    fn default() -> Self {
+        Self::Disabled
+    }
+}
+
+impl ProofPolicy {
+    /// Ordering helper: true iff `self` ≥ `other` on the rollout
+    /// path. Used for the no-downgrade invariant.
+    pub fn at_least(&self, other: ProofPolicy) -> bool {
+        self.as_u8() >= other.as_u8()
+    }
+
+    /// Short machine-readable tag.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Disabled => "disabled",
+            Self::Optional => "optional",
+            Self::Recommended => "recommended",
+            Self::Required => "required",
+        }
+    }
+
+    /// Ordering integer for comparisons. The specific values are
+    /// stable across releases so that serialized proposals don't
+    /// silently re-order.
+    pub fn as_u8(&self) -> u8 {
+        match self {
+            Self::Disabled => 0,
+            Self::Optional => 1,
+            Self::Recommended => 2,
+            Self::Required => 3,
+        }
+    }
+
+    /// Parse from the string form used in `ProposalKind::ChangeParameter`.
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "disabled" => Some(Self::Disabled),
+            "optional" => Some(Self::Optional),
+            "recommended" => Some(Self::Recommended),
+            "required" => Some(Self::Required),
+            _ => None,
+        }
+    }
+}
+
+/// Phase 18.3 — is a trade *allowed* to settle under the current
+/// policy given whether it carries a proof?
+///
+/// Returns (allowed, reason).
+pub fn policy_allows_trade(policy: ProofPolicy, has_proof: bool) -> (bool, &'static str) {
+    match (policy, has_proof) {
+        (ProofPolicy::Disabled, _) => (true, "policy=disabled"),
+        (ProofPolicy::Optional, _) => (true, "policy=optional"),
+        (ProofPolicy::Recommended, _) => {
+            // Proof-less trades accepted but flagged elsewhere
+            // via reputation cap (not enforced here).
+            (true, "policy=recommended")
+        }
+        (ProofPolicy::Required, true) => (true, "policy=required + proof attached"),
+        (ProofPolicy::Required, false) => {
+            (false, "policy=required but no proof attached")
+        }
+    }
+}
+
+/// Phase 18.3 — attempt to transition from `current` to `proposed`
+/// under the no-downgrade ratchet. Returns `Ok(new_policy)` on
+/// success, or `Err(_)` if the transition is forbidden.
+///
+/// Allowed: monotonic upgrades along the path
+/// Disabled → Optional → Recommended → Required.
+/// Skipping intermediate steps IS allowed (governance can jump
+/// straight from Disabled to Required).
+/// Forbidden: any transition where `proposed.as_u8() < current.as_u8()`.
+///
+/// This is the mechanism by which the Constitutional ratchet is
+/// enforced. Governance proposes a ProofPolicy change via
+/// `ProposalKind::ChangeParameter { name: "PROOF_POLICY", ... }`,
+/// the proposal records cleanly (PROOF_POLICY is on the mutable
+/// whitelist), but the dispatch layer that applies the change
+/// calls this function to veto downgrades.
+pub fn try_ratchet_proof_policy(
+    current: ProofPolicy,
+    proposed: ProofPolicy,
+) -> Result<ProofPolicy, ProofPolicyRatchetError> {
+    if proposed.as_u8() < current.as_u8() {
+        return Err(ProofPolicyRatchetError::Downgrade {
+            current: current.as_str(),
+            proposed: proposed.as_str(),
+        });
+    }
+    Ok(proposed)
+}
+
+/// Error variants for the no-downgrade ratchet.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum ProofPolicyRatchetError {
+    #[error(
+        "proof policy downgrade forbidden: {current} → {proposed}. \
+         Once a policy is adopted, it can only strengthen."
+    )]
+    Downgrade {
+        current: &'static str,
+        proposed: &'static str,
+    },
+}
+
+// ---------------------------------------------------------------------------
 // Error type
 // ---------------------------------------------------------------------------
 
@@ -346,6 +495,146 @@ impl Default for VerifierRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // -------------------------------------------------------------
+    // Phase 18.3 — ProofPolicy + ratchet tests
+    // -------------------------------------------------------------
+
+    #[test]
+    fn proof_policy_default_is_disabled() {
+        assert_eq!(ProofPolicy::default(), ProofPolicy::Disabled);
+    }
+
+    #[test]
+    fn proof_policy_ordering_matches_rollout_path() {
+        use ProofPolicy::*;
+        assert!(Optional.at_least(Disabled));
+        assert!(Recommended.at_least(Optional));
+        assert!(Required.at_least(Recommended));
+        assert!(!Disabled.at_least(Optional));
+        assert!(!Optional.at_least(Required));
+    }
+
+    #[test]
+    fn proof_policy_as_u8_is_stable() {
+        // These numbers MUST NOT change between releases; governance
+        // proposals serialize by value, not name.
+        assert_eq!(ProofPolicy::Disabled.as_u8(), 0);
+        assert_eq!(ProofPolicy::Optional.as_u8(), 1);
+        assert_eq!(ProofPolicy::Recommended.as_u8(), 2);
+        assert_eq!(ProofPolicy::Required.as_u8(), 3);
+    }
+
+    #[test]
+    fn proof_policy_parse_round_trips() {
+        for p in [
+            ProofPolicy::Disabled,
+            ProofPolicy::Optional,
+            ProofPolicy::Recommended,
+            ProofPolicy::Required,
+        ] {
+            assert_eq!(ProofPolicy::parse(p.as_str()), Some(p));
+        }
+        assert_eq!(ProofPolicy::parse("invalid"), None);
+    }
+
+    #[test]
+    fn policy_allows_trade_disabled_accepts_anything() {
+        let (ok_no_proof, _) = policy_allows_trade(ProofPolicy::Disabled, false);
+        let (ok_with_proof, _) = policy_allows_trade(ProofPolicy::Disabled, true);
+        assert!(ok_no_proof);
+        assert!(ok_with_proof);
+    }
+
+    #[test]
+    fn policy_allows_trade_required_rejects_no_proof() {
+        let (ok, _) = policy_allows_trade(ProofPolicy::Required, false);
+        assert!(!ok);
+        let (ok, _) = policy_allows_trade(ProofPolicy::Required, true);
+        assert!(ok);
+    }
+
+    #[test]
+    fn policy_allows_trade_recommended_is_permissive() {
+        // Recommended accepts proof-less trades at the ledger layer.
+        // The reputation cap is enforced elsewhere (reputation module).
+        let (ok, _) = policy_allows_trade(ProofPolicy::Recommended, false);
+        assert!(ok);
+        let (ok, _) = policy_allows_trade(ProofPolicy::Recommended, true);
+        assert!(ok);
+    }
+
+    #[test]
+    fn ratchet_allows_monotonic_upgrade() {
+        use ProofPolicy::*;
+        assert_eq!(
+            try_ratchet_proof_policy(Disabled, Optional).unwrap(),
+            Optional
+        );
+        assert_eq!(
+            try_ratchet_proof_policy(Optional, Recommended).unwrap(),
+            Recommended
+        );
+        assert_eq!(
+            try_ratchet_proof_policy(Recommended, Required).unwrap(),
+            Required
+        );
+    }
+
+    #[test]
+    fn ratchet_allows_skipping_intermediate_steps() {
+        // Governance can jump straight from Disabled to Required if
+        // the network is ready.
+        assert_eq!(
+            try_ratchet_proof_policy(ProofPolicy::Disabled, ProofPolicy::Required)
+                .unwrap(),
+            ProofPolicy::Required
+        );
+    }
+
+    #[test]
+    fn ratchet_rejects_downgrade_from_required() {
+        // This is THE critical test. Once Required, cannot downgrade
+        // — not even to Recommended. A hostile majority after the
+        // zkML requirement is in place cannot roll it back.
+        for lower in [
+            ProofPolicy::Disabled,
+            ProofPolicy::Optional,
+            ProofPolicy::Recommended,
+        ] {
+            let err = try_ratchet_proof_policy(ProofPolicy::Required, lower).unwrap_err();
+            assert!(matches!(err, ProofPolicyRatchetError::Downgrade { .. }));
+        }
+    }
+
+    #[test]
+    fn ratchet_rejects_any_downgrade() {
+        // General case — any downgrade anywhere in the path is rejected.
+        for (c, p) in [
+            (ProofPolicy::Optional, ProofPolicy::Disabled),
+            (ProofPolicy::Recommended, ProofPolicy::Optional),
+            (ProofPolicy::Recommended, ProofPolicy::Disabled),
+            (ProofPolicy::Required, ProofPolicy::Recommended),
+        ] {
+            let err = try_ratchet_proof_policy(c, p).unwrap_err();
+            assert!(matches!(err, ProofPolicyRatchetError::Downgrade { .. }));
+        }
+    }
+
+    #[test]
+    fn ratchet_allows_same_policy_noop() {
+        // Re-affirming the current policy is allowed (e.g. a vote
+        // on whether to downgrade that ends up reaffirming the
+        // current state).
+        for p in [
+            ProofPolicy::Disabled,
+            ProofPolicy::Optional,
+            ProofPolicy::Recommended,
+            ProofPolicy::Required,
+        ] {
+            assert_eq!(try_ratchet_proof_policy(p, p).unwrap(), p);
+        }
+    }
 
     // Helper: a deterministic NodeId for tests.
     fn test_node() -> NodeId {

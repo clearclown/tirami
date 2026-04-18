@@ -1,0 +1,33 @@
+[package]
+name = "tirami-zkml-bench"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+readme.workspace = true
+authors.workspace = true
+description = "zkML proof-generation + verification benchmark harness for Tirami. Phase 18.3."
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+thiserror = { workspace = true }
+tirami-core = { workspace = true }
+tirami-ledger = { workspace = true }
+
+# Phase 18.3 — zkML backends are BEHIND features so the default
+# workspace build stays lean. Enable explicitly for benchmarks.
+#
+# Example invocation:
+#   cargo bench -p tirami-zkml-bench --features risc0
+#
+# The MockBackend is always available so the harness compiles
+# (and has tests) without any real zk dep.
+[features]
+default = []
+risc0 = []  # scaffolded; actual crate import lands in 18.3-part-2
+halo2 = []  # scaffolded; actual crate import lands in 18.3-part-2
+ezkl = []   # scaffolded; ezkl is git-vendored, landing in 18.3-part-2

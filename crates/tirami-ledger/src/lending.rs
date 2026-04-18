@@ -30,6 +30,60 @@ pub const WELCOME_LOAN_SYBIL_THRESHOLD: usize = 100;
 pub const WELCOME_LOAN_CREDIT_BONUS: f64 = 0.1;
 
 // ===========================================================================
+// §1.5 — Phase 18.2: Stake-required mining
+// ===========================================================================
+
+/// Phase 18.2 — Minimum TRM stake a provider must hold to receive
+/// paid inference requests. Below this threshold, the provider is
+/// treated as un-staked and the pipeline refuses to settle trades
+/// in their favor. This closes the "free rider" path where a node
+/// burns electricity with no skin in the game.
+///
+/// This is a mutable parameter (operational tuning) but it has a
+/// Constitutional floor: the Constitution forbids setting it below
+/// `MIN_PROVIDER_STAKE_CONSTITUTIONAL_FLOOR`. Phase 18.1 enshrines
+/// the floor in `governance.rs`.
+///
+/// Initial value: 100 TRM. Chosen so the Phase 5.5 welcome loan
+/// (1 000 TRM at 0 %) is enough to cover it 10× over — a new
+/// node can stake from their welcome loan and still have 900 TRM
+/// of working capital. Once welcome loans sunset (Phase 18.2b),
+/// new entrants must earn their first 100 TRM through off-protocol
+/// means (exchange purchase, gift from existing staker) OR via
+/// the time-limited stakeless earn-cap (see below).
+pub const MIN_PROVIDER_STAKE_TRM: u64 = 100;
+
+/// Phase 18.2 — Constitutional floor for `MIN_PROVIDER_STAKE_TRM`.
+/// Governance can raise the effective minimum above this but never
+/// below it. A value of 0 would revert to "anyone can provide
+/// without skin in the game" — the exact Sybil vector we're
+/// closing.
+pub const MIN_PROVIDER_STAKE_CONSTITUTIONAL_FLOOR: u64 = 10;
+
+/// Phase 18.2 — Stakeless earn cap. A node with zero stake may
+/// still earn up to this amount of TRM, after which further
+/// inference is refused until they stake. Bootstraps new nodes
+/// WITHOUT giving them unbounded free-rider capacity.
+///
+/// Intuition: the first 10 TRM is the "faucet". Run 10⁹ FLOP × 10
+/// = 10¹⁰ FLOP (≈ 0.01 H100-seconds) to earn it, then stake and
+/// become a real provider. Similar to Bitcoin's early CPU-mining
+/// window but bounded.
+pub const STAKELESS_EARN_CAP_TRM: u64 = 10;
+
+/// Phase 18.2 — Welcome loan sunset epoch. Once
+/// `ComputeLedger::current_epoch() >= WELCOME_LOAN_SUNSET_EPOCH`,
+/// new welcome loans are refused. Chosen as epoch 2 = after 75%
+/// of the TRM supply has been minted; beyond that point the
+/// bootstrap incentive has served its purpose and new entrants
+/// must use the stakeless-earn path.
+///
+/// This is **Constitutional**: re-opening welcome loans would
+/// re-open the Sybil vector that Phase 2.8 + 4.1 + 18.2 closed.
+/// See `docs/constitution.md` Article XI.
+pub const WELCOME_LOAN_SUNSET_EPOCH: u64 = 2;
+
+// ===========================================================================
 // §2 — Credit score (parameters.md §4)
 // ===========================================================================
 

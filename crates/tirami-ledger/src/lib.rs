@@ -11,6 +11,7 @@ pub mod audit;
 pub mod audit_snark;
 pub mod checkpoint;
 pub mod fork;
+pub mod sybil;
 pub mod metrics;
 pub mod peer_registry;
 pub mod referral;
@@ -59,4 +60,8 @@ pub use checkpoint::{
 };
 pub use fork::{
     detect_nonce_conflict, ForkDetector, ForkVerdict, NonceFraudProof, NonceFraudProofError,
+};
+pub use sybil::{
+    WelcomeLoanLimiter, WelcomeLoanLimiterConfig, DEFAULT_MAX_PER_BUCKET_PER_WINDOW,
+    DEFAULT_WELCOME_WINDOW_MS, STAKED_THRESHOLD_MULTIPLIER,
 };

@@ -15,7 +15,7 @@
 //! - `latency_ema_ms` is always finite and non-negative.
 //! - Price signals with invalid multipliers are silently rejected.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 
 use serde::{Deserialize, Serialize};
 use tirami_core::{AuditTier, ModelId, NodeId, PriceSignal};
@@ -81,14 +81,65 @@ impl PeerState {
 /// Lives inside `ComputeLedger`. Fed by `ingest_price_signal` (from gossip)
 /// and `update_latency` (from pipeline coordinator). Read by
 /// `select_provider` when scheduling.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PeerRegistry {
     peers: HashMap<NodeId, PeerState>,
+    /// Phase 17 Wave 2.6 — approximate LRU access order for eviction.
+    /// Most-recently-touched `NodeId` at the back, oldest at the front.
+    /// Maintained by `touch` which is called on every ensure/ingest/update
+    /// path. When `peers.len()` exceeds `capacity`, we pop from the front.
+    ///
+    /// `#[serde(default, skip_serializing)]` keeps snapshots compact and
+    /// lets pre-Phase-17 ledgers load — the cache rebuilds organically
+    /// from subsequent gossip.
+    #[serde(default, skip_serializing)]
+    access_order: VecDeque<NodeId>,
+    /// Phase 17 Wave 2.6 — maximum number of peers retained. Beyond this,
+    /// the least-recently-used peer is evicted on insert. Operators can
+    /// raise this for large dedicated seed nodes, or lower for
+    /// memory-constrained hardware.
+    #[serde(default = "default_peer_capacity")]
+    capacity: usize,
+}
+
+/// Default PeerRegistry size ceiling. 10 000 is well above the realistic
+/// "peers a single node directly talks to" fanout for public networks
+/// (gossip typically plateaus around 1-2 k unique peers), but bounded
+/// tightly enough that memory cannot grow unchecked over months.
+pub const DEFAULT_PEER_REGISTRY_CAPACITY: usize = 10_000;
+
+fn default_peer_capacity() -> usize {
+    DEFAULT_PEER_REGISTRY_CAPACITY
+}
+
+impl Default for PeerRegistry {
+    fn default() -> Self {
+        Self {
+            peers: HashMap::new(),
+            access_order: VecDeque::new(),
+            capacity: DEFAULT_PEER_REGISTRY_CAPACITY,
+        }
+    }
 }
 
 impl PeerRegistry {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Construct a registry with an explicit per-instance capacity.
+    /// Intended for tests and for operators who want to raise the cap.
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self {
+            peers: HashMap::with_capacity(capacity.min(1024)),
+            access_order: VecDeque::new(),
+            capacity: capacity.max(1),
+        }
+    }
+
+    /// Current maximum size before eviction kicks in.
+    pub fn capacity(&self) -> usize {
+        self.capacity
     }
 
     /// Number of peers currently known.
@@ -105,19 +156,55 @@ impl PeerRegistry {
         &self.peers
     }
 
-    /// Get a peer's state.
+    /// Get a peer's state (read-only; does NOT touch the LRU order).
+    /// Read-only access is intentionally not tracked: observers polling
+    /// every entry would otherwise prevent any eviction from ever firing.
     pub fn get(&self, node_id: &NodeId) -> Option<&PeerState> {
         self.peers.get(node_id)
     }
 
-    /// Mutable access (for ledger-internal operations).
+    /// Mutable access (for ledger-internal operations). Updates the LRU
+    /// position if the peer exists.
     pub fn get_mut(&mut self, node_id: &NodeId) -> Option<&mut PeerState> {
+        if self.peers.contains_key(node_id) {
+            Self::bump_order(&mut self.access_order, node_id);
+        }
         self.peers.get_mut(node_id)
     }
 
     /// Ensure a PeerState exists for `node_id`, creating a default one if not.
+    /// Touches the LRU order and evicts the oldest peer if we cross capacity.
     pub fn ensure(&mut self, node_id: &NodeId) -> &mut PeerState {
+        let is_new = !self.peers.contains_key(node_id);
+        if is_new {
+            self.enforce_capacity();
+            self.access_order.push_back(node_id.clone());
+        } else {
+            Self::bump_order(&mut self.access_order, node_id);
+        }
         self.peers.entry(node_id.clone()).or_default()
+    }
+
+    /// Move `node_id` to the back (most-recently-used position) of the
+    /// access queue. O(N) worst case on the deque; acceptable because N
+    /// is bounded by `capacity` and mutations are infrequent relative to
+    /// gossip throughput.
+    fn bump_order(access_order: &mut VecDeque<NodeId>, node_id: &NodeId) {
+        if let Some(pos) = access_order.iter().position(|id| id == node_id) {
+            access_order.remove(pos);
+        }
+        access_order.push_back(node_id.clone());
+    }
+
+    /// If adding one more peer would exceed `capacity`, evict the least
+    /// recently used peer. Idempotent — safe to call multiple times.
+    fn enforce_capacity(&mut self) {
+        while self.peers.len() >= self.capacity {
+            let Some(victim) = self.access_order.pop_front() else {
+                break;
+            };
+            self.peers.remove(&victim);
+        }
     }
 
     /// Ingest a price signal from gossip.
@@ -131,15 +218,19 @@ impl PeerRegistry {
             return false;
         }
 
-        let state = self.peers.entry(signal.node_id.clone()).or_default();
-
-        // Reject out-of-order signals (must be strictly newer).
-        if let Some(existing) = &state.price_signal {
+        // Validate before touching LRU order so rejected signals don't
+        // keep a bad peer warm and displace a good one.
+        if let Some(existing) = self
+            .peers
+            .get(&signal.node_id)
+            .and_then(|s| s.price_signal.as_ref())
+        {
             if signal.timestamp <= existing.timestamp {
                 return false;
             }
         }
 
+        let state = self.ensure(&signal.node_id);
         state.price_signal = Some(signal.clone());
         state.last_seen = signal.timestamp;
         true
@@ -150,7 +241,7 @@ impl PeerRegistry {
         if !observed_ms.is_finite() || observed_ms < 0.0 {
             return;
         }
-        let state = self.peers.entry(node_id.clone()).or_default();
+        let state = self.ensure(node_id);
         state.latency_ema_ms =
             PeerState::LATENCY_EMA_ALPHA * observed_ms
                 + (1.0 - PeerState::LATENCY_EMA_ALPHA) * state.latency_ema_ms;
@@ -159,7 +250,7 @@ impl PeerRegistry {
     /// Record a verified trade for this peer. Called when a trade
     /// completes without an audit failure.
     pub fn record_verified_trade(&mut self, node_id: &NodeId) {
-        let state = self.peers.entry(node_id.clone()).or_default();
+        let state = self.ensure(node_id);
         state.verified_trade_count = state.verified_trade_count.saturating_add(1);
         // Promote to next tier every 10 verified trades without a failure.
         // This is a simple threshold rule; Phase 15 might make it dynamic.
@@ -180,7 +271,7 @@ impl PeerRegistry {
     /// Phase 14.3 — record an audit outcome for a peer.
     /// `passed = true` promotes the tier; `false` demotes it.
     pub fn record_audit_result(&mut self, node_id: &NodeId, passed: bool) {
-        let state = self.peers.entry(node_id.clone()).or_default();
+        let state = self.ensure(node_id);
         if passed {
             state.audit_tier = state.audit_tier.promote();
             state.verified_trade_count = state.verified_trade_count.saturating_add(1);
@@ -202,10 +293,38 @@ impl PeerRegistry {
 
     /// Remove peers that have not been seen for `stale_threshold_ms` ms.
     /// Returns the number of entries removed. Useful for long-running nodes.
+    ///
+    /// Phase 17 Wave 2.6 — also drops matching entries from `access_order`
+    /// so the LRU queue stays consistent with the `peers` map.
     pub fn prune_stale(&mut self, now_ms: u64, stale_threshold_ms: u64) -> usize {
         let before = self.peers.len();
-        self.peers.retain(|_, s| now_ms.saturating_sub(s.last_seen) < stale_threshold_ms);
-        before - self.peers.len()
+        self.peers
+            .retain(|_, s| now_ms.saturating_sub(s.last_seen) < stale_threshold_ms);
+        let removed = before - self.peers.len();
+        // Rebuild access_order to only contain still-present entries,
+        // preserving their relative order. O(N) in registry size — run
+        // rarely enough that it's fine.
+        self.access_order.retain(|id| self.peers.contains_key(id));
+        removed
+    }
+
+    /// Post-deserialization hook: if an older snapshot was loaded without
+    /// the new `access_order` field, synthesize it from the peer set so
+    /// subsequent inserts can evict correctly. Called from `ComputeLedger::from_snapshot`.
+    pub(crate) fn restore_access_order(&mut self) {
+        if !self.access_order.is_empty() {
+            return;
+        }
+        // Seed with peers sorted by last_seen ascending — oldest first
+        // so the LRU head points at the stalest entry, matching the
+        // semantics a live-running node would have converged to.
+        let mut keyed: Vec<(&NodeId, u64)> =
+            self.peers.iter().map(|(k, s)| (k, s.last_seen)).collect();
+        keyed.sort_by_key(|(_, ts)| *ts);
+        self.access_order = keyed.into_iter().map(|(k, _)| k.clone()).collect();
+        if self.capacity == 0 {
+            self.capacity = DEFAULT_PEER_REGISTRY_CAPACITY;
+        }
     }
 
     /// Phase 14.3 — probabilistically select peers for audit based on their
@@ -465,5 +584,149 @@ mod tests {
         r.ensure(&sample_node(1));
         let state = r.get(&sample_node(1)).unwrap();
         assert_eq!(state.effective_price(2.0), 2.0);
+    }
+
+    // -----------------------------------------------------------------
+    // Phase 17 Wave 2.6 — LRU eviction tests.
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn default_capacity_matches_constant() {
+        let r = PeerRegistry::new();
+        assert_eq!(r.capacity(), DEFAULT_PEER_REGISTRY_CAPACITY);
+    }
+
+    #[test]
+    fn with_capacity_honors_explicit_bound() {
+        let r = PeerRegistry::with_capacity(5);
+        assert_eq!(r.capacity(), 5);
+    }
+
+    #[test]
+    fn with_capacity_zero_is_promoted_to_one() {
+        // Zero-capacity would make the registry non-functional; clamp
+        // to 1 so a single most-recent peer is always retained.
+        let r = PeerRegistry::with_capacity(0);
+        assert_eq!(r.capacity(), 1);
+    }
+
+    #[test]
+    fn insertion_beyond_capacity_evicts_oldest() {
+        // Fill a 3-slot registry with distinct node ids in order,
+        // then add a fourth — the first one must be gone.
+        let mut r = PeerRegistry::with_capacity(3);
+        for i in 1..=3 {
+            r.ensure(&sample_node(i));
+        }
+        assert_eq!(r.len(), 3);
+        r.ensure(&sample_node(4));
+        assert_eq!(r.len(), 3);
+        assert!(r.get(&sample_node(1)).is_none(), "oldest (1) must be evicted");
+        assert!(r.get(&sample_node(2)).is_some());
+        assert!(r.get(&sample_node(3)).is_some());
+        assert!(r.get(&sample_node(4)).is_some());
+    }
+
+    #[test]
+    fn access_via_mutation_promotes_to_most_recent() {
+        let mut r = PeerRegistry::with_capacity(3);
+        for i in 1..=3 {
+            r.ensure(&sample_node(i));
+        }
+        // Touch node 1 via get_mut — it should now be most-recent.
+        let _ = r.get_mut(&sample_node(1));
+        // Insert node 4 → victim is now node 2 (the new oldest), not 1.
+        r.ensure(&sample_node(4));
+        assert!(r.get(&sample_node(1)).is_some(), "recently-touched peer survives");
+        assert!(r.get(&sample_node(2)).is_none(), "second-oldest evicted");
+        assert!(r.get(&sample_node(3)).is_some());
+        assert!(r.get(&sample_node(4)).is_some());
+    }
+
+    #[test]
+    fn read_only_get_does_not_touch_lru_order() {
+        // A monitor that calls get() in a hot loop must not pin every
+        // entry and prevent eviction forever.
+        let mut r = PeerRegistry::with_capacity(3);
+        for i in 1..=3 {
+            r.ensure(&sample_node(i));
+        }
+        // Read node 1 many times via get() (no mutation) — it is still
+        // the LRU. Inserting node 4 should evict node 1.
+        for _ in 0..100 {
+            let _ = r.get(&sample_node(1));
+        }
+        r.ensure(&sample_node(4));
+        assert!(r.get(&sample_node(1)).is_none());
+    }
+
+    #[test]
+    fn ingest_price_signal_moves_peer_to_most_recent() {
+        let mut r = PeerRegistry::with_capacity(3);
+        r.ensure(&sample_node(1));
+        r.ensure(&sample_node(2));
+        r.ensure(&sample_node(3));
+        // Send a newer signal for node 1 → should become most-recent.
+        let sig = sample_signal(sample_node(1), 1.0, 1_000_000);
+        assert!(r.ingest_price_signal(&sig));
+        r.ensure(&sample_node(4));
+        // Node 2 was the oldest after node 1's promotion.
+        assert!(r.get(&sample_node(1)).is_some());
+        assert!(r.get(&sample_node(2)).is_none());
+    }
+
+    #[test]
+    fn rejected_stale_price_signal_does_not_touch_lru() {
+        // An adversary that replays a stale signal for a peer should
+        // NOT be able to rescue it from eviction.
+        let mut r = PeerRegistry::with_capacity(3);
+        // Prime node 1 with a recent signal so stale signals get rejected.
+        r.ingest_price_signal(&sample_signal(sample_node(1), 1.0, 2_000_000));
+        r.ensure(&sample_node(2));
+        r.ensure(&sample_node(3));
+        // Replay a STALE signal for node 1 (older timestamp).
+        let stale = sample_signal(sample_node(1), 1.0, 1_000_000);
+        assert!(!r.ingest_price_signal(&stale));
+        // Insert node 4 — node 1 is still the oldest active (2 & 3 came after),
+        // so it MUST be evicted despite the replay attempt.
+        r.ensure(&sample_node(4));
+        assert!(r.get(&sample_node(1)).is_none());
+    }
+
+    #[test]
+    fn prune_stale_keeps_access_order_consistent_with_peers() {
+        let mut r = PeerRegistry::with_capacity(10);
+        // Three peers with different last_seen values.
+        for (i, ts) in [(1, 100), (2, 500), (3, 1000)] {
+            r.ensure(&sample_node(i));
+            r.get_mut(&sample_node(i)).unwrap().last_seen = ts;
+        }
+        // Prune entries older than 400ms relative to now=600 → drops node 1 only.
+        let removed = r.prune_stale(600, 400);
+        assert_eq!(removed, 1);
+        assert!(r.get(&sample_node(1)).is_none());
+        // access_order must no longer contain the pruned node.
+        assert_eq!(r.access_order.len(), 2);
+        assert!(!r.access_order.contains(&sample_node(1)));
+    }
+
+    #[test]
+    fn restore_access_order_seeds_from_last_seen_ascending() {
+        // Simulate a registry loaded from a pre-Wave-2.6 snapshot:
+        // peers map populated, access_order empty.
+        let mut r = PeerRegistry::with_capacity(10);
+        r.ensure(&sample_node(1));
+        r.get_mut(&sample_node(1)).unwrap().last_seen = 900;
+        r.ensure(&sample_node(2));
+        r.get_mut(&sample_node(2)).unwrap().last_seen = 100;
+        r.ensure(&sample_node(3));
+        r.get_mut(&sample_node(3)).unwrap().last_seen = 500;
+        r.access_order.clear();
+
+        r.restore_access_order();
+
+        // Oldest last_seen first (2, 3, 1).
+        let order: Vec<_> = r.access_order.iter().cloned().collect();
+        assert_eq!(order, vec![sample_node(2), sample_node(3), sample_node(1)]);
     }
 }

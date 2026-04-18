@@ -12,9 +12,11 @@
 //! - [`proof`] — Merkle proof encoding helpers
 
 pub mod anchorer;
+pub mod base_client;
 pub mod client;
 pub mod proof;
 
 pub use anchorer::{Anchorer, AnchorerConfig, AnchoringError};
+pub use base_client::{BaseChainMode, BaseClient, BaseSepoliaConfig};
 pub use client::{BatchSubmission, ChainClient, ChainError, MockChainClient, TxHash};
 pub use proof::{BatchDeltas, NodeDelta};

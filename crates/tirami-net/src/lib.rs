@@ -1,3 +1,4 @@
+pub mod asn_rate_limit;
 pub mod cluster;
 pub mod connection;
 pub mod discovery;

@@ -81,6 +81,17 @@ pub struct Config {
     /// verifier are in tirami-core::crypto.
     #[serde(default)]
     pub pq_signatures: bool,
+
+    /// Phase 17 Wave 2.3 — opt into per-ASN rate limiting on inbound
+    /// traffic. When `true`, the transport consults
+    /// `tirami_net::asn_rate_limit::AsnRateLimiter` so a cloud-Sybil
+    /// that spins many IPs inside one ASN shares a single 5 000 msg/s
+    /// bucket instead of one-per-peer. Requires an IP→ASN resolver;
+    /// see `tirami-net::asn_rate_limit` for options (StaticAsnResolver
+    /// for tests, future MaxMind GeoLite2-ASN reader for production).
+    /// Default `false` so operators without the DB are unaffected.
+    #[serde(default)]
+    pub asn_rate_limit_enabled: bool,
 }
 
 fn default_anchor_interval_secs() -> u64 {
@@ -166,6 +177,7 @@ impl Default for Config {
             anchor_interval_secs: 3600,
             slashing_interval_secs: 300,
             pq_signatures: false,
+            asn_rate_limit_enabled: false,
         }
     }
 }

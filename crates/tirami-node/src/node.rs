@@ -453,6 +453,10 @@ impl TiramiNode {
                                 model_id,
                                 input_tokens: input_tokens.clone(),
                                 expected_output_hash: expected_hash,
+                                // Phase 17 Wave 2.1 — preserve legacy
+                                // final-layer semantics on this emitter;
+                                // a follow-up will randomize the layer.
+                                layer_index: None,
                                 timestamp: now_ms,
                             },
                         ),

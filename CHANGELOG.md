@@ -80,14 +80,114 @@ on the auth middleware.
   `digest 0.11.0-rc.10`. Full type lattice + 12 verify-matrix tests
   are already in place so the swap to a real PQ backend is one file.
 
-**Test coverage (workspace):** 891 → 940 passing (+49 new across
-Waves 1.1 – 1.6). `bash scripts/verify-impl.sh` remains GREEN
+**Wave 1 test coverage (workspace):** 891 → 940 passing (+49 new
+across Waves 1.1 – 1.6). `bash scripts/verify-impl.sh` remains GREEN
 (123 / 123).
 
-Next up in Phase 17: Wave 2 (scale hardening — SPoRA + probabilistic
-SNARK audits, per-ASN rate limiting, fork reconciliation, Base
-Sepolia deploy) and Wave 3 (hostile-environment readiness) per
-`.claude/plans/humble-cooking-thimble.md`.
+### Phase 17 Wave 2 — P1 Scale Hardening (2026-04-18)
+
+Addresses the scale-break findings: designs that work at 10 nodes but
+fall over at 1 000+ due to unbounded memory, trivial Sybil vectors,
+and non-existent fork recovery. Every wave-2 item ships as a tested
+primitive with clear production wire-up points.
+
+**2.6 — PeerRegistry LRU bound**
+- `PeerRegistry` gains a `VecDeque<NodeId>` access queue + `capacity`
+  field (default 10 000 via `DEFAULT_PEER_REGISTRY_CAPACITY`).
+- All mutating paths go through `ensure()`, which touches LRU and
+  evicts the oldest peer on insert past capacity.
+- Read-only `get()` does NOT touch LRU so a poller can't pin
+  every entry.
+- `restore_access_order()` seeds the queue by `last_seen` on loads
+  of pre-Wave-2.6 snapshots.
+
+**2.3 — Per-ASN rate limiter**
+- New `crates/tirami-net/src/asn_rate_limit.rs`: `AsnResolver` trait,
+  `StaticAsnResolver` (in-memory / testing), `AsnRateLimiter` with
+  per-ASN `TokenBucket` (default 5 000 msg/s sustained, 10 000 burst).
+- 50 IPs inside one ASN share ONE bucket, collapsing the cloud-Sybil
+  multiplier from N× to 1×.
+- `Config::asn_rate_limit_enabled` (default off) opts in.
+
+**2.1 — SPoRA-style random-layer audit**
+- Wire: `AuditChallengeMsg.layer_index: Option<u32>`,
+  `AuditResponseMsg` echoes it back, `FINAL_OUTPUT_LAYER = u32::MAX`
+  sentinel. `#[serde(default)]` for pre-Phase-17 interop.
+- `AuditTracker::{issue,resolve}_at_layer` with
+  `None ↔ Some(FINAL_OUTPUT_LAYER)` normalization.
+- `InferenceEngine::generate_audit_at_layer` trait method with a
+  layer-index-mixed default; backend-specific overrides hashing real
+  intermediate activations land in the follow-up.
+- Layer mismatch → `AuditVerdict::Unknown` (never flip tier on
+  ambiguous evidence).
+
+**2.2 — Probabilistic heavy-audit scaffold**
+- New `crates/tirami-ledger/src/audit_snark.rs`:
+  `AuditSeverity { Light, Heavy }`, `HeavyAuditConfig`
+  (default 1 % sample / 3 validators, odd required),
+  `ProbabilisticSampler`, `ValidatorQuorum`, `QuorumVerdict`.
+- `Dissenter` verdict identifies the slashable validator;
+  `Inconclusive` (tie or under-minimum) explicitly does NOT slash.
+- SNARK compression (ezkl / risc0) deferred to Phase 18; the
+  tri-validator quorum delivers most of the security benefit today.
+
+**2.4 — Trade-log snapshotting + JSON-lines archive**
+- New `crates/tirami-ledger/src/checkpoint.rs`: Bitcoin-style Merkle
+  root over `TradeRecord::canonical_bytes`, `ArchivePath` option
+  wrapper, append-only JSON-lines I/O with `sync_data`.
+- `ComputeLedger::seal_and_archive(cutoff, now, archive)` partitions
+  `trade_log` at cutoff, appends sealed slice to the archive (rolled
+  back on I/O error), and records a `LedgerCheckpoint`. Idempotent
+  on empty ranges.
+- `checkpoints` field persists via `PersistedLedger`; a restart
+  preserves the full audit trail.
+
+**2.5 — Fork detection + nonce-collision fraud proofs**
+- New `crates/tirami-ledger/src/fork.rs`:
+  `ForkDetector::verdict(local_root, min_obs)` → `Converged`,
+  `InMinority`, `NoQuorum`. Strict majority; tie → NoQuorum.
+- `NonceFraudProof` bundles two distinct `SignedTradeRecord` sharing
+  `(provider, nonce)`; `verify()` confirms provider eq, nonce eq,
+  records distinct, both non-v1, both signatures valid. Broadcast
+  and slash the accused.
+- `detect_nonce_conflict(batch)` surfaces the first conflict.
+
+**2.8 — Welcome-loan Sybil strengthening**
+- New `crates/tirami-ledger/src/sybil.rs`: `WelcomeLoanLimiter` with
+  per-bucket rolling 24-h window (default 10 grants),
+  10× `STAKED_THRESHOLD_MULTIPLIER` when the requester is
+  stake-proven.
+- Bucket key is caller-supplied `String` — operators can key by
+  ASN, subnet prefix, GeoIP country, or any future dimension
+  without recompilation.
+
+**2.7 — Base Sepolia deployment scaffold + runbook**
+- New `crates/tirami-anchor/src/base_client.rs`:
+  `BaseChainMode { Sepolia, Mainnet }` with chain IDs and default
+  RPC URLs, `BaseSepoliaConfig` (persistable, address-validated),
+  scaffolded `BaseClient: ChainClient` that returns
+  `ChainError::NotImplemented` on writes. Switch-over is one file
+  once the `digest 0.11` dep pin resolves.
+- `BaseSepoliaConfig::mainnet_reserved` is `#[deprecated]` pointing
+  at the audit gate — any code unlocking mainnet before Wave 3.3
+  triggers a loud lint.
+- Full deployment runbook at
+  `docs/phase-17-wave-2.7-base-deployment.md` covering Foundry
+  install, dry-run, broadcast, Basescan verification, 30-day
+  stability watch, and the mainnet gate.
+
+**Wave 2 test coverage:** 940 → 1 037 passing (+97 across all six
+waves). `cargo build --workspace` clean.
+
+Mainnet deploy remains **BLOCKED** until:
+1. External security audit complete (Wave 3.3).
+2. 30-day Sepolia stability.
+3. Multi-sig custody configured and tested on Sepolia.
+4. Bug bounty live ≥ 30 days.
+
+Next up in Phase 17: Wave 3 — hostile-environment readiness (TEE
+attestation, Kani formal verification, external audit prep,
+bug bounty) per `.claude/plans/humble-cooking-thimble.md`.
 
 ### Phase 14 — Unified Scheduler (2026-04-14 → 2026-04-17)
 

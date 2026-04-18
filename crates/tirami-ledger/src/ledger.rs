@@ -85,6 +85,14 @@ pub struct ComputeLedger {
     /// auditors can see the full disciplinary trail across restarts.
     #[serde(default)]
     pub slash_events: Vec<SlashEvent>,
+    /// Phase 17 Wave 2.4 — checkpoints summarizing ranges of
+    /// `trade_log` that have been sealed to an append-only archive.
+    /// The in-memory `trade_log` only holds trades AFTER the latest
+    /// checkpoint's `sealed_up_to_ms`; older trades are recoverable
+    /// from the on-disk archive via `tirami_ledger::read_archive`.
+    /// `#[serde(default)]` keeps pre-Phase-17 snapshots loadable.
+    #[serde(default)]
+    pub checkpoints: Vec<crate::checkpoint::LedgerCheckpoint>,
 }
 
 /// Audit trail entry written each time [`ComputeLedger::update_trust_penalties`]
@@ -472,6 +480,10 @@ struct PersistedLedger {
     /// `#[serde(default)]` preserves compatibility with pre-Phase-17 snapshots.
     #[serde(default)]
     slash_events: Vec<SlashEvent>,
+    /// Phase 17 Wave 2.4 — persisted checkpoint history.
+    /// `#[serde(default)]` keeps pre-Wave-2.4 snapshots loadable.
+    #[serde(default)]
+    checkpoints: Vec<crate::checkpoint::LedgerCheckpoint>,
 }
 
 /// Wrapper for signed/integrity-checked ledger persistence.
@@ -544,6 +556,7 @@ impl ComputeLedger {
             audit_tracker: crate::audit::AuditTracker::new(),
             seen_nonces: HashMap::new(),
             slash_events: Vec::new(),
+            checkpoints: Vec::new(),
         }
     }
 
@@ -813,6 +826,7 @@ impl ComputeLedger {
             loan_pool_lent: self.loan_pool_lent,
             loan_pool_total: self.loan_pool_total,
             slash_events: self.slash_events.clone(),
+            checkpoints: self.checkpoints.clone(),
         };
 
         let json = serde_json::to_string_pretty(&snapshot)
@@ -881,9 +895,14 @@ impl ComputeLedger {
             audit_tracker: crate::audit::AuditTracker::new(),
             seen_nonces: HashMap::new(),
             slash_events: snapshot.slash_events,
+            checkpoints: snapshot.checkpoints,
         };
         // Phase 17 Wave 1.2 — replay defense must survive a restart.
         ledger.rebuild_nonce_cache();
+        // Phase 17 Wave 2.6 — if a pre-Wave-2.6 snapshot populates the
+        // peer map without an access order, synthesize one so the LRU
+        // bound is enforced from the first insert after load.
+        ledger.peer_registry.restore_access_order();
         ledger
     }
 
@@ -1117,6 +1136,81 @@ impl ComputeLedger {
     /// dashboards and external auditors.
     pub fn slash_events(&self) -> &[SlashEvent] {
         &self.slash_events
+    }
+
+    // -----------------------------------------------------------------------
+    // Phase 17 Wave 2.4 — Trade log snapshotting + archival
+    // -----------------------------------------------------------------------
+
+    /// Read-only access to the append-only checkpoint history.
+    pub fn checkpoints(&self) -> &[crate::checkpoint::LedgerCheckpoint] {
+        &self.checkpoints
+    }
+
+    /// Total number of trades sealed across every historical checkpoint
+    /// (i.e. no longer in `trade_log` but still recoverable from the
+    /// archive). Callers that want the grand historical total should
+    /// add this to `trade_log.len()`.
+    pub fn sealed_trade_count(&self) -> u64 {
+        self.checkpoints.iter().map(|c| c.trade_count_sealed).sum()
+    }
+
+    /// Phase 17 Wave 2.4 — seal trades older than `cutoff_ms` into the
+    /// archive. Steps:
+    ///   1. Partition `trade_log` at `timestamp <= cutoff_ms`.
+    ///   2. Compute a Merkle root over the sealed slice.
+    ///   3. Append the slice to `archive_path` (JSON-lines, flushed).
+    ///   4. Remove the sealed trades from `trade_log`.
+    ///   5. Record a [`LedgerCheckpoint`] in `self.checkpoints`.
+    ///
+    /// Idempotent across calls: a subsequent seal with the same
+    /// cutoff runs on an already-pruned `trade_log` and emits an
+    /// empty checkpoint.
+    ///
+    /// Returns the checkpoint (empty if nothing to seal). Archive I/O
+    /// errors propagate as [`ArchiveError`]; in that case `trade_log`
+    /// is left untouched so the caller can retry.
+    pub fn seal_and_archive(
+        &mut self,
+        cutoff_ms: u64,
+        now_ms: u64,
+        archive: &crate::checkpoint::ArchivePath,
+    ) -> Result<crate::checkpoint::LedgerCheckpoint, crate::checkpoint::ArchiveError> {
+        // Partition: sealed trades are moved out, keepers stay.
+        let mut sealed: Vec<TradeRecord> = Vec::new();
+        let mut kept: Vec<TradeRecord> = Vec::with_capacity(self.trade_log.len());
+        for trade in self.trade_log.drain(..) {
+            if trade.timestamp <= cutoff_ms {
+                sealed.push(trade);
+            } else {
+                kept.push(trade);
+            }
+        }
+        self.trade_log = kept;
+
+        if sealed.is_empty() {
+            // Nothing to seal — no-op checkpoint, do NOT touch the archive.
+            return Ok(crate::checkpoint::LedgerCheckpoint::empty(now_ms, cutoff_ms));
+        }
+
+        let merkle_root = crate::checkpoint::trades_merkle_root(&sealed);
+
+        if let Some(path) = archive.as_path() {
+            if let Err(e) = crate::checkpoint::append_archive(path, &sealed) {
+                // Restore sealed trades so the ledger stays consistent.
+                self.trade_log.splice(0..0, sealed);
+                return Err(e);
+            }
+        }
+
+        let checkpoint = crate::checkpoint::LedgerCheckpoint {
+            merkle_root,
+            trade_count_sealed: sealed.len() as u64,
+            sealed_up_to_ms: cutoff_ms,
+            sealed_at_ms: now_ms,
+        };
+        self.checkpoints.push(checkpoint.clone());
+        Ok(checkpoint)
     }
 
     /// Phase 17 Wave 1.4 — penalty applied to a node whose audit response
@@ -2598,6 +2692,151 @@ mod tests {
         let evt = ledger.slash_events().last().unwrap();
         assert_eq!(evt.reason, "audit-fail");
         assert_eq!(evt.timestamp_ms, now + 200);
+    }
+
+    // ------------------------------------------------------------------
+    // Phase 17 Wave 2.4 — trade log snapshotting + archival tests.
+    // ------------------------------------------------------------------
+
+    fn tmp_archive_path(label: &str) -> std::path::PathBuf {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let id = COUNTER.fetch_add(1, Ordering::Relaxed);
+        std::env::temp_dir().join(format!(
+            "tirami-seal-{label}-{}-{id}.jsonl",
+            now_millis()
+        ))
+    }
+
+    fn bare_trade(ts: u64, seed: u8) -> TradeRecord {
+        TradeRecord {
+            provider: NodeId([seed; 32]),
+            consumer: NodeId([seed.wrapping_add(1); 32]),
+            trm_amount: 100,
+            tokens_processed: 10,
+            timestamp: ts,
+            model_id: "m".into(),
+            flops_estimated: 0,
+            nonce: {
+                let mut n = [0u8; 16];
+                n[..4].copy_from_slice(&(ts as u32).to_le_bytes());
+                n[15] = 0xAA;
+                n
+            },
+        }
+    }
+
+    #[test]
+    fn seal_empty_ledger_yields_empty_checkpoint_and_no_archive() {
+        let mut ledger = ComputeLedger::new();
+        let archive = crate::ArchivePath::none();
+        let cp = ledger.seal_and_archive(1_000, 2_000, &archive).unwrap();
+        assert!(!cp.is_nonempty());
+        assert_eq!(cp.sealed_up_to_ms, 1_000);
+        assert_eq!(cp.sealed_at_ms, 2_000);
+        assert_eq!(ledger.checkpoints.len(), 0);
+    }
+
+    #[test]
+    fn seal_partitions_trade_log_at_cutoff() {
+        let mut ledger = ComputeLedger::new();
+        // Three trades at t=100, 200, 300; cutoff 200 → first two sealed.
+        ledger.trade_log.push(bare_trade(100, 1));
+        ledger.trade_log.push(bare_trade(200, 2));
+        ledger.trade_log.push(bare_trade(300, 3));
+        let archive = crate::ArchivePath::none();
+        let cp = ledger.seal_and_archive(200, 500, &archive).unwrap();
+        assert_eq!(cp.trade_count_sealed, 2);
+        assert_eq!(ledger.trade_log.len(), 1);
+        assert_eq!(ledger.trade_log[0].timestamp, 300);
+        assert_eq!(ledger.checkpoints.len(), 1);
+        assert_eq!(ledger.sealed_trade_count(), 2);
+    }
+
+    #[test]
+    fn seal_with_archive_path_writes_sealed_trades_only() {
+        let path = tmp_archive_path("write");
+        let mut ledger = ComputeLedger::new();
+        ledger.trade_log.push(bare_trade(100, 1));
+        ledger.trade_log.push(bare_trade(200, 2));
+        ledger.trade_log.push(bare_trade(300, 3));
+        let archive = crate::ArchivePath::new(path.clone());
+        let cp = ledger.seal_and_archive(200, 500, &archive).unwrap();
+        assert_eq!(cp.trade_count_sealed, 2);
+
+        let loaded = crate::read_archive(&path).unwrap();
+        assert_eq!(loaded.len(), 2);
+        assert_eq!(loaded[0].timestamp, 100);
+        assert_eq!(loaded[1].timestamp, 200);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn multiple_seals_accumulate_checkpoints_and_append_archive() {
+        let path = tmp_archive_path("accum");
+        let mut ledger = ComputeLedger::new();
+        for i in 1..=5u64 {
+            ledger.trade_log.push(bare_trade(i * 100, i as u8));
+        }
+        let archive = crate::ArchivePath::new(path.clone());
+        // First seal @ cutoff 200 → seals 2.
+        let cp1 = ledger.seal_and_archive(200, 1_000, &archive).unwrap();
+        assert_eq!(cp1.trade_count_sealed, 2);
+        // Second seal @ cutoff 400 → seals 2 more (300 and 400).
+        let cp2 = ledger.seal_and_archive(400, 2_000, &archive).unwrap();
+        assert_eq!(cp2.trade_count_sealed, 2);
+        assert_eq!(ledger.trade_log.len(), 1); // only 500 remains
+        assert_eq!(ledger.checkpoints.len(), 2);
+        assert_eq!(ledger.sealed_trade_count(), 4);
+        // Archive must contain all 4 sealed trades in order.
+        let all = crate::read_archive(&path).unwrap();
+        assert_eq!(all.len(), 4);
+        for (i, t) in all.iter().enumerate() {
+            assert_eq!(t.timestamp, (i as u64 + 1) * 100);
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn seal_is_idempotent_on_already_pruned_range() {
+        let mut ledger = ComputeLedger::new();
+        ledger.trade_log.push(bare_trade(100, 1));
+        let archive = crate::ArchivePath::none();
+        let first = ledger.seal_and_archive(100, 200, &archive).unwrap();
+        assert_eq!(first.trade_count_sealed, 1);
+        // Second run at the same cutoff has nothing left to seal.
+        let second = ledger.seal_and_archive(100, 201, &archive).unwrap();
+        assert!(!second.is_nonempty());
+        // Only the first (nonempty) checkpoint is recorded.
+        assert_eq!(ledger.checkpoints.len(), 1);
+    }
+
+    #[test]
+    fn checkpoints_round_trip_through_save_load() {
+        let tmp = unique_temp_path("checkpoints");
+        let mut ledger = ComputeLedger::new();
+        ledger.trade_log.push(bare_trade(100, 1));
+        ledger.trade_log.push(bare_trade(200, 2));
+        let archive = crate::ArchivePath::none();
+        let cp = ledger.seal_and_archive(200, 500, &archive).unwrap();
+
+        ledger.save_to_path(&tmp).unwrap();
+        let reloaded = ComputeLedger::load_from_path(&tmp).unwrap();
+        assert_eq!(reloaded.checkpoints.len(), 1);
+        assert_eq!(reloaded.checkpoints[0], cp);
+    }
+
+    #[test]
+    fn sealed_trade_count_sums_across_checkpoints() {
+        let mut ledger = ComputeLedger::new();
+        for i in 1..=3 {
+            ledger.trade_log.push(bare_trade(i * 100, i as u8));
+        }
+        let archive = crate::ArchivePath::none();
+        ledger.seal_and_archive(100, 1_000, &archive).unwrap();
+        ledger.seal_and_archive(300, 2_000, &archive).unwrap();
+        // Sealed: 1 in first round, 2 in second → 3 total.
+        assert_eq!(ledger.sealed_trade_count(), 3);
     }
 
     #[test]

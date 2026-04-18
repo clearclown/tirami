@@ -84,6 +84,49 @@ pub trait InferenceEngine: Send + Sync {
         Ok(hash)
     }
 
+    /// Phase 17 Wave 2.1 — SPoRA-style layer-scoped audit. Compute a
+    /// SHA-256 of the intermediate activations at a specific decoder
+    /// `layer_index` instead of the final output logits.
+    ///
+    /// Why: a malicious provider running a drastically truncated model
+    /// can often reproduce the final logits on simple inputs (they only
+    /// need the output head), but cannot reproduce an arbitrary
+    /// intermediate layer's activations without the full weights. By
+    /// asking for a random layer each challenge, the challenger forces
+    /// the target to have the entire model materialized in memory.
+    ///
+    /// Default implementation: because intermediate activations are not
+    /// part of the minimal `InferenceEngine` trait (not every backend
+    /// surfaces them), this fallback **mixes the layer_index into the
+    /// final-output hash**. That is not true SPoRA — but it preserves
+    /// the API contract (same hash space per layer_index) so that:
+    ///   1. Engines that do surface intermediate activations can
+    ///      override this for real layer-scoped hashing.
+    ///   2. Engines that cannot will at least produce distinct hashes
+    ///      per layer — a misaligned challenger vs target layer_index
+    ///      fails verification, catching protocol skew but NOT a
+    ///      truncated-model attacker.
+    ///
+    /// Plan-stage wiring: this wave ships the trait method + wire
+    /// plumbing. A backend-specific override (e.g. on `CandleEngine`)
+    /// that taps into real hidden-state outputs is the follow-up.
+    fn generate_audit_at_layer(
+        &mut self,
+        input_tokens: &[u32],
+        layer_index: u32,
+    ) -> Result<[u8; 32], tirami_core::TiramiError> {
+        use sha2::{Digest, Sha256};
+        let base = self.generate_audit(input_tokens)?;
+        let mut hasher = Sha256::new();
+        hasher.update(b"SPORA/v1");
+        hasher.update(layer_index.to_le_bytes());
+        hasher.update(base);
+        let out = hasher.finalize();
+        let mut hash = [0u8; 32];
+        hash.copy_from_slice(&out);
+        Ok(hash)
+    }
+
     /// Tokenize a prompt and return token IDs.
     fn tokenize(&self, prompt: &str) -> Result<Vec<u32>, tirami_core::TiramiError>;
 

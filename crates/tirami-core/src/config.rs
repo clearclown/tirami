@@ -141,6 +141,14 @@ pub struct Config {
     /// "optional"), but not behind.
     #[serde(default = "default_proof_policy")]
     pub proof_policy: String,
+
+    /// Phase 18.5-part-2 — interval (seconds) between PersonalAgent
+    /// tick-loop fires. Default 30 s. Clamped to ≥1 at spawn time.
+    /// Shorter values give snappier auto-earn/auto-spend response at
+    /// the cost of more frequent ledger reads; longer values reduce
+    /// load on quiet nodes.
+    #[serde(default = "default_agent_tick_interval_secs")]
+    pub agent_tick_interval_secs: u64,
 }
 
 fn default_anchor_interval_secs() -> u64 {
@@ -165,6 +173,10 @@ fn default_checkpoint_retain_secs() -> u64 {
 
 fn default_proof_policy() -> String {
     "disabled".to_string()
+}
+
+fn default_agent_tick_interval_secs() -> u64 {
+    30
 }
 
 impl Config {
@@ -248,6 +260,7 @@ impl Default for Config {
             checkpoint_retain_secs: 24 * 3_600,
             archive_path: None,
             proof_policy: "disabled".to_string(),
+            agent_tick_interval_secs: 30,
         }
     }
 }

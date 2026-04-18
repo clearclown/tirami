@@ -72,6 +72,10 @@ pub(crate) struct AppState {
     /// explicitly wants an agent (via `tirami start --agent` or
     /// the default for interactive sessions).
     pub personal_agent: Arc<Mutex<Option<tirami_mind::PersonalAgent>>>,
+    /// Phase 18.5-part-2 — counters populated by the background
+    /// agent tick loop. Exposed via `/v1/tirami/agent/status` so
+    /// users can see the loop is alive without reading logs.
+    pub agent_loop_stats: Arc<Mutex<crate::agent_loop::AgentLoopStats>>,
 }
 
 /// Simple rate limiter for authentication failures.
@@ -168,6 +172,8 @@ pub fn create_router(
         Arc::new(Mutex::new(tirami_ledger::ReferralTracker::new())),
         Arc::new(Mutex::new(tirami_ledger::GovernanceState::new(0))),
         Arc::new(tirami_anchor::MockChainClient::new()),
+        Arc::new(Mutex::new(None::<tirami_mind::PersonalAgent>)),
+        Arc::new(Mutex::new(crate::agent_loop::AgentLoopStats::new())),
     )
 }
 
@@ -189,6 +195,8 @@ pub fn create_router_with_services(
     referral_tracker: Arc<Mutex<tirami_ledger::ReferralTracker>>,
     governance: Arc<Mutex<tirami_ledger::GovernanceState>>,
     chain_client: Arc<tirami_anchor::MockChainClient>,
+    personal_agent: Arc<Mutex<Option<tirami_mind::PersonalAgent>>>,
+    agent_loop_stats: Arc<Mutex<crate::agent_loop::AgentLoopStats>>,
 ) -> Router {
     // Derive local node ID from cluster or generate a deterministic one.
     let local_node_id = cluster
@@ -218,7 +226,8 @@ pub fn create_router_with_services(
         governance,
         chain_client,
         api_tokens: Arc::new(Mutex::new(crate::api_tokens::TokenStore::new())),
-        personal_agent: Arc::new(Mutex::new(None)),
+        personal_agent,
+        agent_loop_stats,
     };
     let api_max_request_body_bytes = state.config.api_max_request_body_bytes;
 
@@ -2925,11 +2934,20 @@ async fn forge_agent_status(
     State(state): State<AppState>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     check_forge_rate_limit(&state).await?;
+    let loop_stats = {
+        let s = state.agent_loop_stats.lock().await;
+        serde_json::json!({
+            "ticks": s.ticks,
+            "last_action": s.last_action,
+            "last_tick_ms": s.last_tick_ms,
+        })
+    };
     let guard = state.personal_agent.lock().await;
     let Some(agent) = guard.as_ref() else {
         return Ok(Json(serde_json::json!({
             "configured": false,
             "summary": "no personal agent configured on this node",
+            "loop": loop_stats,
         })));
     };
     Ok(Json(serde_json::json!({
@@ -2950,6 +2968,7 @@ async fn forge_agent_status(
             "min_peer_reputation": agent.preferences.min_peer_reputation,
             "content_filter": agent.preferences.content_filter,
         },
+        "loop": loop_stats,
         "summary": agent.status_summary(),
     })))
 }
@@ -3050,6 +3069,8 @@ pub(crate) fn test_router_default(config: Config) -> Router {
         Arc::new(Mutex::new(tirami_ledger::ReferralTracker::new())),
         Arc::new(Mutex::new(tirami_ledger::GovernanceState::new(0))),
         Arc::new(tirami_anchor::MockChainClient::new()),
+        Arc::new(Mutex::new(None::<tirami_mind::PersonalAgent>)),
+        Arc::new(Mutex::new(crate::agent_loop::AgentLoopStats::new())),
     )
 }
 

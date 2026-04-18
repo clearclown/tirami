@@ -1,3 +1,4 @@
+use crate::agent_loop::{AgentLoopStats, AgentTickInput, spawn_agent_tick_loop};
 use crate::pipeline::PipelineCoordinator;
 use crate::state_persist;
 use crate::topology::{TopologySnapshot, build_local_capability, build_topology_snapshot};
@@ -39,6 +40,15 @@ pub struct TiramiNode {
     /// Phase 16 — on-chain anchor client. Defaults to MockChainClient; real
     /// Base L2 client swaps in via future `with_chain_client` builder method.
     pub chain_client: Arc<tirami_anchor::MockChainClient>,
+    /// Phase 18.5 — the user's personal Tirami agent. `None` until the
+    /// operator configures one (future `POST /v1/tirami/agent/init`). The
+    /// HTTP API's `AppState.personal_agent` shares this Arc so the tick
+    /// loop and the status endpoint see the same state.
+    pub personal_agent: Arc<Mutex<Option<tirami_mind::PersonalAgent>>>,
+    /// Phase 18.5 — observability counters for the agent tick loop.
+    /// Exposed via `/v1/tirami/agent/status` as `loop.{ticks, last_action,
+    /// last_tick_ms}`.
+    pub agent_loop_stats: Arc<Mutex<AgentLoopStats>>,
 }
 
 impl TiramiNode {
@@ -128,6 +138,8 @@ impl TiramiNode {
             referral_tracker: Arc::new(Mutex::new(tirami_ledger::ReferralTracker::new())),
             governance: Arc::new(Mutex::new(tirami_ledger::GovernanceState::new(0))),
             chain_client: Arc::new(tirami_anchor::MockChainClient::new()),
+            personal_agent: Arc::new(Mutex::new(None)),
+            agent_loop_stats: Arc::new(Mutex::new(AgentLoopStats::new())),
         }
     }
 
@@ -179,6 +191,8 @@ impl TiramiNode {
             self.referral_tracker.clone(),
             self.governance.clone(),
             self.chain_client.clone(),
+            self.personal_agent.clone(),
+            self.agent_loop_stats.clone(),
         );
         let addr = self.config.api_socket_addr();
         tracing::info!("API server listening on {}", addr);
@@ -210,6 +224,8 @@ impl TiramiNode {
         let referral_tracker_api = self.referral_tracker.clone();
         let governance_api = self.governance.clone();
         let chain_client_api = self.chain_client.clone();
+        let personal_agent_api = self.personal_agent.clone();
+        let agent_loop_stats_api = self.agent_loop_stats.clone();
         let api_config = self.config.clone();
         tokio::spawn(async move {
             let app = crate::api::create_router_with_services(
@@ -228,6 +244,8 @@ impl TiramiNode {
                 referral_tracker_api,
                 governance_api,
                 chain_client_api,
+                personal_agent_api,
+                agent_loop_stats_api,
             );
             let addr = api_config.api_socket_addr();
             if let Ok(listener) = tokio::net::TcpListener::bind(&addr).await {
@@ -235,6 +253,24 @@ impl TiramiNode {
                 let _ = axum::serve(listener, app).await;
             }
         })
+    }
+
+    /// Phase 18.5-part-2 — spawn the PersonalAgent tick loop.
+    ///
+    /// Fires every `config.agent_tick_interval_secs` (default 30s).
+    /// Samples a minimal [`AgentTickInput`] (all-zero in the scaffold
+    /// because live utilization / task-queue plumbing ships later)
+    /// and calls [`crate::agent_loop::run_tick_once`]. Stats are
+    /// visible at `/v1/tirami/agent/status → loop.{ticks,last_action,
+    /// last_tick_ms}`.
+    pub fn spawn_agent_loop(&self) -> tokio::task::JoinHandle<()> {
+        let interval_secs = self.config.agent_tick_interval_secs;
+        spawn_agent_tick_loop(
+            self.personal_agent.clone(),
+            self.agent_loop_stats.clone(),
+            interval_secs,
+            || AgentTickInput::default(),
+        )
     }
 
     /// Initialize P2P transport.
@@ -303,6 +339,12 @@ impl TiramiNode {
         // Phase 14.3 — challenger-side audit loop: periodically picks peers
         // per their AuditTier probability and sends AuditChallenge messages.
         self.spawn_audit_challenger_loop(transport.clone());
+
+        // Phase 18.5-part-2 — PersonalAgent tick loop. Drives the
+        // auto-earn / auto-spend heuristic when an agent is
+        // configured; a no-op when it isn't. Spawned unconditionally
+        // so enabling the agent at runtime doesn't require a restart.
+        self.spawn_agent_loop();
 
         // Run pipeline coordinator with ledger
         let coordinator = PipelineCoordinator::new(transport);

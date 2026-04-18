@@ -1,3 +1,4 @@
+pub mod agent_loop;
 pub mod agora_adapter;
 pub mod api;
 pub mod api_tokens;

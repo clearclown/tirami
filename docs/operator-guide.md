@@ -284,4 +284,106 @@ The `script_hex` is a valid 40-byte Bitcoin OP_RETURN payload (`6a28 FRGE <versi
 
 ---
 
+## DDoS mitigation — Phase 17 Wave 3.4
+
+Tirami is designed for adversarial-network deployment. A public seed
+node will be probed and occasionally flooded. Plan for it from day
+one; don't bolt mitigations on during an incident.
+
+### 1. Put a WAF or proxy in front
+
+Tirami's HTTP API (`:3000` by default) **does not** implement
+layer-7 DDoS defenses — no JS challenges, no behavioral rate
+limiting, no geo-blocking. Put a mature edge in front:
+
+- **Cloudflare (free tier)** — turn on "Under Attack" mode during
+  incidents; normal mode is enough for baseline protection.
+- **Caddy** with the `rate_limit` module — terminates TLS and caps
+  per-IP requests. Configuration example:
+
+  ```caddyfile
+  api.your-tirami.example {
+    rate_limit {
+      zone api_per_ip {
+        key {remote_ip}
+        events 60
+        window 1m
+      }
+    }
+    reverse_proxy 127.0.0.1:3000
+  }
+  ```
+
+- **nginx** with `limit_req_zone` — equivalent to Caddy's
+  `rate_limit`, works well if you already run nginx.
+
+### 2. Per-node connection cap
+
+Tirami's iroh transport accepts an unbounded number of concurrent
+QUIC peers by default. For a public node, cap this via the new
+`Config::max_concurrent_connections` (default **1 000**, set `0` for
+unlimited). Beyond the cap, new incoming connections are
+immediately dropped — legitimate peers can retry; a flood attacker
+cannot exhaust file descriptors.
+
+```toml
+# tirami.toml
+max_concurrent_connections = 1000
+```
+
+Tune higher if you're running a dedicated seed node with
+`ulimit -n` raised. Do not set `0` (unlimited) on any node reachable
+from the public internet.
+
+### 3. Per-ASN rate limiting (Phase 17 Wave 2.3)
+
+Set `asn_rate_limit_enabled = true` once you've wired an IP→ASN
+resolver into the transport (see Wave-2.3-part-2 tracking issue).
+Default limits (5 000 msg/s per ASN) collapse the
+cloud-massed-Sybil multiplier.
+
+### 4. SYN flood handling
+
+iroh's QUIC implementation internally rate-limits the initial
+handshake on SYN-equivalent (Initial packet) floods. At the OS
+level you can also:
+
+- Linux: `sysctl -w net.ipv4.tcp_syncookies=1` (applies to iroh's
+  UDP socket buffer pressure indirectly).
+- Set `ulimit -n 65536` so fd exhaustion isn't your first failure
+  mode.
+
+### 5. Backpressure on economic endpoints
+
+The existing `forge_rate_limiter` caps `/v1/tirami/*` at 30
+requests per second per token. Do NOT disable this; raise the
+ceiling instead if legitimate traffic hits the limit.
+
+### 6. Monitoring
+
+Scrape `/metrics` (no auth required — it's a Prometheus target).
+Alerts to configure:
+
+- `tirami_active_peer_connections` approaching
+  `max_concurrent_connections` → scale or raise cap.
+- `tirami_auth_failures_per_minute` > 10 sustained → possibly a
+  credential-stuffing attempt; lock down the token.
+- `tirami_rate_limit_drops` non-zero → not necessarily an attack,
+  but warrants a look at traffic patterns.
+
+### 7. Incident runbook
+
+When you see sustained DDoS:
+
+1. Enable Cloudflare "Under Attack" or equivalent.
+2. Drop `max_concurrent_connections` to 200 for 10 minutes to let
+   queues drain.
+3. Check `/v1/tirami/slash-events` — are any peers being
+   legitimately penalized during the event?
+4. If a specific ASN is dominating the inbound, add it to a
+   temporary `StaticAsnResolver` block list.
+5. After 30 minutes of stable traffic, revert the temporary limits.
+
+---
+
 See also: [docs/agent-integration.md](agent-integration.md) for SDK integration, [forge-economics/docs/05-banking.md](https://github.com/clearclown/forge-economics) for lending theory, and run `forge --help` for the full CLI reference.

@@ -458,9 +458,19 @@ impl PipelineCoordinator {
                         tokio::spawn(async move {
                             use tirami_infer::InferenceEngine;
                             let start = std::time::Instant::now();
+                            // Phase 17 Wave 2.1 — if the challenger asked
+                            // for a specific layer, run `generate_audit`
+                            // with that layer index; otherwise keep the
+                            // legacy final-output-layer behavior.
+                            let requested_layer = challenge.layer_index;
                             let audit_result = {
                                 let mut eng = engine.lock().await;
-                                eng.generate_audit(&challenge.input_tokens)
+                                match requested_layer {
+                                    Some(layer) if layer != tirami_proto::AuditChallengeMsg::FINAL_OUTPUT_LAYER => {
+                                        eng.generate_audit_at_layer(&challenge.input_tokens, layer)
+                                    }
+                                    _ => eng.generate_audit(&challenge.input_tokens),
+                                }
                             };
                             match audit_result {
                                 Ok(hash) => {
@@ -474,6 +484,9 @@ impl PipelineCoordinator {
                                                 target: challenge.target.clone(),
                                                 output_hash: hash,
                                                 computation_time_ms: start.elapsed().as_millis() as u64,
+                                                // Echo the layer back so the challenger
+                                                // can verify we computed the right one.
+                                                layer_index: requested_layer,
                                                 timestamp: now_millis(),
                                             },
                                         ),
@@ -512,10 +525,14 @@ impl PipelineCoordinator {
                         let staking = staking_pool.clone();
                         tokio::spawn(async move {
                             let mut guard = ledger.lock().await;
-                            let verdict = guard.audit_tracker.resolve(
+                            // Phase 17 Wave 2.1 — include the response's
+                            // layer_index so `resolve_at_layer` can reject
+                            // cross-layer mismatches.
+                            let verdict = guard.audit_tracker.resolve_at_layer(
                                 resp.challenge_id,
                                 &resp.target,
                                 &resp.output_hash,
+                                resp.layer_index,
                                 now_millis(),
                             );
                             match verdict {

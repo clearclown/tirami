@@ -69,6 +69,9 @@ pub enum Payload {
 /// Phase 14.3 — Audit challenge. Unsigned over wire; sender identity comes
 /// from Envelope. Challenger pre-commits `expected_output_hash` by issuing
 /// the challenge — mismatching responses implicate the target.
+///
+/// Phase 17 Wave 2.1 — extended with an optional `layer_index` for
+/// SPoRA-style random-layer checks. See the field doc for semantics.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AuditChallengeMsg {
     /// Monotonic id chosen by challenger (used to match response).
@@ -82,9 +85,39 @@ pub struct AuditChallengeMsg {
     /// Deterministic input tokens (temperature=0, fixed sampler path).
     pub input_tokens: Vec<u32>,
     /// Challenger's pre-computed SHA-256 of the expected output logits.
+    ///
+    /// For a legacy (`layer_index = None` / `Some(FINAL_OUTPUT_LAYER)`)
+    /// challenge this is the hash of the final logits vector. For a
+    /// layer-scoped challenge, this is the hash of that layer's
+    /// activations — forcing the target to have the FULL model loaded
+    /// (a truncated proxy can only produce the final output).
     pub expected_output_hash: [u8; 32],
+    /// Phase 17 Wave 2.1 — SPoRA-style random layer index.
+    ///
+    /// `None` (or any pre-Phase-17 peer) means "hash the final output
+    /// logits", preserving the existing challenge semantics. `Some(i)`
+    /// asks for the hash of layer `i`'s intermediate activations:
+    /// the target cannot answer correctly without running the full
+    /// forward pass up to that layer, defeating "store only the output
+    /// layer and replay" attacks.
+    ///
+    /// `#[serde(default)]` keeps old challenges decoding cleanly.
+    #[serde(default)]
+    pub layer_index: Option<u32>,
     /// Unix ms when the challenge was issued.
     pub timestamp: u64,
+}
+
+impl AuditChallengeMsg {
+    /// Sentinel layer index meaning "final output" in explicit form.
+    /// Use this when you want to be unambiguous in the wire message.
+    pub const FINAL_OUTPUT_LAYER: u32 = u32::MAX;
+
+    /// True if this challenge targets a specific intermediate layer
+    /// rather than the final output (SPoRA mode).
+    pub fn is_layer_scoped(&self) -> bool {
+        matches!(self.layer_index, Some(i) if i != Self::FINAL_OUTPUT_LAYER)
+    }
 }
 
 /// Phase 14.3 — Target's response to an AuditChallenge.
@@ -94,10 +127,22 @@ pub struct AuditResponseMsg {
     pub challenge_id: u64,
     /// Target provider (the one who just computed).
     pub target: NodeId,
-    /// SHA-256 of the target's computed output logits.
+    /// SHA-256 of the target's computed output logits (final layer
+    /// or intermediate, depending on `AuditChallengeMsg::layer_index`).
     pub output_hash: [u8; 32],
     /// Wall-clock time the computation took (for bandwidth + honesty check).
     pub computation_time_ms: u64,
+    /// Phase 17 Wave 2.1 — echoes back the layer this response
+    /// computed for. `None` / `FINAL_OUTPUT_LAYER` = final output.
+    /// Pre-Phase-17 peers omit the field; `#[serde(default)]` lets
+    /// us parse them without error.
+    ///
+    /// A mismatch against the challenge's `layer_index` is a strong
+    /// indicator that the target is running a different
+    /// protocol version or actively cheating — the verdict handler
+    /// treats it as `Unknown`/`Failed` per policy.
+    #[serde(default)]
+    pub layer_index: Option<u32>,
     /// Unix ms when the response was sent.
     pub timestamp: u64,
 }
@@ -1332,6 +1377,7 @@ mod tests {
             model_id: ModelId("qwen2.5-0.5b".into()),
             input_tokens: vec![1, 2, 3, 4, 5],
             expected_output_hash: [0xaa; 32],
+            layer_index: None,
             timestamp: 1_000,
         }
     }
@@ -1379,6 +1425,7 @@ mod tests {
             target,
             output_hash: [0xaa; 32],
             computation_time_ms: 50,
+            layer_index: None,
             timestamp: 2_000,
         });
         assert!(msg.validate_with_sender(&imposter).is_err());
@@ -1392,6 +1439,7 @@ mod tests {
             target: target.clone(),
             output_hash: [0xaa; 32],
             computation_time_ms: 10 * 60 * 1000, // 10 min — too long
+            layer_index: None,
             timestamp: 2_000,
         });
         assert!(msg.validate_with_sender(&target).is_err());
@@ -1405,6 +1453,7 @@ mod tests {
             target,
             output_hash: [0xaa; 32],
             computation_time_ms: 50,
+            layer_index: None,
             timestamp: 2_000,
         };
         let bytes = bincode::serialize(&r).unwrap();

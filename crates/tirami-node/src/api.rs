@@ -3057,6 +3057,24 @@ struct AgentTaskRequest {
     /// estimate so `needs_user_approval` can veto.
     #[serde(default)]
     estimated_trm: Option<u64>,
+    /// Phase 18.5-part-3c — optional explicit peer hint. When both
+    /// `node_id` (hex) and `url` are supplied, the agent's tick
+    /// resolves to a real `RunRemote`, the handler dispatches a
+    /// POST to `url/v1/chat/completions`, records the returned
+    /// cost against the spend tally, and returns the peer's
+    /// output. Without this hint, remote tasks fall back to the
+    /// `ask_user` scaffold path because we have no URL for the
+    /// `select_provider` result.
+    #[serde(default)]
+    peer: Option<AgentPeerHint>,
+}
+
+#[derive(serde::Deserialize, Clone)]
+struct AgentPeerHint {
+    /// Hex-encoded NodeId for the provider.
+    node_id: String,
+    /// Base URL of the provider's HTTP API (e.g. `http://192.0.2.7:3000`).
+    url: String,
 }
 
 fn default_agent_task_max_tokens() -> u32 {
@@ -3111,11 +3129,28 @@ async fn forge_agent_task(
     let estimated_trm = req
         .estimated_trm
         .unwrap_or_else(|| ((req.max_tokens as u64).saturating_add(99) / 100).max(1));
+
+    // Phase 18.5-part-3c — parse the peer hint (if any) so we can
+    // populate `preferred_provider` and have `tick` return
+    // `RunRemote` instead of bailing to `AskUser`.
+    let peer_hint_parsed: Option<(NodeId, String)> = match &req.peer {
+        Some(hint) => match NodeId::from_hex(&hint.node_id) {
+            Ok(id) => Some((id, hint.url.trim_end_matches('/').to_string())),
+            Err(_) => {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    format!("invalid peer.node_id hex: {}", hint.node_id),
+                ));
+            }
+        },
+        None => None,
+    };
+
     let estimate = tirami_mind::TaskCostEstimate {
         size,
         estimated_trm,
         estimated_seconds: (req.max_tokens as u64 / 20).max(1),
-        preferred_provider: None,
+        preferred_provider: peer_hint_parsed.as_ref().map(|(id, _)| id.clone()),
     };
 
     // 3. Build task_id. The agent ignores it; the response echoes it.
@@ -3196,13 +3231,52 @@ async fn forge_agent_task(
             task_id,
             provider,
             cost_trm,
-        } => Ok(Json(serde_json::json!({
-            "task_id": task_id,
-            "status": "pending",
-            "reason": "remote dispatch scaffold — peer HTTP call ships in Phase 18.5-part-3c",
-            "would_route_to": provider.to_hex(),
-            "estimated_cost_trm": cost_trm,
-        }))),
+        } => {
+            // Resolve the peer URL. `peer_hint_parsed` holds the URL
+            // that came in with the request body; if the caller
+            // omitted it, we can't reach the selected provider
+            // (PriceSignal has no HTTP address field), so surface
+            // the situation as `ask_user`.
+            let Some((_, peer_url)) = peer_hint_parsed.clone() else {
+                return Ok(Json(serde_json::json!({
+                    "task_id": task_id,
+                    "status": "ask_user",
+                    "reason": "remote task selected but no peer.url supplied",
+                    "would_route_to": provider.to_hex(),
+                    "estimated_cost_trm": cost_trm,
+                })));
+            };
+
+            let dispatch = dispatch_remote_task(
+                &peer_url,
+                &req.prompt,
+                req.max_tokens,
+                req.model.as_deref(),
+            )
+            .await;
+
+            match dispatch {
+                Ok((output, tokens, remote_cost)) => {
+                    let trm_spent = remote_cost.unwrap_or(cost_trm);
+                    {
+                        let mut guard = state.personal_agent.lock().await;
+                        if let Some(agent) = guard.as_mut() {
+                            agent.record_spend(trm_spent);
+                        }
+                    }
+                    Ok(Json(serde_json::json!({
+                        "task_id": task_id,
+                        "status": "run_remote",
+                        "provider": provider.to_hex(),
+                        "peer_url": peer_url,
+                        "output": output,
+                        "tokens": tokens,
+                        "cost_trm": trm_spent,
+                    })))
+                }
+                Err(err) => Err((StatusCode::BAD_GATEWAY, err)),
+            }
+        }
         tirami_mind::TickAction::AskUser {
             task_id,
             reason,
@@ -3221,6 +3295,76 @@ async fn forge_agent_task(
             "reason": "unexpected tick action for a pending-task dispatch",
         }))),
     }
+}
+
+/// Phase 18.5-part-3c — dispatch a RunRemote task to the given
+/// peer's OpenAI-compatible chat endpoint.
+///
+/// Returns `(content_text, tokens_generated, remote_cost_trm)` on
+/// success. `remote_cost_trm` is pulled from the peer's `x_forge`
+/// extension when present (Tirami nodes attach the TRM cost to
+/// every reply). If the peer is a plain OpenAI server it's `None`
+/// and the caller should fall back to its local estimate.
+///
+/// Kept out of [`forge_agent_task`] so it can be unit-tested in
+/// isolation (fn async_fn_trait mockery is heavier than just
+/// passing a URL string).
+pub(crate) async fn dispatch_remote_task(
+    peer_url: &str,
+    prompt: &str,
+    max_tokens: u32,
+    model: Option<&str>,
+) -> Result<(String, u32, Option<u64>), String> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(60))
+        .build()
+        .map_err(|e| format!("build reqwest client: {e}"))?;
+    let url = format!("{}/v1/chat/completions", peer_url.trim_end_matches('/'));
+    let body = serde_json::json!({
+        "model": model.unwrap_or("active"),
+        "messages": [
+            { "role": "user", "content": prompt }
+        ],
+        "max_tokens": max_tokens,
+        "temperature": 0.7,
+        "stream": false,
+    });
+    let resp = client
+        .post(&url)
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("peer POST failed: {e}"))?;
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        return Err(format!("peer returned {status}: {text}"));
+    }
+    let json: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("decode peer JSON: {e}"))?;
+    let content = json
+        .get("choices")
+        .and_then(|c| c.as_array())
+        .and_then(|a| a.first())
+        .and_then(|c| c.get("message"))
+        .and_then(|m| m.get("content"))
+        .and_then(|c| c.as_str())
+        .map(|s| s.to_string())
+        .ok_or_else(|| "peer response missing choices[0].message.content".to_string())?;
+    let tokens = json
+        .get("usage")
+        .and_then(|u| u.get("completion_tokens"))
+        .and_then(|t| t.as_u64())
+        .unwrap_or(0) as u32;
+    // Tirami's OpenAI-compatible handler attaches the TRM cost via
+    // an `x_forge.trm_cost` extension; plain OpenAI servers omit it.
+    let remote_cost = json
+        .get("x_forge")
+        .and_then(|x| x.get("trm_cost"))
+        .and_then(|c| c.as_u64());
+    Ok((content, tokens, remote_cost))
 }
 
 async fn admin_save_state(
@@ -4131,6 +4275,98 @@ mod tests {
                 "prompt": "hi",
                 "max_tokens": 10,
                 "size": "XL",
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn dispatch_remote_task_parses_openai_style_response() {
+        use axum::routing::post;
+        use axum::Router as AxumRouter;
+        // Mini local server that returns an OpenAI-shaped reply
+        // with Tirami's `x_forge.trm_cost` extension.
+        let app = AxumRouter::new().route(
+            "/v1/chat/completions",
+            post(|Json(req): Json<serde_json::Value>| async move {
+                // Echo the prompt back in the content so the test
+                // can assert it round-tripped.
+                let prompt = req
+                    .get("messages")
+                    .and_then(|m| m.as_array())
+                    .and_then(|a| a.first())
+                    .and_then(|m| m.get("content"))
+                    .and_then(|c| c.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                Json(serde_json::json!({
+                    "id": "t-0",
+                    "object": "chat.completion",
+                    "created": 0,
+                    "model": "mock",
+                    "choices": [{
+                        "index": 0,
+                        "message": { "role": "assistant", "content": format!("echo: {prompt}") },
+                        "finish_reason": "stop",
+                    }],
+                    "usage": {
+                        "prompt_tokens": 5,
+                        "completion_tokens": 7,
+                        "total_tokens": 12
+                    },
+                    "x_forge": { "trm_cost": 42 }
+                }))
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        let url = format!("http://{}", addr);
+
+        let (content, tokens, cost) =
+            dispatch_remote_task(&url, "hi peer", 10, Some("mock")).await.unwrap();
+        assert_eq!(content, "echo: hi peer");
+        assert_eq!(tokens, 7);
+        assert_eq!(cost, Some(42));
+        handle.abort();
+    }
+
+    #[tokio::test]
+    async fn dispatch_remote_task_returns_error_on_non_200() {
+        use axum::routing::post;
+        use axum::Router as AxumRouter;
+        let app = AxumRouter::new().route(
+            "/v1/chat/completions",
+            post(|| async { (StatusCode::INTERNAL_SERVER_ERROR, "boom") }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        let url = format!("http://{}", addr);
+
+        let err = dispatch_remote_task(&url, "x", 5, None).await.unwrap_err();
+        assert!(err.contains("500"));
+        handle.abort();
+    }
+
+    #[tokio::test]
+    async fn agent_task_remote_with_bad_peer_node_id_is_400() {
+        let app = test_router_with_agent(
+            Config::default(),
+            Some(agent_at(NodeId([0xAAu8; 32]))),
+        );
+        let (status, _body) = post_agent_task(
+            app,
+            serde_json::json!({
+                "prompt": "hi",
+                "max_tokens": 10,
+                "size": "remote",
+                "peer": { "node_id": "not-hex", "url": "http://127.0.0.1:1" },
             }),
         )
         .await;

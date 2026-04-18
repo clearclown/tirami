@@ -259,6 +259,34 @@ enum AgentCommands {
     Status,
     /// Human-readable one-liner (the `summary` field only).
     Summary,
+    /// Ask your personal agent to handle a task and print the
+    /// result. Calls `POST /v1/tirami/agent/task` on the local
+    /// node; the agent decides whether to run it locally or on
+    /// the mesh (see --remote for the mesh hints).
+    Chat {
+        /// Prompt for the agent.
+        prompt: String,
+        /// Max tokens the response may grow to.
+        #[arg(short = 'n', long, default_value = "256")]
+        max_tokens: u32,
+        /// Force size classification: local | remote | hybrid.
+        /// Default: derived from max_tokens (≤256 → local).
+        #[arg(long)]
+        size: Option<String>,
+        /// Estimated TRM cost (caller's hint for the budget
+        /// checker). Defaults to 1 TRM per 100 tokens.
+        #[arg(long)]
+        estimated_trm: Option<u64>,
+        /// NodeId (hex) of the peer to dispatch remote tasks to.
+        /// Must be combined with --peer-url.
+        #[arg(long)]
+        peer_node_id: Option<String>,
+        /// Base URL of the peer's HTTP API (e.g.
+        /// http://192.0.2.7:3000). Must be combined with
+        /// --peer-node-id.
+        #[arg(long)]
+        peer_url: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1001,6 +1029,94 @@ async fn main() -> anyhow::Result<()> {
                         println!("{}", s);
                     } else {
                         println!("{}", serde_json::to_string(&json)?);
+                    }
+                }
+                AgentCommands::Chat {
+                    prompt,
+                    max_tokens,
+                    size,
+                    estimated_trm,
+                    peer_node_id,
+                    peer_url,
+                } => {
+                    // Previous `resp` / `json` were bound for status;
+                    // we just shadow them below.
+                    let mut body = serde_json::json!({
+                        "prompt": prompt,
+                        "max_tokens": max_tokens,
+                    });
+                    if let Some(s) = size {
+                        body["size"] = serde_json::json!(s);
+                    }
+                    if let Some(t) = estimated_trm {
+                        body["estimated_trm"] = serde_json::json!(t);
+                    }
+                    match (peer_node_id, peer_url) {
+                        (Some(node_id), Some(url)) => {
+                            body["peer"] = serde_json::json!({
+                                "node_id": node_id,
+                                "url": url,
+                            });
+                        }
+                        (Some(_), None) | (None, Some(_)) => {
+                            eprintln!(
+                                "Error: --peer-node-id and --peer-url must be supplied together"
+                            );
+                            std::process::exit(2);
+                        }
+                        (None, None) => {}
+                    }
+                    let resp = client
+                        .post(format!("{base}/v1/tirami/agent/task"))
+                        .json(&body)
+                        .send()
+                        .await?;
+                    let status = resp.status();
+                    let json: serde_json::Value = resp.json().await.unwrap_or_default();
+                    if !status.is_success() {
+                        let detail = json
+                            .as_object()
+                            .and_then(|o| o.get("error").or_else(|| o.get("reason")))
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string())
+                            .unwrap_or_else(|| json.to_string());
+                        eprintln!("Error: HTTP {} — {}", status, detail);
+                        std::process::exit(1);
+                    }
+                    let task_status = json["status"].as_str().unwrap_or("unknown");
+                    match task_status {
+                        "run_local" | "run_remote" => {
+                            if let Some(out) = json["output"].as_str() {
+                                println!("{}", out);
+                            }
+                            let trm = json["cost_trm"].as_u64().unwrap_or(0);
+                            let where_ = if task_status == "run_local" {
+                                "local".to_string()
+                            } else {
+                                let p = json["provider"].as_str().unwrap_or("?");
+                                format!("remote (via {p})")
+                            };
+                            eprintln!("\n— {} · {} TRM", where_, trm);
+                        }
+                        "ask_user" => {
+                            let reason = json["reason"].as_str().unwrap_or("agent wants confirmation");
+                            let cost = json["estimated_cost_trm"].as_u64().unwrap_or(0);
+                            println!("(agent paused — {})", reason);
+                            println!("  estimated cost: {} TRM", cost);
+                            println!("  re-run with higher --estimated-trm or add --peer-node-id/--peer-url to proceed.");
+                        }
+                        "pending" => {
+                            let reason = json["reason"].as_str().unwrap_or("remote dispatch scaffold");
+                            println!("(pending — {})", reason);
+                        }
+                        "refused" => {
+                            let reason = json["reason"].as_str().unwrap_or("refused");
+                            println!("(agent refused — {})", reason);
+                        }
+                        other => {
+                            println!("(unknown status '{other}')");
+                            println!("{}", serde_json::to_string_pretty(&json)?);
+                        }
                     }
                 }
             }

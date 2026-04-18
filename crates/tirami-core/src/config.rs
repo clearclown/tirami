@@ -104,6 +104,29 @@ pub struct Config {
     /// `docs/operator-guide.md#ddos-mitigation` for why.
     #[serde(default = "default_max_concurrent_connections")]
     pub max_concurrent_connections: u32,
+
+    /// Phase 17 Wave 4.3 — interval between trade-log seal passes
+    /// (seconds). Each pass calls `ComputeLedger::seal_and_archive`
+    /// with `cutoff = now - checkpoint_retain_secs` so trades older
+    /// than the retain window move from memory to the archive file.
+    /// Default 3600 s (1 hour). Clamped to ≥ 60 s at spawn time.
+    #[serde(default = "default_checkpoint_interval_secs")]
+    pub checkpoint_interval_secs: u64,
+
+    /// Phase 17 Wave 4.3 — how long trades are retained in the
+    /// in-memory `trade_log` before being sealed into the archive.
+    /// Default 86 400 s (24 h). Operators who need longer online
+    /// windows for /v1/tirami/trades can raise this at the cost of
+    /// memory.
+    #[serde(default = "default_checkpoint_retain_secs")]
+    pub checkpoint_retain_secs: u64,
+
+    /// Phase 17 Wave 4.3 — filesystem path for the JSON-lines
+    /// archive. `None` disables archival writes (the seal pass
+    /// still prunes in-memory, but historical trades are lost —
+    /// only acceptable for dev nodes).
+    #[serde(default)]
+    pub archive_path: Option<std::path::PathBuf>,
 }
 
 fn default_anchor_interval_secs() -> u64 {
@@ -116,6 +139,14 @@ fn default_slashing_interval_secs() -> u64 {
 
 fn default_max_concurrent_connections() -> u32 {
     1_000
+}
+
+fn default_checkpoint_interval_secs() -> u64 {
+    3_600
+}
+
+fn default_checkpoint_retain_secs() -> u64 {
+    24 * 3_600
 }
 
 impl Config {
@@ -195,6 +226,9 @@ impl Default for Config {
             pq_signatures: false,
             asn_rate_limit_enabled: false,
             max_concurrent_connections: 1_000,
+            checkpoint_interval_secs: 3_600,
+            checkpoint_retain_secs: 24 * 3_600,
+            archive_path: None,
         }
     }
 }

@@ -6,7 +6,7 @@ use iroh::endpoint::presets;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{
     Arc,
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
 };
 use tokio::sync::{Mutex, Notify, mpsc};
 
@@ -46,6 +46,24 @@ pub struct ForgeTransport {
     incoming_rx: Arc<Mutex<mpsc::Receiver<(String, Envelope)>>>,
     shutdown: Arc<Notify>,
     closed: Arc<AtomicBool>,
+    /// Phase 17 Wave 4.2 — DDoS connection cap. `0` means unlimited
+    /// (intentionally dangerous on public nodes). Positive values
+    /// cause the accept loop to drop new handshakes once
+    /// `peers.len() >= max_connections`, preventing fd exhaustion
+    /// from a connection-flood attacker.
+    max_connections: usize,
+    /// Counter of connections dropped due to `max_connections`
+    /// cap. Exposed for Prometheus / operator dashboards.
+    dropped_over_cap: Arc<AtomicU64>,
+    /// Phase 17 Wave 4.4 — optional per-ASN rate limiter. When
+    /// `Some`, incoming connections' remote IPs are resolved to
+    /// ASNs via the installed `AsnResolver`, and connections from
+    /// an over-cap ASN are dropped at accept-time. `None` skips
+    /// the gate entirely (operators without a MaxMind DB should
+    /// leave this as `None`).
+    asn_limiter: Option<Arc<Mutex<crate::asn_rate_limit::AsnRateLimiter>>>,
+    /// Counter of connections dropped due to ASN rate limit.
+    dropped_asn_over_cap: Arc<AtomicU64>,
 }
 
 impl ForgeTransport {
@@ -77,7 +95,50 @@ impl ForgeTransport {
             incoming_rx: Arc::new(Mutex::new(incoming_rx)),
             shutdown: Arc::new(Notify::new()),
             closed: Arc::new(AtomicBool::new(false)),
+            // Phase 17 Wave 4.2 — 1 000 is the plan default; callers
+            // that want a different cap construct via
+            // `new_with_max_connections`.
+            max_connections: 1_000,
+            dropped_over_cap: Arc::new(AtomicU64::new(0)),
+            asn_limiter: None,
+            dropped_asn_over_cap: Arc::new(AtomicU64::new(0)),
         })
+    }
+
+    /// Phase 17 Wave 4.2 — construct with an explicit connection cap.
+    /// `0` disables the cap entirely (intentionally dangerous on
+    /// public nodes; documented in the operator guide).
+    pub async fn new_with_max_connections(max_connections: usize) -> anyhow::Result<Self> {
+        let mut t = Self::new().await?;
+        t.max_connections = max_connections;
+        Ok(t)
+    }
+
+    /// Current accept-cap. 0 means unlimited.
+    pub fn max_connections(&self) -> usize {
+        self.max_connections
+    }
+
+    /// Total count of connections dropped because the cap was hit.
+    /// Intended for Prometheus export.
+    pub fn dropped_over_cap_count(&self) -> u64 {
+        self.dropped_over_cap.load(Ordering::Relaxed)
+    }
+
+    /// Phase 17 Wave 4.4 — install a per-ASN rate limiter. Until this
+    /// is called, the accept loop skips the ASN check entirely.
+    /// Operators with a MaxMind GeoLite2-ASN DB or a
+    /// `StaticAsnResolver` wrap it in `Arc<Mutex<_>>` and pass it here.
+    pub fn install_asn_limiter(
+        &mut self,
+        limiter: Arc<Mutex<crate::asn_rate_limit::AsnRateLimiter>>,
+    ) {
+        self.asn_limiter = Some(limiter);
+    }
+
+    /// Total count of connections dropped by the ASN rate limiter.
+    pub fn dropped_asn_over_cap_count(&self) -> u64 {
+        self.dropped_asn_over_cap.load(Ordering::Relaxed)
     }
 
     /// Get this node's Iroh EndpointId.
@@ -147,20 +208,73 @@ impl ForgeTransport {
         let peers = self.peers.clone();
         let recent_msg_ids = self.recent_msg_ids.clone();
         let incoming_tx = self.incoming_tx.clone();
+        // Phase 17 Wave 4.2 — capture the cap + counter for the
+        // accept loop to consult on every incoming connection.
+        let max_connections = self.max_connections;
+        let dropped_over_cap = self.dropped_over_cap.clone();
+        // Phase 17 Wave 4.4 — capture the optional ASN limiter.
+        let asn_limiter = self.asn_limiter.clone();
+        let dropped_asn_over_cap = self.dropped_asn_over_cap.clone();
 
         tokio::spawn(async move {
             loop {
                 match endpoint.accept().await {
                     Some(connecting) => {
+                        // Phase 17 Wave 4.2 — enforce max_connections.
+                        // A value of 0 disables the cap entirely.
+                        if max_connections > 0 {
+                            let current_peers = peers.lock().await.len();
+                            if current_peers >= max_connections {
+                                dropped_over_cap.fetch_add(1, Ordering::Relaxed);
+                                tracing::warn!(
+                                    peer_count = current_peers,
+                                    cap = max_connections,
+                                    "connection refused: max_connections cap reached"
+                                );
+                                // `connecting` goes out of scope, closing the connection.
+                                drop(connecting);
+                                continue;
+                            }
+                        }
                         let peers = peers.clone();
                         let recent_msg_ids = recent_msg_ids.clone();
                         let incoming_tx = incoming_tx.clone();
+                        let asn_limiter = asn_limiter.clone();
+                        let dropped_asn_over_cap = dropped_asn_over_cap.clone();
 
                         tokio::spawn(async move {
                             match connecting.await {
                                 Ok(conn) => {
                                     let peer_conn = PeerConnection::new(conn);
                                     let peer_id = peer_conn.peer_id().to_string();
+
+                                    // Phase 17 Wave 4.4 — ASN rate limit.
+                                    // Consult AFTER handshake because only
+                                    // then is the remote IP available via
+                                    // `PeerConnection::remote_ip`. On over-cap,
+                                    // we drop the PeerConnection (closes the
+                                    // underlying QUIC connection) without
+                                    // adding to `peers`.
+                                    if let Some(limiter) = asn_limiter.as_ref() {
+                                        if let Some(ip) = peer_conn.remote_ip() {
+                                            let ok = limiter.lock().await.take(ip);
+                                            if !ok {
+                                                dropped_asn_over_cap
+                                                    .fetch_add(1, Ordering::Relaxed);
+                                                tracing::warn!(
+                                                    peer = %peer_conn.peer_node_id(),
+                                                    ip = %ip,
+                                                    "connection dropped by per-ASN rate limit"
+                                                );
+                                                return;
+                                            }
+                                        }
+                                        // Relay-only peers skip the limit —
+                                        // they share the "unknown ASN" bucket
+                                        // when `remote_ip()` is None only if
+                                        // the resolver populates it.
+                                    }
+
                                     tracing::info!(
                                         "Accepted connection from: {}",
                                         peer_conn.peer_node_id()

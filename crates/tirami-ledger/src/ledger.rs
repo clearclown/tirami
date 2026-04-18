@@ -93,6 +93,15 @@ pub struct ComputeLedger {
     /// `#[serde(default)]` keeps pre-Phase-17 snapshots loadable.
     #[serde(default)]
     pub checkpoints: Vec<crate::checkpoint::LedgerCheckpoint>,
+    /// Phase 17 Wave 4.1 — per-bucket welcome-loan rate limiter.
+    /// Ephemeral (skip_serializing): rate windows are short-lived;
+    /// losing the counter on restart is safer than preserving stale
+    /// data. Callers pass a bucket key (typically an ASN string) to
+    /// [`ComputeLedger::can_issue_welcome_loan_limited`]; if the
+    /// bucket has already exceeded the cap, the grant is denied
+    /// even if the global Sybil ceiling hasn't been hit.
+    #[serde(default, skip_serializing)]
+    pub sybil_limiter: crate::sybil::WelcomeLoanLimiter,
 }
 
 /// Audit trail entry written each time [`ComputeLedger::update_trust_penalties`]
@@ -557,6 +566,7 @@ impl ComputeLedger {
             seen_nonces: HashMap::new(),
             slash_events: Vec::new(),
             checkpoints: Vec::new(),
+            sybil_limiter: crate::sybil::WelcomeLoanLimiter::new(),
         }
     }
 
@@ -896,6 +906,7 @@ impl ComputeLedger {
             seen_nonces: HashMap::new(),
             slash_events: snapshot.slash_events,
             checkpoints: snapshot.checkpoints,
+            sybil_limiter: crate::sybil::WelcomeLoanLimiter::new(),
         };
         // Phase 17 Wave 1.2 — replay defense must survive a restart.
         ledger.rebuild_nonce_cache();
@@ -2067,6 +2078,43 @@ impl ComputeLedger {
             return false;
         }
         true
+    }
+
+    /// Phase 17 Wave 4.1 — per-bucket welcome-loan eligibility.
+    ///
+    /// Layers the Wave 2.8 per-bucket rolling-window cap on top of
+    /// the global Sybil-ceiling check. `bucket` is an operator-chosen
+    /// key (typically the requester's ASN string — e.g.
+    /// `"AS16509"` for AWS) so that a flood of welcome-loan requests
+    /// coming from a single cloud provider can be gated even when
+    /// each individual request would pass the global ceiling.
+    ///
+    /// `stake_proven = true` applies the 10× multiplier (reserved
+    /// for peers that have provided verifiable L2 stake; until
+    /// Wave 2.7 lands live chain integration, callers pass `false`).
+    ///
+    /// Takes `&mut self` because the limiter prunes its own window
+    /// on every query.
+    pub fn can_issue_welcome_loan_limited(
+        &mut self,
+        node_id: &NodeId,
+        bucket: &str,
+        stake_proven: bool,
+        now_ms: u64,
+    ) -> bool {
+        if !self.can_issue_welcome_loan(node_id) {
+            return false;
+        }
+        self.sybil_limiter.can_issue(bucket, stake_proven, now_ms)
+    }
+
+    /// Phase 17 Wave 4.1 — record a successful welcome-loan grant
+    /// so future `can_issue_welcome_loan_limited` calls on the same
+    /// bucket see it in the rolling window. Caller invokes this
+    /// AFTER the grant has actually been applied; no-op if the
+    /// grant is later rolled back.
+    pub fn record_welcome_loan_grant(&mut self, bucket: &str, now_ms: u64) {
+        self.sybil_limiter.record(bucket, now_ms);
     }
 
     /// Estimate the CU cost for a request against a tier-classified model.
@@ -4580,6 +4628,100 @@ mod tests {
             !ledger.can_issue_welcome_loan(&node),
             "already-known node must not receive a second welcome loan"
         );
+    }
+
+    // --- Phase 17 Wave 4.1: bucketed welcome-loan limiter wire-up ---
+
+    #[test]
+    fn sec_welcome_loan_limited_defers_to_per_bucket_cap() {
+        // A bucket that has exceeded its per-ASN cap must fail
+        // `can_issue_welcome_loan_limited` even when the global
+        // Sybil ceiling is untouched. Previously (Wave 2.8 primitive
+        // only) this hole was open — a cloud Sybil could collect
+        // loans from one ASN without ever tripping the global
+        // "100 unknown nodes" check.
+        let mut ledger = ComputeLedger::new();
+        let now = 1_000_000;
+        // Pre-fill the bucket to its cap.
+        for i in 0..crate::sybil::DEFAULT_MAX_PER_BUCKET_PER_WINDOW {
+            ledger.record_welcome_loan_grant("AS16509", now + i as u64);
+        }
+        // A brand-new node from the same bucket must be denied.
+        let fresh = NodeId([0x99u8; 32]);
+        assert!(
+            !ledger.can_issue_welcome_loan_limited(&fresh, "AS16509", false, now + 100),
+            "per-bucket cap must deny even with global ceiling clear"
+        );
+    }
+
+    #[test]
+    fn sec_welcome_loan_limited_allows_different_bucket() {
+        // Same flood on AS16509 must not block a legit peer on AS15169 (GCP).
+        let mut ledger = ComputeLedger::new();
+        let now = 1_000_000;
+        for i in 0..crate::sybil::DEFAULT_MAX_PER_BUCKET_PER_WINDOW {
+            ledger.record_welcome_loan_grant("AS16509", now + i as u64);
+        }
+        let fresh = NodeId([0x42u8; 32]);
+        assert!(
+            ledger.can_issue_welcome_loan_limited(&fresh, "AS15169", false, now + 100),
+            "a different ASN bucket must still be eligible"
+        );
+    }
+
+    #[test]
+    fn sec_welcome_loan_limited_honors_global_ceiling_first() {
+        // If the existing global Sybil ceiling rejects, the bucket
+        // check shouldn't even matter — short-circuit to false.
+        use crate::lending::WELCOME_LOAN_SYBIL_THRESHOLD;
+        let mut ledger = ComputeLedger::new();
+        // Fill ledger past the global Sybil threshold.
+        let count = WELCOME_LOAN_SYBIL_THRESHOLD + 1;
+        for i in 0..=count {
+            let nid = NodeId([i as u8; 32]);
+            ledger.balances.insert(nid.clone(), tirami_core::NodeBalance {
+                node_id: nid,
+                contributed: 0,
+                consumed: 0,
+                reserved: 0,
+                reputation: 0.5,
+            });
+        }
+        let fresh = NodeId([0xFFu8; 32]);
+        // Fresh bucket — NOT limited — but global ceiling blocks.
+        assert!(!ledger.can_issue_welcome_loan_limited(&fresh, "AS-fresh", false, 1_000));
+    }
+
+    #[test]
+    fn sec_welcome_loan_grant_recorded_against_bucket() {
+        let mut ledger = ComputeLedger::new();
+        let now = 1_000_000;
+        // Before recording, `can_issue_welcome_loan_limited` passes.
+        let node_a = NodeId([0xA1u8; 32]);
+        assert!(ledger.can_issue_welcome_loan_limited(&node_a, "AS-bucket", false, now));
+        // Record the grant, fill the bucket.
+        for i in 0..crate::sybil::DEFAULT_MAX_PER_BUCKET_PER_WINDOW {
+            ledger.record_welcome_loan_grant("AS-bucket", now + i as u64);
+        }
+        // Subsequent request on the same bucket is denied.
+        let node_b = NodeId([0xA2u8; 32]);
+        assert!(!ledger.can_issue_welcome_loan_limited(&node_b, "AS-bucket", false, now + 100));
+    }
+
+    #[test]
+    fn sec_welcome_loan_limited_stake_proven_gets_10x_bonus() {
+        let mut ledger = ComputeLedger::new();
+        let now = 1_000_000;
+        // Fill the bucket to the non-staked cap.
+        for i in 0..crate::sybil::DEFAULT_MAX_PER_BUCKET_PER_WINDOW {
+            ledger.record_welcome_loan_grant("AS-premium", now + i as u64);
+        }
+        let non_staked = NodeId([0x01u8; 32]);
+        let staked = NodeId([0x02u8; 32]);
+        // Non-staked peer from this bucket is denied (cap hit).
+        assert!(!ledger.can_issue_welcome_loan_limited(&non_staked, "AS-premium", false, now + 100));
+        // Stake-proven peer still allowed (10× multiplier).
+        assert!(ledger.can_issue_welcome_loan_limited(&staked, "AS-premium", true, now + 100));
     }
 
     // --- Attack 7: HMAC integrity — tampered trade CU amount ---

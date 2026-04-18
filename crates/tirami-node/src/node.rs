@@ -243,9 +243,14 @@ impl TiramiNode {
             return Ok(transport.clone());
         }
 
-        let transport = ForgeTransport::new()
-            .await
-            .map_err(|e| tirami_core::TiramiError::NetworkError(format!("transport: {e}")))?;
+        // Phase 17 Wave 4.2 — pick up the operator's DDoS cap from
+        // Config. `0` disables the cap entirely (dangerous on public
+        // nodes; documented in docs/operator-guide.md).
+        let transport = ForgeTransport::new_with_max_connections(
+            self.config.max_concurrent_connections as usize,
+        )
+        .await
+        .map_err(|e| tirami_core::TiramiError::NetworkError(format!("transport: {e}")))?;
         let transport = Arc::new(transport);
         let local_capability = build_local_capability(&self.config, transport.tirami_node_id());
         self.cluster = Some(Arc::new(ClusterManager::new(
@@ -288,6 +293,12 @@ impl TiramiNode {
         // (default 300s) and burns stake for nodes exceeding the collusion
         // trust-penalty threshold.
         self.spawn_slashing_loop();
+
+        // Phase 17 Wave 4.3 — spawn the trade-log checkpoint loop so
+        // in-memory `trade_log` memory stays bounded over long
+        // operation. Seals trades older than
+        // `config.checkpoint_retain_secs` into the JSON-lines archive.
+        self.spawn_checkpoint_loop();
 
         // Phase 14.3 — challenger-side audit loop: periodically picks peers
         // per their AuditTier probability and sends AuditChallenge messages.
@@ -549,6 +560,80 @@ impl TiramiNode {
                         if let Err(e) = l.save_to_path(path) {
                             tracing::error!("Failed to persist slash events: {}", e);
                         }
+                    }
+                }
+            }
+        });
+    }
+
+    /// Phase 17 Wave 4.3 — spawn the trade-log checkpoint loop.
+    ///
+    /// Every `config.checkpoint_interval_secs` (default 1 h, clamped
+    /// ≥ 60 s) this loop calls `ComputeLedger::seal_and_archive`
+    /// with `cutoff = now - checkpoint_retain_secs` (default 24 h).
+    /// The effect: `trade_log` in memory never grows past roughly
+    /// one retain-window's worth of trades, while historical trades
+    /// remain recoverable from `config.archive_path`.
+    ///
+    /// If `config.archive_path` is `None`, the seal still prunes
+    /// in-memory state but the archive write is a no-op (the
+    /// `ArchivePath::none()` branch of `seal_and_archive`).
+    fn spawn_checkpoint_loop(&self) {
+        let ledger = self.ledger.clone();
+        let ledger_path = self.config.ledger_path.clone();
+        let interval_secs = self.config.checkpoint_interval_secs.max(60);
+        let retain_ms: u64 = self
+            .config
+            .checkpoint_retain_secs
+            .saturating_mul(1_000);
+        let archive = tirami_ledger::ArchivePath(self.config.archive_path.clone());
+
+        tokio::spawn(async move {
+            let mut ticker =
+                tokio::time::interval(std::time::Duration::from_secs(interval_secs));
+            // Skip the immediate first fire; let the node bootstrap.
+            ticker.tick().await;
+
+            loop {
+                ticker.tick().await;
+
+                let now_ms = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis() as u64)
+                    .unwrap_or(0);
+                let cutoff_ms = now_ms.saturating_sub(retain_ms);
+
+                let outcome = {
+                    let mut l = ledger.lock().await;
+                    l.seal_and_archive(cutoff_ms, now_ms, &archive)
+                };
+
+                match outcome {
+                    Ok(checkpoint) if checkpoint.is_nonempty() => {
+                        tracing::info!(
+                            sealed = checkpoint.trade_count_sealed,
+                            cutoff_ms,
+                            merkle_root = %hex::encode(checkpoint.merkle_root),
+                            "checkpoint loop sealed trades to archive"
+                        );
+                        // Persist the checkpoint record so it survives
+                        // restart. The trade_log prune is in-memory-only
+                        // until the next save.
+                        if let Some(path) = ledger_path.as_ref() {
+                            let l = ledger.lock().await;
+                            if let Err(e) = l.save_to_path(path) {
+                                tracing::error!(
+                                    "failed to persist ledger after checkpoint: {}",
+                                    e
+                                );
+                            }
+                        }
+                    }
+                    Ok(_) => {
+                        tracing::debug!("checkpoint loop: nothing to seal");
+                    }
+                    Err(e) => {
+                        tracing::error!("checkpoint loop archive write failed: {}", e);
                     }
                 }
             }

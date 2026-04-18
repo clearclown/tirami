@@ -1,0 +1,52 @@
+# Phase 17 Wave 3.2 — Kani formal verification CI.
+#
+# Security review:
+# - No untrusted inputs are used. Only `runner.os` and `hashFiles`
+#   are interpolated, both GitHub-provided constants.
+# - No `github.event.*` fields are consumed in `run:` blocks.
+# - Triggers restricted to PRs touching the ledger crate or this
+#   workflow file itself, plus manual dispatch.
+name: Kani Formal Verification
+
+on:
+  pull_request:
+    paths:
+      - 'crates/tirami-ledger/**'
+      - '.github/workflows/kani.yml'
+  workflow_dispatch:
+
+jobs:
+  kani:
+    name: cargo kani (tirami-ledger)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Kani
+        run: |
+          cargo install --locked kani-verifier
+          cargo kani setup
+
+      - name: Cache cargo registry + target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: kani-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Run Kani proofs
+        run: cargo kani --package tirami-ledger
+
+      - name: Report proof summary
+        if: always()
+        run: |
+          echo "Kani invariant count: $(grep -c '#\[kani::proof\]' crates/tirami-ledger/src/kani_proofs.rs)"
+          echo "Target for external audit readiness: >= 30 proofs (Wave 3.3)"

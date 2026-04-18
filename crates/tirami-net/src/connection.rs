@@ -32,6 +32,28 @@ impl PeerConnection {
         &self.peer_node_id
     }
 
+    /// Phase 17 Wave 4.4 — remote IP address of this connection.
+    ///
+    /// iroh 0.97 abstracts over direct QUIC paths + relay paths;
+    /// `Connection::paths()` returns a `PathWatcher` that yields a
+    /// `PathInfo` per path currently known for the peer. We iterate
+    /// and pick the first IP-based path (`TransportAddr::Ip`) we see.
+    /// `None` means every known path is a relay URL or a custom
+    /// transport — the peer is unreachable for ASN-level rate
+    /// limiting, so callers should treat them as the "unknown ASN"
+    /// bucket.
+    ///
+    /// NOTE: this consumes a fresh `PathWatcher` each call because
+    /// `Connection::paths()` takes `&self` and returns a new watcher.
+    /// No state is mutated on the connection itself.
+    pub fn remote_ip(&self) -> Option<std::net::IpAddr> {
+        use iroh::TransportAddr;
+        self.conn.paths().into_iter().find_map(|p| match p.remote_addr() {
+            TransportAddr::Ip(sa) => Some(sa.ip()),
+            _ => None,
+        })
+    }
+
     /// Send a protocol message to this peer.
     pub async fn send_message(&self, envelope: &Envelope) -> anyhow::Result<()> {
         let _lock = self.write_lock.lock().await;

@@ -153,6 +153,78 @@ and the A2A / MCP market layer.
 | LDK wallet integration for anchor broadcast | Connect tirami-lightning to the anchor tx skeleton |
 | tirami-sdk / forge-cu-mcp PyPI upload | User-gated final step of Phase 10 P1 |
 
+## Phase 12-16: Governance + L2 anchor ✅ (2026-04-10 → 2026-04-17)
+
+Stake / governance / referral + unified scheduler + FLOP measurement
++ hybrid-chain anchor. All tested, all in production paths. See
+[CHANGELOG.md](../CHANGELOG.md) for per-wave detail.
+
+## Phase 17: Large-Scale Security Hardening ✅ (2026-04-18)
+
+**Goal:** Make Tirami safe to release on a public adversarial
+network at 100-1 000 nodes of scale. Organized as 4 waves of
+6 - 8 items each, 24 primitives total, 180 new unit tests.
+
+See [`security/phase-17-summary.md`](security/phase-17-summary.md)
+for the condensed audit-facing view. Per-wave highlights:
+
+**Wave 1 — P0 Critical Integrity**
+- TradeRecord v2 with 128-bit nonce (replay defense)
+- `execute_signed_trade` with nonce dedup cache
+- Slashing wired into a 5-minute daemon loop
+- AuditVerdict::Failed → 30% stake burn + audit trail
+- Scoped API tokens (ReadOnly / Inference / Economy / Admin)
+- Ed25519 + ML-DSA hybrid signature scaffold
+
+**Wave 2 — P1 Scale Hardening**
+- SPoRA random-layer audit
+- Probabilistic heavy-audit scaffold (1% / 2-of-3 quorum)
+- Per-ASN rate limiter
+- Trade-log seal + JSON-lines archive
+- Fork detection + nonce-fraud proofs
+- PeerRegistry LRU bound
+- Base Sepolia scaffold + deployment runbook
+- Welcome-loan per-bucket Sybil cap
+
+**Wave 3 — P2 Hostile-Environment Readiness**
+- Hardware attestation scaffold (Apple SE / NVIDIA H100 CC / Intel SGX / AMD SEV-SNP)
+- Kani formal verification (10 invariants; target ≥ 30 before audit)
+- External audit scope + candidate shortlist
+- DDoS mitigation (connection cap + 7-section ops guide)
+- Key rotation scaffold (NodeIdentity with epochs)
+- Bug bounty framework
+
+**Wave 4 — Production Wire-up**
+- WelcomeLoanLimiter wired into ComputeLedger
+- `max_concurrent_connections` enforced in transport
+- Daemon checkpoint loop (`seal_and_archive` every hour)
+- AsnRateLimiter wired into transport (via `Connection::paths()` → `PathInfo::remote_addr()`)
+- API self-sign path clarification (architectural)
+- Kani + Foundry CI + TiramiBridge first-mint fix + PGP setup guide
+
+Mainnet deploy remains **BLOCKED** until the external gates
+listed at the top of `security/phase-17-summary.md` are all
+satisfied (external audit + Sepolia stability + multi-sig +
+bug bounty live + ML-DSA dep resolution).
+
+## Phase 18 — Post-audit integration (planned)
+
+Driven by the external audit's findings plus the external
+gates that were documented but couldn't be closed in Phase 17:
+
+| Deliverable | Description |
+|---|---|
+| External audit findings resolution | Act on Critical / High / Medium findings from the auditor |
+| Base Sepolia live deploy | Using the Wave 2.7 runbook |
+| Fork resync wire protocol | `ResyncRequest` + `ResyncBatch` messages (part-2 of Wave 2.5) |
+| Real ML-DSA backend | Swap `MockPqVerifier` for real FIPS-204 once the dep pin resolves |
+| CandleEngine SPoRA override | Backend-specific `generate_audit_at_layer` that hashes real intermediate activations |
+| NodeIdentity live integration | Migrate `ForgeTransport` + `forge node rotate-key` CLI |
+| Apple SE / NVIDIA H100 CC bindings | Real hardware attestation via `security-framework` / `nvml-wrapper` |
+| Kani proof expansion | 10 → 30+ invariants |
+| Per-endpoint scope gating | Migrate each `/v1/tirami/*` to require its appropriate `ApiScope` |
+| Mainnet deploy | After 30-day Sepolia stability + multi-sig + bounty live |
+
 ## Long-term
 
 | Milestone | Description |

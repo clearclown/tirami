@@ -859,6 +859,24 @@ async fn record_api_trade(
     let mut ledger = ledger.lock().await;
     let trm_cost = ledger.estimate_cost(tokens as u64, 1, 1);
     let flops_estimated = flops_per_token.saturating_mul(tokens as u64);
+    // Phase 17 Wave 4.5 — self-originated bookkeeping trade.
+    //
+    // This trade records a locally-served HTTP inference request
+    // against our OWN balance. It is NEVER gossiped — only
+    // `broadcast_trade` in pipeline.rs feeds the peer-to-peer path,
+    // and that function is only reachable from the signed-accept
+    // flow after a remote consumer has dual-signed.
+    //
+    // Dual-signing this locally is therefore NOT a defense-in-depth
+    // win: an adversary with write access to this node (the only
+    // threat model where self-dealing would matter) can edit the
+    // on-disk ledger directly, bypassing any signature check the
+    // ledger might enforce. We keep the unsigned path here and rely
+    // on the HMAC wrapper + dual-sig gossip verification layers
+    // already in place.
+    //
+    // Nonce stays zero (v1 canonical layout) because a v2 nonce
+    // without a signature contributes nothing and inflates storage.
     let trade = TradeRecord {
         provider: provider.clone(),
         consumer: consumer.unwrap_or(NodeId([255u8; 32])),
@@ -867,7 +885,7 @@ async fn record_api_trade(
         timestamp: now_millis(),
         model_id: model_id.to_string(),
         flops_estimated,
-            nonce: [0u8; 16],
+        nonce: [0u8; 16],
     };
     ledger.execute_trade(&trade);
     trm_cost

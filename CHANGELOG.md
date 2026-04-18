@@ -266,6 +266,111 @@ invariants invisible to the regular build (cfg-gated).
 Waves 1+2+3, spanning 20 primitives). `verify-impl.sh` GREEN
 (123 / 123) throughout.
 
+### Phase 17 Wave 4 — Production Wire-up (2026-04-18)
+
+Wave 4 closes the "primitive shipped but not actually running"
+gaps that Waves 2-3 created by deliberately separating primitives
+from integration. With Wave 4 every buildable defense is on the
+hot path; what remains is genuinely external (iroh upstream,
+external auditor engagement, Sepolia live deploy).
+
+**4.1 — WelcomeLoanLimiter wired into ComputeLedger**
+- `ComputeLedger.sybil_limiter: WelcomeLoanLimiter` field
+  (ephemeral).
+- New `can_issue_welcome_loan_limited(node_id, bucket,
+  stake_proven, now_ms) -> bool` — layers per-bucket cap on top
+  of the global Sybil ceiling.
+- `record_welcome_loan_grant(bucket, now_ms)` for callers.
+- +5 tests covering per-bucket / cross-bucket / global ceiling
+  short-circuit / grant recording / stake-proven 10× multiplier.
+
+**4.2 — max_concurrent_connections enforced in transport**
+- `ForgeTransport.max_connections: usize` + `dropped_over_cap:
+  Arc<AtomicU64>`.
+- `new_with_max_connections(n)` constructor.
+- Accept loop refuses past-cap handshakes BEFORE paying
+  `connecting.await` — cheap rejection for a flood attacker.
+- `TiramiNode::init_transport` now threads
+  `config.max_concurrent_connections` (default 1000) to the
+  transport. The Wave 3.4 config field is finally enforced.
+
+**4.3 — spawn_checkpoint_loop in daemon**
+- New config: `checkpoint_interval_secs` (default 3600),
+  `checkpoint_retain_secs` (default 86 400 = 24 h),
+  `archive_path: Option<PathBuf>`.
+- `TiramiNode::spawn_checkpoint_loop` periodically calls
+  `seal_and_archive` with `cutoff = now - retain_ms`, logging
+  sealed count + Merkle root, persisting the ledger on nonempty
+  seals.
+- Effect: `trade_log` in-memory footprint bounded by retain
+  window × trade rate, not the node's total lifetime. The Wave
+  2.4 primitive now runs.
+
+**4.4 — AsnRateLimiter in transport — RESOLVED (initially thought blocked)**
+- First attempt: `PeerConnection::remote_ip()` against
+  `iroh::endpoint::Connection::remote_address()` — method
+  doesn't exist on 0.97.
+- Deeper investigation: iroh 0.97 DOES expose peer IPs via
+  `Connection::paths()` → `PathWatcher::into_iter()` →
+  `PathInfo::remote_addr()` → `TransportAddr::Ip(SocketAddr)`.
+- Wired: `PeerConnection::remote_ip() -> Option<IpAddr>`.
+- `ForgeTransport.asn_limiter: Option<Arc<Mutex<AsnRateLimiter>>>`
+  + `install_asn_limiter()` operator hook + `dropped_asn_over_cap`
+  counter. Accept loop consults limiter after handshake (when the
+  IP is known), drops the connection on over-cap.
+- K-004 in `docs/security/known-issues.md` moved to "Resolved".
+
+**4.5 — API self-sign path — architecturally not needed**
+- Reviewed `api::record_api_trade` and
+  `mind_adapter::record_frontier_consumption`.
+- Finding: these are locally-originated bookkeeping trades,
+  never gossiped (no `broadcast_trade` call in either file).
+  The dual-sig requirement defends against peer-originated
+  replay; a compromised local host can bypass any in-memory
+  sig check by editing the ledger file directly.
+- Action: added explicit comments at both call sites explaining
+  the architectural reasoning so future readers don't reopen
+  this. Cleaned up stray indentation from the Wave 1.1 bulk
+  rewrite. No behavior change.
+
+**Wave 4 test coverage:** 1 066 → 1 071 passing (+5 new in
+Wave 4.1; Waves 4.2-4.5 are integration-only). `cargo build
+--workspace` clean. `verify-impl.sh` 123/123 GREEN.
+
+**4.6 — CI + contracts polish**
+- New `.github/workflows/kani.yml` for Wave 3.2 invariants —
+  triggers on PRs touching `tirami-ledger/**`, 30-minute budget,
+  cargo cache, reports proof count vs ≥ 30 Wave-3.3 target.
+- New `repos/tirami-contracts/.github/workflows/foundry.yml` —
+  `forge build --sizes` + `forge test -vv` on push/PR.
+- `repos/tirami-contracts/src/TiramiBridge.sol`: fixed first-mint
+  deadlock (`block.timestamp >= 0 + MINT_COOLDOWN` was false under
+  Foundry's `block.timestamp = 1`). Added `lastMint == 0 ||`
+  short-circuit.
+- `forge test` now 15 / 15 passing (was 11 / 15 with 4 cooldown
+  failures).
+- `docs/security/pgp-key-setup.md` — operator-owned PGP key
+  generation procedure (Ed25519 quick-generate, keyserver
+  publication, 2-year rotation policy, revocation flow). The
+  key material stays with the operator, not this session.
+
+**Phase 17 total (final):** 891 → 1 071 passing (+180 new
+tests). Workspace: all GREEN. `forge test`: 15 / 15.
+`verify-impl.sh`: 123 / 123 GREEN. 24 primitives landed.
+
+Remaining external gates (require operator action, cannot be
+closed from code alone):
+1. External security audit engagement (Wave 3.3 scope prepared).
+2. Base Sepolia live deploy (Wave 2.7 runbook ready, Foundry
+   verified locally, contracts forge-test green).
+3. 30-day Sepolia stability observation (post-deploy).
+4. Multi-sig custody configuration (pre-deploy).
+5. Bug bounty program launch (`SECURITY.md` framework ready;
+   PGP key generation guide at
+   `docs/security/pgp-key-setup.md`).
+6. Real ML-DSA backend swap (Wave 1.6 scaffold) — unblocks when
+   `ml-dsa` and iroh's `digest` dep pins reconcile.
+
 ### Phase 14 — Unified Scheduler (2026-04-14 → 2026-04-17)
 
 Brings the v2 reference implementation's "Ledger-as-Brain" architecture

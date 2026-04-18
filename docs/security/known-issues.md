@@ -20,8 +20,11 @@ own assessment; the external auditor is welcome to disagree.
 | T6 | No PeerRegistry eviction | Wave 2.6 |
 | T13.a | Per-peer rate limit bypass via cloud ASN | Wave 2.3 |
 | T14 | Truncated-model audit bypass | Wave 2.1 (SPoRA) |
-| T15 | Unbounded trade-log memory | Wave 2.4 |
+| T15 | Unbounded trade-log memory | Wave 2.4 + 4.3 |
 | T16 | Silent-fork divergence without detection | Wave 2.5 |
+| K-004 | Per-ASN limiter not wired into transport | Wave 4.4-live |
+| K-005 | Welcome-loan limiter not wired into ledger | Wave 4.1 |
+| K-006 | Daemon checkpoint loop missing | Wave 4.3 |
 
 ## Open — tracked for remediation
 
@@ -81,23 +84,41 @@ code writes via `BaseClient` today.
 
 **Fix tracking:** Phase 17 Wave 2.7-part-2, concurrent with K-002.
 
-### K-004: Per-ASN rate limiter not yet wired into transport
+### K-004: Per-ASN rate limiter in transport — RESOLVED
 
-**Severity:** Low.
+**Severity:** Was Medium (Sybil defense gap); closed 2026-04-18.
 
-**Description:** Wave 2.3 ships `AsnRateLimiter` as a tested
-primitive but doesn't wire it into `transport::read_peer_messages`.
-The integration needs peer-IP extraction from the iroh connection
-object, which touches a hot path and needs benchmarking before it
-lands.
+**Description (historical):** Wave 2.3 shipped `AsnRateLimiter`
+as a primitive but the integration with the iroh transport was
+initially thought to be blocked on an absent `remote_address()`
+accessor in iroh 0.97's public `Connection` API.
 
-**Why it's open:** scope-boundedness — we wanted the primitive
-under review before the hot-path integration.
+**Resolution (Phase 17 Wave 4.4-live):** iroh 0.97 DOES expose
+the peer IP, just via a different path than initially searched:
 
-**Mitigation:** `config.asn_rate_limit_enabled` defaults to `false`;
-no operator is currently depending on this as their defense.
+* `iroh::endpoint::Connection::paths()` returns a `PathWatcher`
+  which yields `PathInfo` per known path.
+* `PathInfo::remote_addr()` returns `&TransportAddr`.
+* `TransportAddr::Ip(SocketAddr)` pattern-matches to expose the
+  raw IP.
 
-**Fix tracking:** Phase 17 Wave 2.3-part-2.
+`PeerConnection::remote_ip()` now walks this path and returns
+`Option<IpAddr>`; `None` for relay-only peers. The transport's
+`start_accepting` loop:
+
+1. Awaits the handshake so `remote_ip()` is populated.
+2. Calls `AsnRateLimiter::take(ip)` on the installed limiter.
+3. Drops the `PeerConnection` on over-cap, incrementing the
+   `dropped_asn_over_cap` counter.
+
+The limiter is installable via `ForgeTransport::install_asn_limiter`;
+if never installed, the ASN check is skipped entirely (preserving
+backward-compat for operators without a MaxMind DB).
+
+**Mitigation level now:** strong. A cloud-Sybil attacker using
+100 AWS IPs inside ASN 16509 can no longer collect 100× the
+per-peer quota; all 100 share a single 5 000 msg/s bucket keyed
+by the ASN resolved from their shared `PathInfo::remote_addr`.
 
 ### K-005: Welcome-loan limiter not yet wired into ledger
 

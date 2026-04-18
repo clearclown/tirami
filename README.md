@@ -6,9 +6,11 @@
 
 [![Crates.io](https://img.shields.io/crates/v/tirami-core?label=crates.io&color=e6522c)](https://crates.io/crates/tirami-core)
 [![License: MIT](https://img.shields.io/badge/License-MIT-brightgreen.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-891_passing-brightgreen)]()
+[![Tests](https://img.shields.io/badge/tests-1071_passing-brightgreen)]()
 [![verify-impl](https://img.shields.io/badge/verify--impl-123%2F123_GREEN-brightgreen)]()
-[![Phase](https://img.shields.io/badge/phase-16_hybrid_chain-blue)]()
+[![forge test](https://img.shields.io/badge/forge_test-15%2F15_GREEN-brightgreen)]()
+[![Phase](https://img.shields.io/badge/phase-17_hardened-blue)]()
+[![Mainnet](https://img.shields.io/badge/mainnet-audit_gated-orange)]()
 
 ---
 
@@ -239,7 +241,12 @@ single loop.
 │  Not deployed yet — in-memory MockChainClient   │
 └─────────────────────────────────────────────────┘
 
-All 5 layers are Rust. 891 tests passing. 123/123 verify-impl GREEN.
+All 5 layers are Rust. **1 071 tests passing.** 123/123 verify-impl
+GREEN. Phase 17 shipped 24 security primitives across 4 waves for
+public-network readiness — see [`docs/security/phase-17-summary.md`](docs/security/phase-17-summary.md).
+Mainnet deploy gated on external audit + 30-day Sepolia stability
++ multi-sig custody + bug bounty live (`docs/security/audit-scope.md`).
+
 Phase 14-16 added unified Ledger-as-Brain scheduling, FLOP measurement,
 audit challenge-response, and the on-chain anchor layer (tirami-anchor + tirami-contracts).
 ```

@@ -96,7 +96,7 @@ Two independent layers:
 - *Volume spike*: detects sudden anomalous increases in trade volume between specific pairs.
 - *Round-robin (Tarjan SCC)*: uses Tarjan's strongly-connected-components algorithm to find circular trade patterns that resemble wash trading.
 
-When a node scores above the detection threshold, a `trust_penalty` (up to 0.5) is subtracted from its effective reputation automatically. The penalty is visible in `/metrics` as `forge_collusion_trust_penalty`.
+When a node scores above the detection threshold, a `trust_penalty` (up to 0.5) is subtracted from its effective reputation automatically. The penalty is visible in `/metrics` as `tirami_collusion_trust_penalty`.
 
 ---
 

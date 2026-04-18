@@ -1,17 +1,17 @@
-//! Prometheus / OpenMetrics export for Forge telemetry.
+//! Prometheus / OpenMetrics export for Tirami telemetry.
 //!
 //! Exposes:
-//! - forge_cu_contributed_total   (gauge, per-node_id)
-//! - forge_cu_consumed_total      (gauge, per-node_id)
-//! - forge_reputation             (gauge, per-node_id)
-//! - forge_trade_count_total      (counter, global)
-//! - forge_active_loan_count      (gauge, global)
-//! - forge_pool_total_trm          (gauge, global)
-//! - forge_pool_reserve_ratio     (gauge, global)
-//! - forge_collusion_tight_cluster_score  (gauge, per-node_id)
-//! - forge_collusion_volume_spike_score   (gauge, per-node_id)
-//! - forge_collusion_round_robin_score    (gauge, per-node_id)
-//! - forge_collusion_trust_penalty        (gauge, per-node_id)
+//! - tirami_cu_contributed_total   (gauge, per-node_id)
+//! - tirami_cu_consumed_total      (gauge, per-node_id)
+//! - tirami_reputation             (gauge, per-node_id)
+//! - tirami_trade_count_total      (counter, global)
+//! - tirami_active_loan_count      (gauge, global)
+//! - tirami_pool_total_trm         (gauge, global)
+//! - tirami_pool_reserve_ratio     (gauge, global)
+//! - tirami_collusion_tight_cluster_score  (gauge, per-node_id)
+//! - tirami_collusion_volume_spike_score   (gauge, per-node_id)
+//! - tirami_collusion_round_robin_score    (gauge, per-node_id)
+//! - tirami_collusion_trust_penalty        (gauge, per-node_id)
 
 use crate::collusion::CollusionDetector;
 use crate::ledger::ComputeLedger;
@@ -53,7 +53,7 @@ impl TiramiMetrics {
 
         let cu_contributed = GaugeVec::new(
             Opts::new(
-                "forge_cu_contributed_total",
+                "tirami_cu_contributed_total",
                 "Total CU contributed (earned) by a node",
             ),
             &["node_id"],
@@ -62,7 +62,7 @@ impl TiramiMetrics {
 
         let cu_consumed = GaugeVec::new(
             Opts::new(
-                "forge_cu_consumed_total",
+                "tirami_cu_consumed_total",
                 "Total CU consumed (spent) by a node",
             ),
             &["node_id"],
@@ -70,38 +70,38 @@ impl TiramiMetrics {
         .expect("valid gauge vec opts");
 
         let reputation = GaugeVec::new(
-            Opts::new("forge_reputation", "Reputation score for a node (0.0–1.0)"),
+            Opts::new("tirami_reputation", "Reputation score for a node (0.0–1.0)"),
             &["node_id"],
         )
         .expect("valid gauge vec opts");
 
         let trade_count = IntCounter::with_opts(Opts::new(
-            "forge_trade_count_total",
+            "tirami_trade_count_total",
             "Total number of trades recorded in the ledger",
         ))
         .expect("valid counter opts");
 
         let active_loan_count = IntGauge::with_opts(Opts::new(
-            "forge_active_loan_count",
+            "tirami_active_loan_count",
             "Number of currently active loans in the lending pool",
         ))
         .expect("valid gauge opts");
 
         let pool_total_trm = IntGauge::with_opts(Opts::new(
-            "forge_pool_total_trm",
+            "tirami_pool_total_trm",
             "Total CU deposited into the lending pool",
         ))
         .expect("valid gauge opts");
 
         let pool_reserve_ratio = Gauge::with_opts(Opts::new(
-            "forge_pool_reserve_ratio",
+            "tirami_pool_reserve_ratio",
             "Lending pool reserve ratio (available / total)",
         ))
         .expect("valid gauge opts");
 
         let collusion_tight = GaugeVec::new(
             Opts::new(
-                "forge_collusion_tight_cluster_score",
+                "tirami_collusion_tight_cluster_score",
                 "Tight-cluster collusion sub-score for a node (0.0–1.0)",
             ),
             &["node_id"],
@@ -110,7 +110,7 @@ impl TiramiMetrics {
 
         let collusion_spike = GaugeVec::new(
             Opts::new(
-                "forge_collusion_volume_spike_score",
+                "tirami_collusion_volume_spike_score",
                 "Volume-spike collusion sub-score for a node (0.0–1.0)",
             ),
             &["node_id"],
@@ -119,7 +119,7 @@ impl TiramiMetrics {
 
         let collusion_robin = GaugeVec::new(
             Opts::new(
-                "forge_collusion_round_robin_score",
+                "tirami_collusion_round_robin_score",
                 "Round-robin collusion sub-score for a node (0.0–1.0)",
             ),
             &["node_id"],
@@ -128,7 +128,7 @@ impl TiramiMetrics {
 
         let collusion_penalty = GaugeVec::new(
             Opts::new(
-                "forge_collusion_trust_penalty",
+                "tirami_collusion_trust_penalty",
                 "Final trust penalty applied to node reputation (0.0–0.5)",
             ),
             &["node_id"],
@@ -469,17 +469,27 @@ mod tests {
         metrics.observe(&ledger, 1_700_000_000_000);
         let output = metrics.encode().unwrap();
         assert!(
-            output.contains("forge_cu_contributed_total"),
-            "missing forge_cu_contributed_total in:\n{output}"
+            output.contains("tirami_cu_contributed_total"),
+            "missing tirami_cu_contributed_total in:\n{output}"
         );
         assert!(
-            output.contains("forge_reputation"),
-            "missing forge_reputation"
+            output.contains("tirami_reputation"),
+            "missing tirami_reputation"
         );
         // collusion gauges only appear if trades exist; check a global metric instead.
         assert!(
-            output.contains("forge_trade_count_total"),
-            "missing forge_trade_count_total"
+            output.contains("tirami_trade_count_total"),
+            "missing tirami_trade_count_total"
+        );
+        // Regression: ensure the legacy forge_* prefix is no longer emitted
+        // (fix #76).
+        assert!(
+            !output.contains("forge_cu_contributed_total"),
+            "legacy forge_cu_contributed_total should be gone"
+        );
+        assert!(
+            !output.contains("forge_reputation"),
+            "legacy forge_reputation should be gone"
         );
         // Verify the format includes HELP/TYPE metadata.
         assert!(output.contains("# HELP"), "missing # HELP");
@@ -494,7 +504,7 @@ mod tests {
         let metrics = TiramiMetrics::new();
         metrics.observe(&ledger, 1_700_000_000_000);
         let output = metrics.encode().unwrap();
-        assert!(output.contains("forge_reputation"), "forge_reputation missing");
+        assert!(output.contains("tirami_reputation"), "tirami_reputation missing");
         assert!(
             output.contains(&node.to_hex()),
             "node hex {} not in output",
@@ -529,11 +539,11 @@ mod tests {
         let output = metrics.encode().unwrap();
 
         assert!(
-            output.contains("forge_collusion_tight_cluster_score"),
+            output.contains("tirami_collusion_tight_cluster_score"),
             "tight_cluster metric missing"
         );
         assert!(
-            output.contains("forge_collusion_trust_penalty"),
+            output.contains("tirami_collusion_trust_penalty"),
             "trust_penalty metric missing"
         );
         // Both nodes should appear.

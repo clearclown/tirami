@@ -148,17 +148,17 @@ Prometheus metrics are exported at `/metrics` with no authentication required. T
 
 | Metric | Type | Description |
 |---|---|---|
-| `forge_cu_contributed_total` | Counter | Total TRM earned by this node across all trades |
-| `forge_cu_consumed_total` | Counter | Total TRM spent by this node |
-| `forge_reputation{node_id}` | Gauge | Current reputation score (0.0–1.0, default 0.5 per parameters.md §7) |
-| `forge_trade_count_total` | Counter | Total trades recorded on this node's ledger |
-| `forge_active_loan_count` | Gauge | Number of open loans (as lender or borrower) |
-| `forge_pool_total_cu` | Gauge | Total TRM in the lending pool |
-| `forge_pool_reserve_ratio` | Gauge | Current reserve ratio (must stay ≥ 30% per parameters.md §5) |
-| `forge_collusion_tight_cluster_score` | Gauge | Tight-cluster detection score for this node |
-| `forge_collusion_volume_spike_score` | Gauge | Volume-spike detection score |
-| `forge_collusion_round_robin_score` | Gauge | Round-robin (Tarjan SCC) detection score |
-| `forge_collusion_trust_penalty` | Gauge | Effective trust penalty subtracted from reputation |
+| `tirami_cu_contributed_total` | Counter | Total TRM earned by this node across all trades |
+| `tirami_cu_consumed_total` | Counter | Total TRM spent by this node |
+| `tirami_reputation{node_id}` | Gauge | Current reputation score (0.0–1.0, default 0.5 per parameters.md §7) |
+| `tirami_trade_count_total` | Counter | Total trades recorded on this node's ledger |
+| `tirami_active_loan_count` | Gauge | Number of open loans (as lender or borrower) |
+| `tirami_pool_total_trm` | Gauge | Total TRM in the lending pool |
+| `tirami_pool_reserve_ratio` | Gauge | Current reserve ratio (must stay ≥ 30% per parameters.md §5) |
+| `tirami_collusion_tight_cluster_score` | Gauge | Tight-cluster detection score for this node |
+| `tirami_collusion_volume_spike_score` | Gauge | Volume-spike detection score |
+| `tirami_collusion_round_robin_score` | Gauge | Round-robin (Tarjan SCC) detection score |
+| `tirami_collusion_trust_penalty` | Gauge | Effective trust penalty subtracted from reputation |
 
 Metrics that depend on trading activity (pool, loan counts, collusion scores) start at zero or their default and only update after the first trade. This is normal.
 
@@ -173,7 +173,7 @@ scrape_configs:
     scrape_interval: 15s
 ```
 
-**Grafana dashboard sketch**: create four panels — (1) TRM flow over time: `rate(forge_cu_contributed_total[5m])` vs `rate(forge_cu_consumed_total[5m])`; (2) reputation gauge 0–1 with threshold line at 0.5; (3) lending pool health: `forge_pool_reserve_ratio` with alert below 0.3; (4) collusion scores as a stacked bar, alert if `forge_collusion_trust_penalty > 0.1`.
+**Grafana dashboard sketch**: create four panels — (1) TRM flow over time: `rate(tirami_cu_contributed_total[5m])` vs `rate(tirami_cu_consumed_total[5m])`; (2) reputation gauge 0–1 with threshold line at 0.5; (3) lending pool health: `tirami_pool_reserve_ratio` with alert below 0.3; (4) collusion scores as a stacked bar, alert if `tirami_collusion_trust_penalty > 0.1`.
 
 ---
 

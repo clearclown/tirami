@@ -74,8 +74,8 @@ mod tests {
         let text = String::from_utf8_lossy(&body);
         // Global counter always emits even when the ledger is empty (no nodes yet).
         assert!(
-            text.contains("forge_trade_count_total"),
-            "missing forge_trade_count_total in /metrics response:\n{text}"
+            text.contains("tirami_trade_count_total"),
+            "missing tirami_trade_count_total in /metrics response:\n{text}"
         );
         assert!(
             text.contains("# TYPE"),

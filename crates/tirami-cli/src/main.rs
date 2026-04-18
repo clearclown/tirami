@@ -349,12 +349,20 @@ enum WalletAction {
     },
 }
 
+/// Default tracing filter when `RUST_LOG` is unset.
+///
+/// `"info"` for Tirami internals, `error` for iroh's multicast / IPv6
+/// relay probes which spam WARN on Tailscale or IPv4-only hosts
+/// (fix #75). Operators who want the raw firehose: `RUST_LOG=info`.
+const DEFAULT_TRACING_FILTER: &str =
+    "info,swarm_discovery=error,iroh::socket::transports::relay=error,iroh_relay=error,noq_udp=error";
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(DEFAULT_TRACING_FILTER)),
         )
         .init();
 

@@ -67,12 +67,19 @@ enum DaemonCommand {
     },
 }
 
+/// Default tracing filter when `RUST_LOG` is unset (keep in sync with
+/// `main.rs::DEFAULT_TRACING_FILTER`). Silences iroh's multicast and
+/// IPv6-relay probe warnings that flood non-multicast / IPv4-only
+/// hosts (fix #75). `RUST_LOG=info` restores the raw output.
+const DEFAULT_TRACING_FILTER: &str =
+    "info,swarm_discovery=error,iroh::socket::transports::relay=error,iroh_relay=error,noq_udp=error";
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(DEFAULT_TRACING_FILTER)),
         )
         .init();
 

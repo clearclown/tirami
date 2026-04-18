@@ -176,7 +176,7 @@ primitive with clear production wire-up points.
   install, dry-run, broadcast, Basescan verification, 30-day
   stability watch, and the mainnet gate.
 
-**Wave 2 test coverage:** 940 → 1 037 passing (+97 across all six
+**Wave 2 test coverage:** 940 → 1 040 passing (+100 across all six
 waves). `cargo build --workspace` clean.
 
 Mainnet deploy remains **BLOCKED** until:
@@ -185,9 +185,86 @@ Mainnet deploy remains **BLOCKED** until:
 3. Multi-sig custody configured and tested on Sepolia.
 4. Bug bounty live ≥ 30 days.
 
-Next up in Phase 17: Wave 3 — hostile-environment readiness (TEE
-attestation, Kani formal verification, external audit prep,
-bug bounty) per `.claude/plans/humble-cooking-thimble.md`.
+### Phase 17 Wave 3 — P2 Hostile-Environment Readiness (2026-04-18)
+
+Closes the Phase 17 plan. Every item targets operating Tirami in a
+truly public, adversarial setting — where operator key hygiene,
+DDoS, formal-verification evidence, and professional disclosure
+processes all matter.
+
+**3.3 — External audit preparation docs**
+- `docs/security/audit-scope.md` — in/out of scope, candidate
+  auditor shortlist (Trail of Bits / OpenZeppelin / Zellic /
+  Least Authority / Runtime Verification), feature-freeze rules,
+  deliverables, mainnet-gate checklist.
+- `docs/security/threat-model-v2.md` — 27 threats re-scored with
+  residual risk + per-threat mitigation pointer + wave reference.
+- `docs/security/known-issues.md` — every K-### issue identified
+  but not fully remediated (9 open, 8 resolved, 3 "considered and
+  not fixed").
+
+**3.6 — SECURITY.md bug-bounty framework**
+- Bug-bounty scale (Critical $25-50k, High $5-20k, Medium $1-4k,
+  Low $200-800).
+- Rules of engagement with good-faith legal safe harbor.
+- PGP key placeholder (operator replaces before program goes live).
+- Hall-of-Fame template.
+
+**3.4 — DDoS mitigation**
+- New `Config::max_concurrent_connections: u32` (default 1 000).
+- `docs/operator-guide.md` gains a 7-section DDoS block:
+  Cloudflare / Caddy / nginx frontends (with Caddyfile example),
+  per-node connection cap, pointer to Wave 2.3 per-ASN limiter,
+  OS-level tweaks, backpressure, Prometheus alerts, incident
+  runbook.
+
+**3.5 — Key rotation scaffold**
+- New `crates/tirami-core/src/key_rotation.rs`:
+  `NodeIdentity` with `Vec<KeyEpoch>`, `KeyState { Active, Revoked }`,
+  `rotate(now_ms)` creates a new Active epoch and revokes the old
+  with a timestamp.
+- `verify_historical(identity, msg, sig, signing_at_ms)`: Active
+  keys verify anytime; Revoked keys verify only when
+  `signing_at_ms <= revoked_at_ms`. Rejects new signatures under
+  a revoked key.
+- 12 tests covering rotation, historical verification, serde
+  roundtrip, error paths.
+
+**3.2 — Kani formal-verification invariants**
+- New `crates/tirami-ledger/src/kani_proofs.rs` (gated behind
+  `#[cfg(kani)]`) with 10 initial invariants:
+  nonce-cache replay rejection, canonical-bytes v1/v2 separation,
+  `apply_slash` burn-only monotonicity, welcome-loan cap honouring,
+  nonce-cache idempotency.
+- `docs/security/kani-proofs.md` — how to install + run, invariant
+  table, target additions for Wave-3.2-part-2 (≥ 30 before external
+  audit), CI integration plan.
+
+**3.1 — Hardware attestation scaffold**
+- New `crates/tirami-core/src/attestation.rs` with
+  `AttestationKind { Mock, AppleSecureEnclave, NvidiaH100CC,
+  IntelSgx, AmdSevSnp }`, `AttestationReport { kind, node_id,
+  evidence, issued_at, valid_until }`, `AttestationProvider` /
+  `AttestationVerifier` traits.
+- `MockAttestationProvider` + `MockAttestationVerifier`:
+  SHA-256-based deterministic pair for tests.
+- `ATTESTED_AUDIT_TIER_SPEED_MULTIPLIER = 5` constant.
+- `AttestationPreferences` (opt-in routing preference).
+- 14 tests covering provider↔verifier round-trip, peer mismatch,
+  stale / pre-issuance rejection, kind mismatch, tampered
+  evidence, wrong-length evidence, serde roundtrip.
+
+Real Apple SE / NVIDIA H100 CC bindings are deferred —
+`security-framework` and `nvml-wrapper` integrations land once we
+have operator testbeds on that hardware.
+
+**Wave 3 test coverage:** 1 040 → 1 066 passing (+26 new tests
+across the six waves). `cargo build --workspace` clean. Kani
+invariants invisible to the regular build (cfg-gated).
+
+**Phase 17 total:** 891 → 1 066 passing (+175 new tests across
+Waves 1+2+3, spanning 20 primitives). `verify-impl.sh` GREEN
+(123 / 123) throughout.
 
 ### Phase 14 — Unified Scheduler (2026-04-14 → 2026-04-17)
 

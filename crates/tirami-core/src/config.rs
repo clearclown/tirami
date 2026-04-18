@@ -92,6 +92,18 @@ pub struct Config {
     /// Default `false` so operators without the DB are unaffected.
     #[serde(default)]
     pub asn_rate_limit_enabled: bool,
+
+    /// Phase 17 Wave 3.4 — DDoS mitigation: maximum concurrent peer
+    /// connections the transport will accept before dropping new
+    /// handshakes. Default 1 000 — well above what a healthy private
+    /// mesh needs, tight enough that a public node can't be coerced
+    /// into fd exhaustion by a flood attacker.
+    ///
+    /// Set to `0` to disable the cap (unbounded). Do NOT do this on
+    /// any node reachable from the public internet; see
+    /// `docs/operator-guide.md#ddos-mitigation` for why.
+    #[serde(default = "default_max_concurrent_connections")]
+    pub max_concurrent_connections: u32,
 }
 
 fn default_anchor_interval_secs() -> u64 {
@@ -100,6 +112,10 @@ fn default_anchor_interval_secs() -> u64 {
 
 fn default_slashing_interval_secs() -> u64 {
     300
+}
+
+fn default_max_concurrent_connections() -> u32 {
+    1_000
 }
 
 impl Config {
@@ -178,6 +194,7 @@ impl Default for Config {
             slashing_interval_secs: 300,
             pq_signatures: false,
             asn_rate_limit_enabled: false,
+            max_concurrent_connections: 1_000,
         }
     }
 }

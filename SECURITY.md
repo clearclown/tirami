@@ -1,5 +1,15 @@
 # Security Policy
 
+**Last reviewed:** 2026-04-18 (Phase 17 Wave 3.6).
+
+Tirami is a protocol for buying and selling compute as a currency on
+an adversarial public network. Security is not optional. If you find
+a vulnerability, please report it responsibly using the process
+below. If you're here to exploit one, please also consider reporting:
+the bounty program framework in the "Bug bounty" section pays out
+competitively with market prices and reporting keeps you in
+good-faith territory (see "Rules of engagement").
+
 ## Supported versions
 
 | Version | Supported |
@@ -102,3 +112,88 @@ Verified reports get a CVE filing (if severity warrants), a fix commit
 with credit in the commit message, a CHANGELOG entry under
 `[Unreleased] → Security`, and a GitHub Security Advisory linking the
 report to the fix.
+
+## Encryption / PGP
+
+For especially sensitive reports (active exploit in the wild,
+pre-disclosure coordination, etc.), encrypt to the placeholder key
+below. The operator will replace this block with a live key before
+the bug bounty program opens.
+
+```
+-----BEGIN PGP PUBLIC KEY BLOCK-----
+[PLACEHOLDER — not yet active. Until this block is replaced with a
+live key, use the GitHub private-advisory flow or a direct email
+to the maintainers. If you absolutely need encryption right now,
+request a fresh ephemeral key via the advisory channel.]
+-----END PGP PUBLIC KEY BLOCK-----
+```
+
+Fingerprint placeholder: `XXXX XXXX XXXX XXXX XXXX  XXXX XXXX XXXX XXXX XXXX`.
+
+## Bug bounty
+
+**Status:** Framework drafted; **active payouts not yet live**.
+Activation is gated on:
+
+1. External security audit complete (see
+   `docs/security/audit-scope.md`, Phase 17 Wave 3.3).
+2. Multi-sig custody configured for the bounty treasury.
+3. Sepolia testnet usable by hunters for safe exploit reproduction.
+
+When active, payouts are in TRM (post-mainnet) or USDC (pre-mainnet)
+at the submitter's preference.
+
+### Severity + indicative reward scale
+
+Severity follows CVSS 3.1 base scores plus our own judgment about
+Tirami-specific impact. Rewards below are a floor; exceptional
+findings earn multipliers.
+
+| Severity | CVSS | Reward (USD-equivalent) |
+|----------|------|-------------------------|
+| **Critical** | 9.0 – 10.0 | 25 000 – 50 000 |
+| **High**     | 7.0 – 8.9  | 5 000 – 20 000  |
+| **Medium**   | 4.0 – 6.9  | 1 000 – 4 000   |
+| **Low**      | 0.1 – 3.9  | 200 – 800       |
+| **Informational** | N/A | Hall of Fame + TRM airdrop |
+
+Example findings with rough indicative payouts:
+
+- Sign any TradeRecord for any provider without their key →
+  **Critical**, $ 40 k.
+- Bypass the welcome-loan per-ASN limiter end-to-end → **High**,
+  $ 12 k.
+- Crash a seed node with a specific malformed envelope → **High**,
+  $ 8 k.
+- Read unauthenticated `/v1/tirami/balance` by omitting auth →
+  **Medium**, $ 2 k.
+- Trivially extract a bearer token from client-side logs → **Low**,
+  $ 500 (and please do report).
+
+### Rules of engagement
+
+Good-faith compliance with the following: we commit to not pursue
+legal action against you.
+
+- **DO** test against `localhost` or a Sepolia testnet deployment.
+- **DO** use the GitHub private advisory flow or the email addresses
+  listed above.
+- **DO NOT** exfiltrate or disclose user data you gain via an
+  exploit.
+- **DO NOT** attempt sustained denial-of-service against any
+  production seed node (Sepolia staging is fine to stress-test).
+- **DO NOT** publicly disclose before the SLA windows close (see
+  "Disclosure timeline"). We target 30 days post-fix for public
+  disclosure; you may invoke public disclosure yourself if we miss
+  the SLA without prior coordination.
+
+## Hall of Fame
+
+Researchers whose reports led to fixed vulnerabilities are credited
+here. Template:
+
+- **YYYY-MM-DD** · `<Handle or Name>` · <one-line finding> · <severity> · CVE-YYYY-NNNN
+
+*Currently empty — bounty program not yet live. Check back after
+Phase 17 external audit completes.*

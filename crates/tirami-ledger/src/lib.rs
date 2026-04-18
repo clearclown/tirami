@@ -11,6 +11,8 @@ pub mod audit;
 pub mod audit_snark;
 pub mod checkpoint;
 pub mod fork;
+#[cfg(kani)]
+pub mod kani_proofs;
 pub mod sybil;
 pub mod metrics;
 pub mod peer_registry;

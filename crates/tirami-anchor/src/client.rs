@@ -34,6 +34,12 @@ pub enum ChainError {
     DuplicateBatch(u64),
     #[error("unsupported operation: {0}")]
     Unsupported(&'static str),
+    /// Phase 17 Wave 2.7 — a client is installed but the real
+    /// signing path isn't wired yet. Returned by scaffolded
+    /// `BaseClient`; callers treat this as a retry-later error
+    /// and fall back to `MockChainClient` where appropriate.
+    #[error("not yet implemented: {0}")]
+    NotImplemented(String),
 }
 
 /// Tagged record of a batch that was accepted by the chain.

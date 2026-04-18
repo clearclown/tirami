@@ -127,6 +127,20 @@ pub struct Config {
     /// only acceptable for dev nodes).
     #[serde(default)]
     pub archive_path: Option<std::path::PathBuf>,
+
+    /// Phase 18.3 — zkML rollout gate. See
+    /// `tirami_ledger::zk::ProofPolicy`. Stored as a string here
+    /// to avoid circular dependencies between tirami-core and
+    /// tirami-ledger. Valid values: "disabled" (default),
+    /// "optional", "recommended", "required".
+    ///
+    /// The network-wide value is Constitutionally ratcheted: once
+    /// set to "required", it cannot be downgraded by governance.
+    /// Individual operators may run ahead of the network (e.g.
+    /// require proofs locally while the network is still
+    /// "optional"), but not behind.
+    #[serde(default = "default_proof_policy")]
+    pub proof_policy: String,
 }
 
 fn default_anchor_interval_secs() -> u64 {
@@ -147,6 +161,10 @@ fn default_checkpoint_interval_secs() -> u64 {
 
 fn default_checkpoint_retain_secs() -> u64 {
     24 * 3_600
+}
+
+fn default_proof_policy() -> String {
+    "disabled".to_string()
 }
 
 impl Config {
@@ -229,6 +247,7 @@ impl Default for Config {
             checkpoint_interval_secs: 3_600,
             checkpoint_retain_secs: 24 * 3_600,
             archive_path: None,
+            proof_policy: "disabled".to_string(),
         }
     }
 }

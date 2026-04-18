@@ -73,6 +73,14 @@ pub const MUTABLE_GOVERNANCE_PARAMETERS: &[&str] = &[
     // can raise but not lower below the floor.
     "MIN_PROVIDER_STAKE_TRM",
     "STAKELESS_EARN_CAP_TRM",
+    // Phase 18.3 — zkML rollout gate. Mutable UPWARD only
+    // (Disabled → Optional → Recommended → Required).
+    // The no-downgrade invariant is enforced at execution time
+    // in the governance dispatcher (`try_apply_proof_policy`),
+    // NOT in the mutable whitelist — whitelisting here means the
+    // policy CAN be proposed for change, the downgrade ratchet
+    // rejects only the downward direction.
+    "PROOF_POLICY",
 ];
 
 /// Phase 18.1 — parameters explicitly called out as immutable.
@@ -111,6 +119,8 @@ pub const IMMUTABLE_CONSTITUTIONAL_PARAMETERS: &[&str] = &[
     "WELCOME_LOAN_SUNSET_EPOCH",                    // one-way closure
     "MIN_PROVIDER_STAKE_CONSTITUTIONAL_FLOOR",      // 10 TRM floor
     "STAKELESS_EARN_CAP_MAXIMUM",                   // absolute ceiling on faucet
+    // --- Phase 18.3: zkML rollout invariants ---
+    "PROOF_POLICY_RATCHET",                         // no-downgrade invariant
 ];
 
 /// True iff `name` is a parameter governance is allowed to change.

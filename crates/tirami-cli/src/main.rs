@@ -57,6 +57,14 @@ enum Commands {
         /// Use 0.0.0.0 to accept remote requests.
         #[arg(long, default_value = "127.0.0.1")]
         bind: String,
+
+        /// Run in pure-server mode without auto-configuring a
+        /// PersonalAgent. Default is OFF (agent auto-configured);
+        /// pass --no-agent to opt out. Useful for hosting nodes
+        /// that serve the mesh but don't need a user-facing agent
+        /// state on that machine.
+        #[arg(long, default_value_t = false)]
+        no_agent: bool,
     },
 
     /// Start as a seed node (holds model, serves inference)
@@ -353,8 +361,8 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Start { model, port, bind } => {
-            run_start_command(model, port, bind).await?;
+        Commands::Start { model, port, bind, no_agent } => {
+            run_start_command(model, port, bind, no_agent).await?;
         }
         Commands::Models => {
             tirami_infer::model_registry::list_models();
@@ -1253,6 +1261,7 @@ async fn run_start_command(
     model: String,
     port: u16,
     bind: String,
+    no_agent: bool,
 ) -> anyhow::Result<()> {
     use std::fs;
 
@@ -1330,6 +1339,10 @@ async fn run_start_command(
         api_bearer_token: None, // localhost by default, no token needed
         ledger_path: Some(ledger_path.clone()),
         share_compute: true,
+        // Phase 18.5-part-3e — killer-app ergonomics: `tirami start`
+        // yields a configured PersonalAgent by default. --no-agent
+        // flips this off for operators running pure-server nodes.
+        personal_agent_enabled: !no_agent,
         ..Config::default()
     };
     let mut node = tirami_node::TiramiNode::new(config);

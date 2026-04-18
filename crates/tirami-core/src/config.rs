@@ -149,6 +149,15 @@ pub struct Config {
     /// load on quiet nodes.
     #[serde(default = "default_agent_tick_interval_secs")]
     pub agent_tick_interval_secs: u64,
+
+    /// Phase 18.5-part-3e — auto-configure a [`PersonalAgent`] at
+    /// `run_seed` time using the local node identity as the wallet.
+    /// Default `true` so `tirami start` immediately gives the user
+    /// a working agent (the killer-app commitment from
+    /// `docs/killer-app.md`). Operators running a pure-server node
+    /// can set this to `false` (CLI: `tirami start --no-agent`).
+    #[serde(default = "default_personal_agent_enabled")]
+    pub personal_agent_enabled: bool,
 }
 
 fn default_anchor_interval_secs() -> u64 {
@@ -177,6 +186,10 @@ fn default_proof_policy() -> String {
 
 fn default_agent_tick_interval_secs() -> u64 {
     30
+}
+
+fn default_personal_agent_enabled() -> bool {
+    true
 }
 
 impl Config {
@@ -261,6 +274,7 @@ impl Default for Config {
             archive_path: None,
             proof_policy: "disabled".to_string(),
             agent_tick_interval_secs: 30,
+            personal_agent_enabled: true,
         }
     }
 }

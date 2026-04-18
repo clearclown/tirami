@@ -273,6 +273,35 @@ impl TiramiNode {
         )
     }
 
+    /// Phase 18.5-part-3e — populate [`Self::personal_agent`] with a
+    /// default [`tirami_mind::PersonalAgent`] tied to the local node
+    /// identity, unless the operator disabled it via
+    /// `Config::personal_agent_enabled = false`.
+    ///
+    /// Idempotent: leaves the slot alone when something has already
+    /// populated it (e.g. a future state-snapshot reload). This is
+    /// the plumbing that makes `tirami start` yield a working agent
+    /// without a separate init call — the killer-app commitment
+    /// from `docs/killer-app.md`.
+    pub async fn ensure_personal_agent(&self, wallet: tirami_core::NodeId) {
+        if !self.config.personal_agent_enabled {
+            tracing::info!("personal agent disabled by config (personal_agent_enabled = false)");
+            return;
+        }
+        let mut guard = self.personal_agent.lock().await;
+        if guard.is_some() {
+            return;
+        }
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        let agent =
+            tirami_mind::PersonalAgent::new(wallet.clone(), tirami_mind::TrmBudget::default(), now_ms);
+        tracing::info!("personal agent configured for {}", wallet.to_hex());
+        *guard = Some(agent);
+    }
+
     /// Initialize P2P transport.
     pub async fn init_transport(&mut self) -> Result<Arc<ForgeTransport>, tirami_core::TiramiError> {
         if let Some(transport) = self.transport.as_ref() {
@@ -339,6 +368,16 @@ impl TiramiNode {
         // Phase 14.3 — challenger-side audit loop: periodically picks peers
         // per their AuditTier probability and sends AuditChallenge messages.
         self.spawn_audit_challenger_loop(transport.clone());
+
+        // Phase 18.5-part-3e — auto-configure the user's PersonalAgent
+        // using the local node identity as the wallet, unless the
+        // operator opted out via `Config::personal_agent_enabled =
+        // false` (CLI: `tirami start --no-agent`). Done BEFORE the
+        // tick loop spawns so the very first tick sees a populated
+        // slot. Idempotent — if someone already pre-populated the
+        // slot (e.g. from a persisted state path in a future patch),
+        // we leave it alone.
+        self.ensure_personal_agent(transport.tirami_node_id()).await;
 
         // Phase 18.5-part-2 — PersonalAgent tick loop. Drives the
         // auto-earn / auto-spend heuristic when an agent is
@@ -936,6 +975,56 @@ impl TiramiNode {
             transport.close().await;
         }
 
-        tracing::info!("Forge node shut down");
+        tracing::info!("Tirami node shut down");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tirami_core::NodeId;
+
+    fn wallet() -> NodeId {
+        NodeId([0xAAu8; 32])
+    }
+
+    #[tokio::test]
+    async fn ensure_personal_agent_populates_slot_when_enabled() {
+        let config = Config {
+            personal_agent_enabled: true,
+            ..Config::default()
+        };
+        let node = TiramiNode::new(config);
+        assert!(node.personal_agent.lock().await.is_none());
+        node.ensure_personal_agent(wallet()).await;
+        let guard = node.personal_agent.lock().await;
+        let agent = guard.as_ref().expect("agent configured");
+        assert_eq!(agent.wallet, wallet());
+    }
+
+    #[tokio::test]
+    async fn ensure_personal_agent_skips_when_disabled() {
+        let config = Config {
+            personal_agent_enabled: false,
+            ..Config::default()
+        };
+        let node = TiramiNode::new(config);
+        node.ensure_personal_agent(wallet()).await;
+        assert!(node.personal_agent.lock().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn ensure_personal_agent_is_idempotent() {
+        let config = Config::default();
+        let node = TiramiNode::new(config);
+        node.ensure_personal_agent(wallet()).await;
+        // Tamper so we can confirm a second call doesn't overwrite.
+        {
+            let mut guard = node.personal_agent.lock().await;
+            guard.as_mut().unwrap().record_earn(999);
+        }
+        node.ensure_personal_agent(wallet()).await;
+        let guard = node.personal_agent.lock().await;
+        assert_eq!(guard.as_ref().unwrap().earned_today_trm, 999);
     }
 }

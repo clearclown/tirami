@@ -147,7 +147,7 @@ pub enum TaskSize {
 
 /// Estimated cost of a task. Returned by the agent's pre-flight
 /// check so it knows whether to trigger an `AskUser` event.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TaskCostEstimate {
     pub size: TaskSize,
     pub estimated_trm: u64,
@@ -331,6 +331,202 @@ impl PersonalAgent {
             if self.preferences.auto_spend_enabled { "on" } else { "off" },
         )
     }
+
+    /// Core decision heuristic. Given an immutable snapshot of the
+    /// world, returns the single action the agent should take next.
+    ///
+    /// Priority order (first match wins):
+    /// 1. Roll over the daily tally if 24h elapsed.
+    /// 2. Answer an incoming serving request (earn path).
+    /// 3. Resolve a pending user task (spend or run-local path).
+    /// 4. Opportunistically start an idle-earning session.
+    /// 5. Otherwise idle.
+    ///
+    /// The method is pure — it never mutates `self`. The caller is
+    /// responsible for applying the returned action (recording the
+    /// spend/earn, dispatching HTTP calls, etc.) by calling
+    /// `record_spend`, `record_earn`, `reset_daily_tally`, etc.
+    pub fn tick(&self, ctx: &TickContext) -> TickAction {
+        const DAY_MS: u64 = 24 * 60 * 60 * 1_000;
+        if ctx.now_ms.saturating_sub(self.day_started_at_ms) >= DAY_MS {
+            return TickAction::ResetDailyTally;
+        }
+
+        if let Some(req) = &ctx.incoming_serving_request {
+            if !self.preferences.auto_earn_enabled {
+                return TickAction::RejectServeRequest {
+                    peer: req.peer.clone(),
+                    task_id: req.task_id.clone(),
+                    reason: "auto_earn disabled".into(),
+                };
+            }
+            if req.peer_reputation < self.preferences.min_peer_reputation {
+                return TickAction::RejectServeRequest {
+                    peer: req.peer.clone(),
+                    task_id: req.task_id.clone(),
+                    reason: format!(
+                        "peer reputation {:.2} below threshold {:.2}",
+                        req.peer_reputation, self.preferences.min_peer_reputation
+                    ),
+                };
+            }
+            if !req.prompt_passes_filter {
+                return TickAction::RejectServeRequest {
+                    peer: req.peer.clone(),
+                    task_id: req.task_id.clone(),
+                    reason: format!(
+                        "prompt rejected by content_filter={}",
+                        self.preferences.content_filter
+                    ),
+                };
+            }
+            return TickAction::ServeRequest {
+                peer: req.peer.clone(),
+                task_id: req.task_id.clone(),
+                reward_trm: req.estimated_reward_trm,
+            };
+        }
+
+        if let Some(estimate) = &ctx.pending_task {
+            let task_id = ctx
+                .pending_task_id
+                .clone()
+                .unwrap_or_else(|| "unknown".into());
+
+            if estimate.size == TaskSize::Local {
+                return TickAction::RunLocal { task_id };
+            }
+
+            if let Some(reason) = self.needs_user_approval(estimate) {
+                return TickAction::AskUser {
+                    task_id,
+                    reason,
+                    cost: estimate.clone(),
+                };
+            }
+
+            if ctx.current_balance_trm < estimate.estimated_trm {
+                return TickAction::AskUser {
+                    task_id,
+                    reason: format!(
+                        "balance {} TRM insufficient for estimated cost {} TRM",
+                        ctx.current_balance_trm, estimate.estimated_trm
+                    ),
+                    cost: estimate.clone(),
+                };
+            }
+
+            let Some(provider) = estimate.preferred_provider.clone() else {
+                return TickAction::AskUser {
+                    task_id,
+                    reason: "no preferred provider resolved yet".into(),
+                    cost: estimate.clone(),
+                };
+            };
+
+            return TickAction::RunRemote {
+                task_id,
+                provider,
+                cost_trm: estimate.estimated_trm,
+            };
+        }
+
+        if self.preferences.auto_earn_enabled
+            && ctx.local_utilization <= self.preferences.idle_utilization_threshold
+            && ctx.seconds_idle >= self.preferences.idle_grace_seconds
+        {
+            return TickAction::StartEarning;
+        }
+
+        TickAction::Idle
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tick context and action
+// ---------------------------------------------------------------------------
+
+/// Immutable snapshot of the local node's state, passed to
+/// [`PersonalAgent::tick`]. The caller composes this by sampling
+/// the node's current load, the pending user task (if any), and any
+/// peer serving request that arrived since the last tick.
+#[derive(Debug, Clone)]
+pub struct TickContext {
+    /// Current wall-clock timestamp (unix-ms).
+    pub now_ms: u64,
+    /// Current CPU/GPU utilization in `[0.0, 1.0]`.
+    pub local_utilization: f64,
+    /// How long (seconds) the machine has been continuously idle,
+    /// i.e. `local_utilization <= idle_utilization_threshold`.
+    pub seconds_idle: u64,
+    /// Task the user just asked the agent to run, if any. When
+    /// present, the agent must resolve it (run / ask / refuse) this
+    /// tick.
+    pub pending_task: Option<TaskCostEstimate>,
+    /// Identifier carried alongside `pending_task` so the emitted
+    /// action can reference it. Ignored when `pending_task` is None.
+    pub pending_task_id: Option<String>,
+    /// Agent's current TRM balance (consulted before authorising a
+    /// remote spend).
+    pub current_balance_trm: u64,
+    /// Serving request that just arrived from a peer, if any.
+    pub incoming_serving_request: Option<ServingRequest>,
+}
+
+/// A peer's request for us to serve inference. The caller is
+/// responsible for filling in `peer_reputation` (from the ledger)
+/// and `prompt_passes_filter` (from the content filter) so
+/// [`PersonalAgent::tick`] can stay pure.
+#[derive(Debug, Clone)]
+pub struct ServingRequest {
+    pub peer: NodeId,
+    pub task_id: String,
+    pub peer_reputation: f64,
+    pub prompt_passes_filter: bool,
+    pub estimated_reward_trm: u64,
+}
+
+/// The single next action the agent has decided to take. The
+/// caller dispatches it (HTTP call, record_spend, etc.) and then
+/// calls `tick` again on the next wake-up.
+#[derive(Debug, Clone, PartialEq)]
+pub enum TickAction {
+    /// Nothing to do; go back to sleep.
+    Idle,
+    /// More than 24h elapsed since `day_started_at_ms`. Caller must
+    /// invoke `reset_daily_tally(now_ms)`.
+    ResetDailyTally,
+    /// Serve the peer's request. Caller runs inference then calls
+    /// `record_earn(reward_trm)`.
+    ServeRequest {
+        peer: NodeId,
+        task_id: String,
+        reward_trm: u64,
+    },
+    /// Refuse the peer's request. Caller returns an error to them.
+    RejectServeRequest {
+        peer: NodeId,
+        task_id: String,
+        reason: String,
+    },
+    /// Run the user's task locally — no TRM spent.
+    RunLocal { task_id: String },
+    /// Run the user's task on a remote provider. Caller pays
+    /// `cost_trm`, then calls `record_spend(cost_trm)`.
+    RunRemote {
+        task_id: String,
+        provider: NodeId,
+        cost_trm: u64,
+    },
+    /// Bubble the task up to the user for explicit approval.
+    AskUser {
+        task_id: String,
+        reason: String,
+        cost: TaskCostEstimate,
+    },
+    /// Local has been idle long enough — caller should open the
+    /// serving port / announce availability on the mesh.
+    StartEarning,
 }
 
 // ---------------------------------------------------------------------------
@@ -507,6 +703,271 @@ mod tests {
         assert!(s.contains("earned today 8 TRM"));
         assert!(s.contains("net +5 TRM"));
         assert!(s.contains("auto-earn on"));
+    }
+
+    // ------------------------------------------------------------------
+    // Tick heuristic
+    // ------------------------------------------------------------------
+
+    fn peer() -> NodeId {
+        NodeId([0x11u8; 32])
+    }
+
+    fn provider() -> NodeId {
+        NodeId([0x22u8; 32])
+    }
+
+    fn empty_ctx(now_ms: u64) -> TickContext {
+        TickContext {
+            now_ms,
+            local_utilization: 0.5,
+            seconds_idle: 0,
+            pending_task: None,
+            pending_task_id: None,
+            current_balance_trm: 0,
+            incoming_serving_request: None,
+        }
+    }
+
+    #[test]
+    fn tick_idle_when_nothing_to_do() {
+        let a = PersonalAgent::new(wallet(), budget(), 0);
+        let action = a.tick(&empty_ctx(1_000));
+        assert_eq!(action, TickAction::Idle);
+    }
+
+    #[test]
+    fn tick_requests_daily_reset_after_24h() {
+        let a = PersonalAgent::new(wallet(), budget(), 0);
+        let action = a.tick(&empty_ctx(24 * 60 * 60 * 1_000));
+        assert_eq!(action, TickAction::ResetDailyTally);
+    }
+
+    #[test]
+    fn tick_serves_healthy_peer_request() {
+        let a = PersonalAgent::new(wallet(), budget(), 0);
+        let mut ctx = empty_ctx(100);
+        ctx.incoming_serving_request = Some(ServingRequest {
+            peer: peer(),
+            task_id: "task-7".into(),
+            peer_reputation: 0.8,
+            prompt_passes_filter: true,
+            estimated_reward_trm: 5,
+        });
+        match a.tick(&ctx) {
+            TickAction::ServeRequest { task_id, reward_trm, .. } => {
+                assert_eq!(task_id, "task-7");
+                assert_eq!(reward_trm, 5);
+            }
+            other => panic!("expected ServeRequest, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn tick_rejects_peer_when_auto_earn_off() {
+        let mut a = PersonalAgent::new(wallet(), budget(), 0);
+        a.preferences.auto_earn_enabled = false;
+        let mut ctx = empty_ctx(100);
+        ctx.incoming_serving_request = Some(ServingRequest {
+            peer: peer(),
+            task_id: "t".into(),
+            peer_reputation: 0.99,
+            prompt_passes_filter: true,
+            estimated_reward_trm: 5,
+        });
+        match a.tick(&ctx) {
+            TickAction::RejectServeRequest { reason, .. } => {
+                assert!(reason.contains("auto_earn"));
+            }
+            other => panic!("expected RejectServeRequest, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn tick_rejects_peer_below_reputation_threshold() {
+        let a = PersonalAgent::new(wallet(), budget(), 0);
+        let mut ctx = empty_ctx(100);
+        ctx.incoming_serving_request = Some(ServingRequest {
+            peer: peer(),
+            task_id: "t".into(),
+            peer_reputation: 0.05,
+            prompt_passes_filter: true,
+            estimated_reward_trm: 5,
+        });
+        match a.tick(&ctx) {
+            TickAction::RejectServeRequest { reason, .. } => {
+                assert!(reason.contains("reputation"));
+            }
+            other => panic!("expected RejectServeRequest, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn tick_rejects_peer_when_prompt_filtered() {
+        let a = PersonalAgent::new(wallet(), budget(), 0);
+        let mut ctx = empty_ctx(100);
+        ctx.incoming_serving_request = Some(ServingRequest {
+            peer: peer(),
+            task_id: "t".into(),
+            peer_reputation: 0.99,
+            prompt_passes_filter: false,
+            estimated_reward_trm: 5,
+        });
+        match a.tick(&ctx) {
+            TickAction::RejectServeRequest { reason, .. } => {
+                assert!(reason.contains("content_filter"));
+            }
+            other => panic!("expected RejectServeRequest, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn tick_runs_local_task_without_approval() {
+        let a = PersonalAgent::new(wallet(), budget(), 0);
+        let mut ctx = empty_ctx(100);
+        ctx.pending_task = Some(TaskCostEstimate {
+            size: TaskSize::Local,
+            estimated_trm: 0,
+            estimated_seconds: 1,
+            preferred_provider: None,
+        });
+        ctx.pending_task_id = Some("local-1".into());
+        match a.tick(&ctx) {
+            TickAction::RunLocal { task_id } => assert_eq!(task_id, "local-1"),
+            other => panic!("expected RunLocal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn tick_routes_remote_within_budget() {
+        let a = PersonalAgent::new(wallet(), budget(), 0);
+        let mut ctx = empty_ctx(100);
+        ctx.current_balance_trm = 100;
+        ctx.pending_task_id = Some("remote-1".into());
+        ctx.pending_task = Some(TaskCostEstimate {
+            size: TaskSize::Remote,
+            estimated_trm: 10,
+            estimated_seconds: 5,
+            preferred_provider: Some(provider()),
+        });
+        match a.tick(&ctx) {
+            TickAction::RunRemote { provider: p, cost_trm, .. } => {
+                assert_eq!(p, provider());
+                assert_eq!(cost_trm, 10);
+            }
+            other => panic!("expected RunRemote, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn tick_asks_user_when_over_per_task_budget() {
+        let a = PersonalAgent::new(wallet(), budget(), 0);
+        let mut ctx = empty_ctx(100);
+        ctx.current_balance_trm = 1_000;
+        ctx.pending_task_id = Some("huge".into());
+        ctx.pending_task = Some(TaskCostEstimate {
+            size: TaskSize::Remote,
+            estimated_trm: 100,
+            estimated_seconds: 60,
+            preferred_provider: Some(provider()),
+        });
+        match a.tick(&ctx) {
+            TickAction::AskUser { reason, .. } => {
+                assert!(reason.contains("per-task"));
+            }
+            other => panic!("expected AskUser, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn tick_asks_user_when_balance_too_low() {
+        let a = PersonalAgent::new(wallet(), budget(), 0);
+        let mut ctx = empty_ctx(100);
+        ctx.current_balance_trm = 2;
+        ctx.pending_task_id = Some("thin".into());
+        ctx.pending_task = Some(TaskCostEstimate {
+            size: TaskSize::Remote,
+            estimated_trm: 10,
+            estimated_seconds: 5,
+            preferred_provider: Some(provider()),
+        });
+        match a.tick(&ctx) {
+            TickAction::AskUser { reason, .. } => {
+                assert!(reason.contains("balance"));
+            }
+            other => panic!("expected AskUser, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn tick_asks_user_when_no_provider_resolved() {
+        let a = PersonalAgent::new(wallet(), budget(), 0);
+        let mut ctx = empty_ctx(100);
+        ctx.current_balance_trm = 100;
+        ctx.pending_task_id = Some("orphan".into());
+        ctx.pending_task = Some(TaskCostEstimate {
+            size: TaskSize::Remote,
+            estimated_trm: 10,
+            estimated_seconds: 5,
+            preferred_provider: None,
+        });
+        match a.tick(&ctx) {
+            TickAction::AskUser { reason, .. } => {
+                assert!(reason.contains("preferred provider"));
+            }
+            other => panic!("expected AskUser, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn tick_starts_earning_when_idle_long_enough() {
+        let a = PersonalAgent::new(wallet(), budget(), 0);
+        let mut ctx = empty_ctx(100);
+        ctx.local_utilization = 0.05;
+        ctx.seconds_idle = 120;
+        assert_eq!(a.tick(&ctx), TickAction::StartEarning);
+    }
+
+    #[test]
+    fn tick_stays_idle_if_auto_earn_off_even_when_idle() {
+        let mut a = PersonalAgent::new(wallet(), budget(), 0);
+        a.preferences.auto_earn_enabled = false;
+        let mut ctx = empty_ctx(100);
+        ctx.local_utilization = 0.0;
+        ctx.seconds_idle = 100_000;
+        assert_eq!(a.tick(&ctx), TickAction::Idle);
+    }
+
+    #[test]
+    fn tick_prefers_serving_request_over_idle_earning() {
+        let a = PersonalAgent::new(wallet(), budget(), 0);
+        let mut ctx = empty_ctx(100);
+        ctx.local_utilization = 0.0;
+        ctx.seconds_idle = 9_999;
+        ctx.incoming_serving_request = Some(ServingRequest {
+            peer: peer(),
+            task_id: "priority".into(),
+            peer_reputation: 0.9,
+            prompt_passes_filter: true,
+            estimated_reward_trm: 2,
+        });
+        matches!(a.tick(&ctx), TickAction::ServeRequest { .. });
+    }
+
+    #[test]
+    fn tick_prefers_pending_task_over_idle_earning() {
+        let a = PersonalAgent::new(wallet(), budget(), 0);
+        let mut ctx = empty_ctx(100);
+        ctx.local_utilization = 0.0;
+        ctx.seconds_idle = 9_999;
+        ctx.pending_task_id = Some("user-job".into());
+        ctx.pending_task = Some(TaskCostEstimate {
+            size: TaskSize::Local,
+            estimated_trm: 0,
+            estimated_seconds: 1,
+            preferred_provider: None,
+        });
+        matches!(a.tick(&ctx), TickAction::RunLocal { .. });
     }
 
     #[test]

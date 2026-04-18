@@ -32,5 +32,6 @@ pub use federated::{
     GradientContribution, WeightedAverageAggregator,
 };
 pub use personal_agent::{
-    AgentDecision, AgentPreferences, PersonalAgent, TaskCostEstimate, TaskSize,
+    AgentDecision, AgentPreferences, PersonalAgent, ServingRequest, TaskCostEstimate, TaskSize,
+    TickAction, TickContext,
 };

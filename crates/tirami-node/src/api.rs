@@ -2088,7 +2088,7 @@ async fn forge_peers(
         .peers()
         .iter()
         .map(|(node_id, state)| {
-            let (price_multiplier, available_cu, models, latency_hint_ms, timestamp) =
+            let (price_multiplier, available_cu, models, latency_hint_ms, timestamp, http_endpoint) =
                 match &state.price_signal {
                     Some(sig) => (
                         sig.price_multiplier,
@@ -2099,8 +2099,9 @@ async fn forge_peers(
                             .collect::<Vec<_>>(),
                         sig.latency_hint_ms,
                         sig.timestamp,
+                        sig.http_endpoint.clone(),
                     ),
-                    None => (1.0, 0, vec![], 0, 0),
+                    None => (1.0, 0, vec![], 0, 0, None),
                 };
             serde_json::json!({
                 "node_id": node_id.to_hex(),
@@ -2112,6 +2113,9 @@ async fn forge_peers(
                 "last_seen": timestamp,
                 "audit_tier": format!("{:?}", state.audit_tier),
                 "verified_trades": state.verified_trade_count,
+                // Phase 19 / Tier C — peer's self-advertised HTTP
+                // endpoint (None if iroh-P2P only).
+                "http_endpoint": http_endpoint,
             })
         })
         .collect();
@@ -3479,10 +3483,8 @@ async fn forge_agent_task(
         .estimated_trm
         .unwrap_or_else(|| ((req.max_tokens as u64).saturating_add(99) / 100).max(1));
 
-    // Phase 18.5-part-3c — parse the peer hint (if any) so we can
-    // populate `preferred_provider` and have `tick` return
-    // `RunRemote` instead of bailing to `AskUser`.
-    let peer_hint_parsed: Option<(NodeId, String)> = match &req.peer {
+    // Phase 18.5-part-3c — parse the explicit peer hint (if any).
+    let explicit_peer: Option<(NodeId, String)> = match &req.peer {
         Some(hint) => match NodeId::from_hex(&hint.node_id) {
             Ok(id) => Some((id, hint.url.trim_end_matches('/').to_string())),
             Err(_) => {
@@ -3494,6 +3496,35 @@ async fn forge_agent_task(
         },
         None => None,
     };
+
+    // Phase 19 / Tier C — when no explicit peer is supplied, try to
+    // auto-resolve via select_provider + peer_http_endpoint. This
+    // closes the "RunRemote always bails to ask_user" scaffold from
+    // #80 so remote routing works without the caller needing to
+    // know peer URLs.
+    let auto_peer: Option<(NodeId, String)> = if explicit_peer.is_none()
+        && size == tirami_mind::TaskSize::Remote
+    {
+        let ledger = state.ledger.lock().await;
+        let model_id = tirami_core::ModelId(
+            req.model.as_deref().unwrap_or("").to_string(),
+        );
+        match ledger.select_provider(
+            &model_id,
+            req.max_tokens as u64,
+            &state.local_node_id,
+        ) {
+            Some((provider_id, _cost)) => match ledger.peer_http_endpoint(&provider_id) {
+                Some(url) => Some((provider_id, url.trim_end_matches('/').to_string())),
+                None => None,
+            },
+            None => None,
+        }
+    } else {
+        None
+    };
+
+    let peer_hint_parsed = explicit_peer.clone().or(auto_peer);
 
     let estimate = tirami_mind::TaskCostEstimate {
         size,

@@ -475,7 +475,27 @@ Companion: clearclown/tirami-contracts — Solidity/Foundry TRM ERC-20 + Bridge
 
 ## License
 
-MIT
+MIT. See [`LICENSE`](LICENSE).
+
+## Not an investment — secondary-market disclaimer
+
+TRM is **compute accounting**, not a financial product. The
+protocol maintainers do not sell, promote, or speculate on TRM.
+Because the code is MIT-licensed open source, anyone anywhere may
+— without the maintainers' knowledge, consent, or endorsement —
+bridge, list, trade, or derive TRM on secondary markets. If you
+choose to hold or trade TRM as a store of value, you take on all
+associated risk yourself.
+
+- No ICO, no pre-sale, no airdrop, no private round.
+- No revenue share from third-party markets.
+- Base mainnet deploy is **audit-gated** (see
+  [`docs/release-readiness.md`](docs/release-readiness.md) Tier D
+  and the `deploy-base-mainnet` target in
+  [`repos/tirami-contracts/Makefile`](repos/tirami-contracts/Makefile)).
+
+Full text of the disclaimer is in
+[`SECURITY.md`](SECURITY.md#secondary-markets--third-party-tokenization).
 
 ## Acknowledgements
 

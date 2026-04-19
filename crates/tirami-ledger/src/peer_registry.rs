@@ -384,6 +384,7 @@ mod tests {
             model_capabilities: vec![ModelId("qwen2.5-0.5b".into())],
             latency_hint_ms: 50,
             timestamp,
+            http_endpoint: None,
         }
     }
 

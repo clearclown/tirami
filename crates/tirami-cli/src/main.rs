@@ -564,6 +564,16 @@ async fn main() -> anyhow::Result<()> {
             let transport = node.connect_to_seed(seed_addr).await?;
             tracing::info!("Connected to seed. Ready for inference.");
 
+            // Phase 19 / Tier C — auto-configure the PersonalAgent
+            // on the worker too. Without this `/v1/tirami/agent/*`
+            // returns 412 on worker nodes, breaking the
+            // killer-app story for users who run a worker
+            // (HTTP → P2P forward) instead of a full seed. Also
+            // spawn the background tick loop so the agent observes
+            // activity.
+            node.ensure_personal_agent(transport.tirami_node_id()).await;
+            node.spawn_agent_loop();
+
             // Spawn HTTP API server in background (same pattern as Seed)
             node.spawn_api();
 

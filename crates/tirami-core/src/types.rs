@@ -254,6 +254,26 @@ pub struct PriceSignal {
     pub latency_hint_ms: u32,
     /// Unix timestamp (ms) when this signal was created.
     pub timestamp: u64,
+    /// Phase 19 / Tier-C enabler (fix for #80 scope-extension).
+    ///
+    /// Optional HTTP endpoint the provider advertises for callers
+    /// that want to drive inference over the OpenAI-compatible REST
+    /// surface rather than iroh P2P. When present, consumers can
+    /// resolve `NodeId → URL` locally from the peer registry
+    /// instead of requiring the user to hand-wire `peer.url` on
+    /// every request.
+    ///
+    /// `None` is the pre-Phase-19 wire shape and parses cleanly
+    /// (via `#[serde(default)]`) — operators who don't want to
+    /// advertise HTTP simply leave the config field empty.
+    ///
+    /// SECURITY: the advertised URL is self-attested. Consumers
+    /// MUST still verify trades are dual-signed (which already
+    /// happens). An attacker advertising an HTTP endpoint they
+    /// don't control at most wastes the consumer's request; they
+    /// cannot forge a signed trade.
+    #[serde(default)]
+    pub http_endpoint: Option<String>,
 }
 
 impl PriceSignal {
@@ -391,6 +411,7 @@ mod tests {
             model_capabilities: vec![],
             latency_hint_ms: 50,
             timestamp: 0,
+            http_endpoint: None,
         };
         assert!(!sig.is_valid());
     }
@@ -404,6 +425,7 @@ mod tests {
             model_capabilities: vec![],
             latency_hint_ms: 50,
             timestamp: 0,
+            http_endpoint: None,
         };
         assert!(!sig.is_valid());
     }
@@ -417,6 +439,7 @@ mod tests {
             model_capabilities: vec![],
             latency_hint_ms: 50,
             timestamp: 0,
+            http_endpoint: None,
         };
         assert!(!sig.is_valid());
     }
@@ -430,6 +453,7 @@ mod tests {
             model_capabilities: vec![],
             latency_hint_ms: 50,
             timestamp: 0,
+            http_endpoint: None,
         };
         assert!(!sig.is_valid());
     }
@@ -443,6 +467,7 @@ mod tests {
             model_capabilities: vec![],
             latency_hint_ms: 50,
             timestamp: 0,
+            http_endpoint: None,
         };
         assert!(!sig.is_valid());
     }
@@ -456,6 +481,7 @@ mod tests {
             model_capabilities: vec![],
             latency_hint_ms: 50,
             timestamp: 0,
+            http_endpoint: None,
         };
         assert!(sig.is_valid());
     }
@@ -469,6 +495,7 @@ mod tests {
             model_capabilities: vec![],
             latency_hint_ms: 50,
             timestamp: 0,
+            http_endpoint: None,
         };
         assert!(sig.is_valid());
     }

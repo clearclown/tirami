@@ -1,6 +1,6 @@
 # Security Policy
 
-**Last reviewed:** 2026-04-18 (Phase 17 Wave 3.6).
+**Last reviewed:** 2026-04-19 (Phase 19 Tier C/D enablers).
 
 Tirami is a protocol for buying and selling compute as a currency on
 an adversarial public network. Security is not optional. If you find
@@ -9,6 +9,66 @@ below. If you're here to exploit one, please also consider reporting:
 the bounty program framework in the "Bug bounty" section pays out
 competitively with market prices and reporting keeps you in
 good-faith territory (see "Rules of engagement").
+
+## Secondary markets & third-party tokenization
+
+Tirami is **MIT-licensed open-source software**. TRM is the unit
+the ledger uses to account for compute. TRM is not a financial
+product, an investment contract, a security, or a commodity
+offered for sale by the protocol maintainers.
+
+Because the software is open source, anyone in the world — with or
+without the maintainers' knowledge, consent, or endorsement — may:
+
+- bridge the on-chain ERC-20 to other networks,
+- list TRM on a secondary exchange,
+- speculate on its future value,
+- build derivatives (futures, options, structured products),
+- fork the code and run a competing network.
+
+The protocol maintainers:
+
+- **do not** solicit investment in TRM.
+- **do not** promise any return, appreciation, or yield beyond the
+  mechanical "TRM ↔ compute" accounting relationship.
+- **do not** sell TRM on a pre-sale, ICO, airdrop, or private round.
+- **do not** receive equity, tokens, or revenue share from any
+  third-party market that lists TRM.
+- **cannot prevent** third parties from creating such markets
+  after the open-source release.
+- **explicitly disclaim** any warranty of merchantability or
+  fitness for a particular purpose (see `LICENSE`, the MIT clause
+  at the end).
+
+If you are considering holding or trading TRM as a store of value,
+you are making that judgement yourself and accepting all associated
+risk — legal, regulatory, counterparty, and technical.
+
+The protocol works without any external market. `1 TRM = 10⁹ FLOP`
+is the definitional anchor (docs/whitepaper.md §3). The compute is
+the value. Everything else is emergent.
+
+## Mainnet deployment gate
+
+`make deploy-base-mainnet` in `repos/tirami-contracts/Makefile`
+refuses to run unless the operator has:
+
+1. An external security audit report signed off (env var
+   `AUDIT_CLEARANCE=yes`).
+2. A multi-sig address configured to receive `Ownable::owner`
+   (env var `MULTISIG_OWNER`).
+3. Typed `i-accept-responsibility` at an interactive prompt.
+
+An operator who bypasses these gates — for instance by patching
+the Makefile, calling `forge script` directly, or deploying from
+another tool — is solely responsible for the deployment. The MIT
+license explicitly permits such forks and redeploys but does
+**not** transfer any liability from the patcher to the original
+maintainers.
+
+See `docs/release-readiness.md` for the full Tier A–D rollout
+criteria, and `docs/deployments/README.md` for the live deploy
+record.
 
 ## Supported versions
 

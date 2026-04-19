@@ -1,10 +1,25 @@
-# Tirami — Release Readiness (2026-04-19)
+# Tirami — Release Readiness (2026-04-19, Tier C/D enablers)
 
 A concise, honest assessment of "can we publish this now?"
-Updated after the Phase 18.5-part-3 E2E fix wave closed all
-open issues (#73–#85) and a live 2-node verification on
-`100.112.10.128` confirmed end-to-end dual-signed TRM
-negotiation for the first time via HTTP.
+Updated after Phase 19 landed the Tier C/D enablers:
+
+- Peer auto-discovery via `PriceSignal.http_endpoint` (#114).
+- `ProofPolicy` default promoted `Disabled → Optional` (#115).
+- Base Sepolia deployment Makefile + gated mainnet target (#116).
+- Secondary-market + audit-gated disclaimer in `SECURITY.md`
+  and `README.md` (#117).
+
+Follow-up known gap — filed as #88 (P2, not a blocker): worker
+`--daemon` has no gossip recv loop, so peer auto-discovery needs
+either an explicit `peer.url` hint or a full seed (which DOES
+receive + ingest gossip). Tier C shipping is fine with that
+caveat — operators can drive via explicit URLs.
+
+The 2026-04-18 live 2-node E2E on `100.112.10.128` already
+confirmed dual-signed TRM negotiation lands on the seed
+(`Signed trade recorded: 32 CU for 21 tokens…`). This wave
+adds the peer-discovery plumbing and the on-chain deployment
+infrastructure on top.
 
 ## Verdict by scale tier
 
@@ -12,8 +27,8 @@ negotiation for the first time via HTTP.
 |---|---|---|---|
 | **A — OSS public preview** | Repo public, tweet, blog, Hacker News; devs run `tirami start` locally | ✅ **READY** | MIT licensed, no real money, 1 185 passing tests, transparent SECURITY.md, placeholder PGP marked as such. |
 | **B — Invited testnet** | ≤100 node operators, TRM stays virtual (no external value), you track uptime | ✅ **READY** with caveats below | Phase 18.5-part-3 closed every blocker identified on the 2026-04-18 E2E run. |
-| **C — Open public testnet** | 1 000+ nodes, open registration, still virtual TRM | ⚠️ **NOT YET** | Needs (1) peer auto-discovery so callers don't hand-wire `peer.url`, (2) `ProofPolicy` raised to `Optional` at minimum, (3) ≥ 7-day stress test at 10+ nodes, (4) bug-bounty live with real PGP. |
-| **D — Mainnet with real value** | Base L2 TRM ERC-20, real capital | ❌ **FORBIDDEN by own plan** | Phase 17 Wave 3.3 explicitly gates this on external security audit completion. |
+| **C — Open public testnet** | 1 000+ nodes, open registration, still virtual TRM | 🟡 **Infrastructure READY, operational blockers remain** | (1) Peer auto-discovery wire shape in place (`PriceSignal.http_endpoint`, Phase 19). (2) `ProofPolicy` default promoted to `Optional` (Phase 19). Still pending: (3) ≥ 7-day stress at 10+ nodes, (4) bug bounty live with real PGP, (5) worker daemon gossip loop (see #88 — explicit `peer.url` workaround works). |
+| **D — Mainnet with real value** | Base L2 TRM ERC-20, real capital | 🟡 **Infrastructure READY, audit gate active** | Sepolia deploy Makefile + mainnet target gated on `AUDIT_CLEARANCE=yes` + `MULTISIG_OWNER` + interactive confirmation (Phase 19). Mainnet deploy still blocked on external audit. Secondary-market disclaimer landed in SECURITY.md / README / deployments/README. |
 
 ## What's ready now (Tier A + B)
 

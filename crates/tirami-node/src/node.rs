@@ -422,6 +422,19 @@ impl TiramiNode {
             bal.max(0) as u64
         };
 
+        // Phase 19 / Tier C — advertise HTTP endpoint so consumers
+        // can auto-resolve NodeId → URL. Only emit when the API is
+        // bound to a non-loopback address (otherwise the URL is
+        // useless to peers). `0.0.0.0` is treated as "listen on all"
+        // but we need a caller-reachable address, so we surface it
+        // only if the operator explicitly set the bind to a public
+        // interface name. Callers can always override with a
+        // `peer.url` override on the HTTP request.
+        let http_endpoint = derive_public_http_endpoint(
+            &self.config.api_bind_addr,
+            self.config.api_port,
+        );
+
         tirami_core::PriceSignal {
             node_id,
             // Phase 14.1: static 1.0 multiplier. Dynamic pricing policy
@@ -435,6 +448,7 @@ impl TiramiNode {
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_millis() as u64)
                 .unwrap_or(0),
+            http_endpoint,
         }
     }
 
@@ -760,6 +774,12 @@ impl TiramiNode {
         let model_manifest = self.model_manifest.clone();
         // Build a lightweight closure that re-creates the signal each tick.
         let node_id = transport.tirami_node_id();
+        // Phase 19 / Tier C — advertise HTTP endpoint so peers can
+        // auto-resolve NodeId → URL for forwarded chat requests.
+        let http_endpoint = derive_public_http_endpoint(
+            &self.config.api_bind_addr,
+            self.config.api_port,
+        );
 
         tokio::spawn(async move {
             let mut ticker = tokio::time::interval(std::time::Duration::from_secs(30));
@@ -791,6 +811,7 @@ impl TiramiNode {
                         .duration_since(std::time::UNIX_EPOCH)
                         .map(|d| d.as_millis() as u64)
                         .unwrap_or(0),
+                    http_endpoint: http_endpoint.clone(),
                 };
 
                 // Update own PeerRegistry entry.
@@ -1026,5 +1047,71 @@ mod tests {
         node.ensure_personal_agent(wallet()).await;
         let guard = node.personal_agent.lock().await;
         assert_eq!(guard.as_ref().unwrap().earned_today_trm, 999);
+    }
+
+    // ---------------------------------------------------------------
+    // Phase 19 / Tier C — derive_public_http_endpoint
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn loopback_bind_returns_none() {
+        assert!(super::derive_public_http_endpoint("127.0.0.1", 3000).is_none());
+        assert!(super::derive_public_http_endpoint("localhost", 3000).is_none());
+        assert!(super::derive_public_http_endpoint("::1", 3000).is_none());
+    }
+
+    #[test]
+    fn zero_bind_is_suppressed() {
+        // 0.0.0.0 is a "listen on all" sentinel; peers can't reach
+        // it as a URL. Suppress rather than advertise garbage.
+        assert!(super::derive_public_http_endpoint("0.0.0.0", 3000).is_none());
+        assert!(super::derive_public_http_endpoint("::", 3000).is_none());
+    }
+
+    #[test]
+    fn public_bind_produces_http_url() {
+        let url = super::derive_public_http_endpoint("100.64.1.1", 3000)
+            .expect("non-loopback bind should advertise");
+        assert_eq!(url, "http://100.64.1.1:3000");
+    }
+
+    #[test]
+    fn ipv6_public_bind_is_bracketed() {
+        let url = super::derive_public_http_endpoint("2001:db8::1", 3000)
+            .expect("v6 public bind should advertise");
+        assert_eq!(url, "http://[2001:db8::1]:3000");
+    }
+}
+
+/// Phase 19 / Tier C — derive the HTTP endpoint this node should
+/// advertise on its PriceSignal so peers can resolve `NodeId → URL`.
+///
+/// Rules:
+/// - Loopback addresses (`127.0.0.1`, `::1`, `localhost`) → `None`
+///   because no peer can reach them.
+/// - Wildcard binds (`0.0.0.0`, `::`) → `None` because the value
+///   isn't a valid URL host.
+/// - Anything else → `Some("http://<host>:<port>")` with v6
+///   addresses bracketed per RFC 3986.
+///
+/// Operators who want TLS or a reverse-proxy URL can extend this
+/// helper by reading a config override (future `config.public_http_url`).
+pub(crate) fn derive_public_http_endpoint(bind: &str, port: u16) -> Option<String> {
+    let b = bind.trim();
+    if b.is_empty() {
+        return None;
+    }
+    let lower = b.to_ascii_lowercase();
+    if matches!(
+        lower.as_str(),
+        "127.0.0.1" | "::1" | "localhost" | "0.0.0.0" | "::"
+    ) {
+        return None;
+    }
+    if b.contains(':') && !b.starts_with('[') {
+        // Raw IPv6 literal — bracket for URL form.
+        Some(format!("http://[{b}]:{port}"))
+    } else {
+        Some(format!("http://{b}:{port}"))
     }
 }

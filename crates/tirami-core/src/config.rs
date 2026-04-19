@@ -131,8 +131,8 @@ pub struct Config {
     /// Phase 18.3 — zkML rollout gate. See
     /// `tirami_ledger::zk::ProofPolicy`. Stored as a string here
     /// to avoid circular dependencies between tirami-core and
-    /// tirami-ledger. Valid values: "disabled" (default),
-    /// "optional", "recommended", "required".
+    /// tirami-ledger. Valid values: `"disabled"`, `"optional"`
+    /// (Phase 19 default), `"recommended"`, `"required"`.
     ///
     /// The network-wide value is Constitutionally ratcheted: once
     /// set to "required", it cannot be downgraded by governance.
@@ -181,7 +181,14 @@ fn default_checkpoint_retain_secs() -> u64 {
 }
 
 fn default_proof_policy() -> String {
-    "disabled".to_string()
+    // Phase 19 / Tier C — promoted from "disabled" to "optional".
+    // Nodes trade without proofs by default but proof-verified
+    // trades get a reputation boost once an ezkl/risc0 backend is
+    // wired in. Constitutional ratchet in
+    // `tirami_ledger::zk::try_ratchet_proof_policy` prevents
+    // downgrade, so future governance can only move UP to
+    // `recommended` / `required` (the latter irreversibly).
+    "optional".to_string()
 }
 
 fn default_agent_tick_interval_secs() -> u64 {
@@ -272,7 +279,7 @@ impl Default for Config {
             checkpoint_interval_secs: 3_600,
             checkpoint_retain_secs: 24 * 3_600,
             archive_path: None,
-            proof_policy: "disabled".to_string(),
+            proof_policy: "optional".to_string(),
             agent_tick_interval_secs: 30,
             personal_agent_enabled: true,
         }

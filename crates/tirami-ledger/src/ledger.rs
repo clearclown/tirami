@@ -805,6 +805,26 @@ impl ComputeLedger {
         &self.price
     }
 
+    /// Phase 19 / Tier C — resolve a peer's advertised HTTP
+    /// endpoint from the most recent PriceSignal in the registry.
+    /// Returns `None` when the peer is unknown or didn't advertise
+    /// an endpoint (i.e. it's iroh-P2P only).
+    ///
+    /// Used by `forge_agent_task` to auto-pick a peer URL after
+    /// `select_provider` without requiring the caller to supply
+    /// `peer.url` on every request.
+    ///
+    /// SECURITY: the value is self-attested by the advertising
+    /// peer. Callers MUST still verify trades are dual-signed
+    /// (`execute_signed_trade` already enforces this). A peer that
+    /// lies about its URL at most wastes the consumer's request.
+    pub fn peer_http_endpoint(&self, node_id: &NodeId) -> Option<String> {
+        self.peer_registry
+            .get(node_id)
+            .and_then(|s| s.price_signal.as_ref())
+            .and_then(|sig| sig.http_endpoint.clone())
+    }
+
     /// Return the most recent trades, newest first.
     pub fn recent_trades(&self, limit: usize) -> Vec<TradeRecord> {
         self.trade_log.iter().rev().take(limit).cloned().collect()
@@ -5879,7 +5899,41 @@ mod tests {
             model_capabilities: vec![ModelId(model.to_string())],
             latency_hint_ms: 50,
             timestamp: now_millis(),
+            http_endpoint: None,
         }
+    }
+
+    // ---------------------------------------------------------------
+    // Phase 19 / Tier C — peer_http_endpoint auto-resolution
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn peer_http_endpoint_returns_none_when_peer_unknown() {
+        let ledger = ComputeLedger::new();
+        assert!(ledger.peer_http_endpoint(&NodeId([42u8; 32])).is_none());
+    }
+
+    #[test]
+    fn peer_http_endpoint_returns_none_when_peer_advertises_nothing() {
+        let mut ledger = ComputeLedger::new();
+        let node = NodeId([42u8; 32]);
+        let mut sig = price_signal_for(node.clone(), "qwen", 1.0, 1000);
+        sig.http_endpoint = None;
+        ledger.peer_registry.ingest_price_signal(&sig);
+        assert!(ledger.peer_http_endpoint(&node).is_none());
+    }
+
+    #[test]
+    fn peer_http_endpoint_surfaces_advertised_url() {
+        let mut ledger = ComputeLedger::new();
+        let node = NodeId([42u8; 32]);
+        let mut sig = price_signal_for(node.clone(), "qwen", 1.0, 1000);
+        sig.http_endpoint = Some("http://100.64.1.1:3000".to_string());
+        ledger.peer_registry.ingest_price_signal(&sig);
+        assert_eq!(
+            ledger.peer_http_endpoint(&node).as_deref(),
+            Some("http://100.64.1.1:3000"),
+        );
     }
 
     #[test]

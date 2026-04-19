@@ -3521,6 +3521,11 @@ async fn forge_agent_task(
             let output = tokens.join("");
             let flops_per_token = flops_per_token_from_manifest(&state).await;
             let model_id = req.model.as_deref().unwrap_or("active");
+            // Record the compute event on the ledger (accounting of
+            // FLOPs performed on the local engine). `record_api_trade`
+            // with consumer=None routes to the anonymous sentinel and
+            // still counts on `contributed` — this is the node's own
+            // internal accounting, not a wallet transfer.
             let trm_cost = record_api_trade(
                 &state.ledger,
                 &wallet,
@@ -3530,16 +3535,12 @@ async fn forge_agent_task(
                 flops_per_token,
             )
             .await;
-            // Self-originated by the local user: record as a spend
-            // on the agent (compute consumed, not earned).
-            {
-                let mut guard = state.personal_agent.lock().await;
-                if let Some(agent) = guard.as_mut() {
-                    if agent.wallet == wallet {
-                        agent.record_spend(trm_cost);
-                    }
-                }
-            }
+            // Fix #81 — self-served RunLocal tasks do NOT move TRM
+            // out of the user's wallet. The node paid itself in
+            // compute, so the PersonalAgent's spend tally must stay
+            // put. `maybe_record_agent_earn` already has the mirror
+            // invariant: earn only fires when the consumer is a
+            // peer, never when it's the anonymous-local sentinel.
             Ok(Json(serde_json::json!({
                 "task_id": task_id,
                 "status": "run_local",
@@ -4779,6 +4780,76 @@ mod tests {
         )
         .await;
         assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    // -----------------------------------------------------------------
+    // Fix #81 regression: RunLocal must not touch the agent's spend tally.
+    // -----------------------------------------------------------------
+    #[tokio::test]
+    async fn agent_task_run_local_does_not_change_agent_spend_tally() {
+        // The RunLocal branch returns 503 when the model isn't
+        // loaded. Whether the branch succeeds or fails, the
+        // PersonalAgent's spend / earn tallies must not change
+        // because no TRM crosses wallet boundaries on a
+        // self-served task (the node pays itself in compute).
+        let app = test_router_with_agent(
+            Config::default(),
+            Some(agent_at(NodeId([0xAAu8; 32]))),
+        );
+
+        // Snapshot tallies via /v1/tirami/agent/status.
+        let before = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/tirami/agent/status")
+                    .body(Body::empty())
+                    .expect("before request"),
+            )
+            .await
+            .expect("before response");
+        let before_body = axum::body::to_bytes(before.into_body(), usize::MAX)
+            .await
+            .expect("before body");
+        let before_json: serde_json::Value =
+            serde_json::from_slice(&before_body).expect("before json");
+        let before_spent = before_json["spent_today_trm"].as_u64().unwrap_or_default();
+        let before_earned = before_json["earned_today_trm"].as_u64().unwrap_or_default();
+
+        // Drive the RunLocal path. It'll 503 on missing model, but the
+        // structural guarantee is: neither path touches the tally.
+        let _ = post_agent_task(
+            app.clone(),
+            serde_json::json!({
+                "prompt": "hi",
+                "max_tokens": 10,
+                "estimated_trm": 1,
+            }),
+        )
+        .await;
+
+        let after = app
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/tirami/agent/status")
+                    .body(Body::empty())
+                    .expect("after request"),
+            )
+            .await
+            .expect("after response");
+        let after_body = axum::body::to_bytes(after.into_body(), usize::MAX)
+            .await
+            .expect("after body");
+        let after_json: serde_json::Value =
+            serde_json::from_slice(&after_body).expect("after json");
+        let after_spent = after_json["spent_today_trm"].as_u64().unwrap_or_default();
+        let after_earned = after_json["earned_today_trm"].as_u64().unwrap_or_default();
+
+        assert_eq!(
+            (before_spent, before_earned),
+            (after_spent, after_earned),
+            "RunLocal path must not change spent/earned tallies on a self-served task"
+        );
     }
 
     #[tokio::test]

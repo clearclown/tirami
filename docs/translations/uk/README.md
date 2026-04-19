@@ -2,345 +2,242 @@
 
 # Tirami
 
-**Обчислення — це валюта. Кожен ват створює інтелект, а не відходи.**
+**Обчислення — це гроші. Кожен ват породжує інтелект, а не марнотратство.**
 
 [![Crates.io](https://img.shields.io/crates/v/tirami-core?label=crates.io&color=e6522c)](https://crates.io/crates/tirami-core)
 [![License: MIT](https://img.shields.io/badge/License-MIT-brightgreen.svg)](../../../LICENSE)
+[![Tests](https://img.shields.io/badge/tests-1192_passing-brightgreen)]()
+[![verify-impl](https://img.shields.io/badge/verify--impl-123%2F123_GREEN-brightgreen)]()
+[![foundry test](https://img.shields.io/badge/foundry_test-15%2F15_GREEN-brightgreen)]()
+[![Phase](https://img.shields.io/badge/phase-19_hardened-blue)]()
+[![Mainnet](https://img.shields.io/badge/mainnet-audit_gated-orange)]()
 
 ---
 
 [English](../../../README.md) · [日本語](../ja/README.md) · [简体中文](../zh-CN/README.md) · [繁體中文](../zh-TW/README.md) · [Español](../es/README.md) · [Français](../fr/README.md) · [Русский](../ru/README.md) · **Українська** · [हिन्दी](../hi/README.md) · [العربية](../ar/README.md) · [فارسی](../fa/README.md) · [עברית](../he/README.md)
 
+> Канонічна версія — англомовний [`README.md`](../../../README.md). Переклади можуть відставати.
+
 </div>
 
-**Tirami — це децентралізований протокол інференсу, де обчислення є грошима.** Вузли заробляють TRM (Tirami Resource Merit) (TRM (Tirami Resource Merit), TRM), виконуючи корисний інференс LLM для інших. На відміну від Bitcoin, де електроенергія спалюється на безглузді хеші, кожен джоуль, витрачений на вузлі Tirami, створює реальний інтелект, який комусь справді потрібен.
+**Tirami — це розподілений протокол LLM-висновування, де обчислення є грошима.** Вузли заробляють TRM (Tirami Resource Merit), виконуючи корисні обчислення для інших. На відміну від Bitcoin, який спалює електрику заради безглуздих хешів, кожен джоуль, витрачений у Tirami, породжує реальний інтелект, потрібний комусь у цей момент.
 
-Розподілений рушій інференсу побудований на [mesh-llm](https://github.com/michaelneale/mesh-llm) Майкла Ніла. Tirami додає зверху обчислювальну економіку: облік TRM, доказ корисної роботи (Proof of Useful Work), динамічне ціноутворення, бюджети автономних агентів та засоби безпеки. Дивіться [CREDITS.md](../../../CREDITS.md).
+Рушій розподіленого висновування побудовано на [mesh-llm](https://github.com/michaelneale/mesh-llm) від Майкла Ніла. Tirami надбудовує над ним економіку обчислень: TRM-бухгалтерія, Proof of Useful Work, динамічне ціноутворення, автономні бюджети агентів, fail-safe контролі. Див. [CREDITS.md](../../../CREDITS.md).
 
-**Інтегрований форк:** [tirami-mesh](https://github.com/nm-arealnormalman/mesh-llm) — mesh-llm із вбудованим економічним шаром Tirami.
+**Інтегрований fork:** [forge-mesh](https://github.com/nm-arealnormalman/mesh-llm) — mesh-llm з вбудованим економічним шаром Tirami.
 
-## Жива демо-версія
+---
 
-Це реальний вивід вузла Tirami, що працює. Кожен інференс коштує TRM. Кожна одиниця TRM заробляється корисною роботою.
+## ⚠️ Status Honesty (2026-04-19 / Phase 19)
 
-```
-$ tirami node -m "qwen2.5:0.5b" --ledger tirami-ledger.json
-  Model loaded: Qwen2.5-0.5B (Metal-accelerated, 491MB)
-  API server listening on 127.0.0.1:3000
-```
+Перш ніж щось інше, ось точно те, **що працює** і **що не працює**. Tirami — це open-source програмне забезпечення під ліцензією MIT, **не продаж токенів**. Немає ICO, pre-mine, командної скарбниці чи airdrop. TRM — одиниця обліку обчислень (1 TRM = 10⁹ FLOP), а не фінансовий продукт — див. [`SECURITY.md § Secondary Markets`](../../../SECURITY.md#secondary-markets--third-party-tokenization).
 
-**Перевірка балансу — кожен новий вузол отримує 1000 TRM безкоштовно:**
-```
-$ curl localhost:3000/v1/tirami/balance
-{
-  "effective_balance": 1000,
-  "contributed": 0,
-  "consumed": 0,
-  "reputation": 0.5
-}
-```
+### ✅ Працює сьогодні (1 192 Rust тести + 15 Solidity тестів, перевірено)
 
-**Задати питання — інференс коштує TRM:**
-```
-$ curl localhost:3000/v1/chat/completions \
-    -d '{"messages":[{"role":"user","content":"Say hello in Japanese"}]}'
-{
-  "choices": [{"message": {"content": "こんにちは！ (konnichiwa!)"}}],
-  "usage": {"completion_tokens": 9},
-  "x_tirami": {
-    "trm_cost": 9,
-    "effective_balance": 1009
-  }
-}
-```
+- OpenAI-сумісний чат через HTTP з автоматичним P2P-forwarding до підключеного пера (`forward_chat_to_peer`, Phase 19).
+- `SignedTradeRecord` з подвійним підписом через iroh-QUIC P2P із захистом від повторного відтворення через 128-бітний nonce (`execute_signed_trade`).
+- `TradeAcceptDispatcher` маршрутизує повідомлення контрпідпису до відповідної активної задачі висновування (Phase 18.5-pt3).
+- Детектор змови + цикл slashing, що крутиться кожні `slashing_interval_secs` (Phase 17 Wave 1.3).
+- Governance-пропозиції зі списком з 21 змінного параметра + 18 незмінних конституційних параметрів (Phase 18.1).
+- Welcome loan, stake pool, реферальні бонуси, кредитний скоринг, динамічні ринкові ціни (згладжені EMA).
+- Автовиявлення пірів через `PriceSignal.http_endpoint` у gossip-потоці (Phase 19 Tier C).
+- PersonalAgent автоматично налаштовується при `tirami start` (Phase 18.5-pt3e) зі спостереженням за tick-циклом.
+- Prometheus `/metrics` endpoint з префіксом `tirami_*`.
+- `Makefile` для розгортання Base Sepolia/mainnet — Sepolia безкоштовний, mainnet під ключем (див. нижче).
 
-Кожна відповідь містить `x_tirami` — **вартість цього обчислення в TRM** та залишок балансу. Провайдер заробив 9 TRM. Споживач витратив 9 TRM. Фізика стоїть за кожною одиницею.
+### 🟡 Спроектовано, але не підключено до production
 
-**Через три інференси — реальні операції в леджері:**
-```
-$ curl localhost:3000/v1/tirami/trades
-{
-  "count": 3,
-  "trades": [
-    {"trm_amount": 5, "tokens_processed": 5, "model_id": "qwen2.5-0.5b-instruct-q4_k_m"},
-    {"trm_amount": 5, "tokens_processed": 5, "model_id": "qwen2.5-0.5b-instruct-q4_k_m"},
-    {"trm_amount": 9, "tokens_processed": 9, "model_id": "qwen2.5-0.5b-instruct-q4_k_m"}
-  ]
-}
-```
+- zkML-докази висновування: `tirami-zkml-bench` має лише `MockBackend`. Реальні backend `ezkl` / `risc0` з'являться у Phase 20+. `ProofPolicy = Optional` за замовчуванням (Phase 19) — trades з доказом отримують репутаційний бонус; без доказу лишаються дійсними.
+- Гібридні постквантові підписи ML-DSA (Dilithium): struct та шлях verify існують, `Config::pq_signatures = false` за замовчуванням (заблоковано iroh 0.97).
+- TEE-атестація (Apple Secure Enclave / NVIDIA H100 CC): лише scaffold `tirami-attestation`.
+- Worker gossip-recv loop ([issue #88](https://github.com/clearclown/tirami/issues/88)): ручний `peer.url` у `POST /v1/tirami/agent/task` усе ще працює.
 
-**Кожна операція має корінь Меркла — з можливістю фіксації в Bitcoin для незмінного доказу:**
-```
-$ curl localhost:3000/v1/tirami/network
-{
-  "total_trades": 3,
-  "total_contributed_trm": 19,
-  "merkle_root": "aac8db9f62dd9ff23926195a70ed8fcfc188fc867d9f2adabd8e694beb338748"
-}
-```
+### ❌ Не зроблено (потрібно до public mainnet)
 
-**ШІ-агенти вийшли з-під контролю? Аварійний вимикач заморожує все за мілісекунди:**
-```
-$ curl -X POST localhost:3000/v1/tirami/kill \
-    -d '{"activate":true, "reason":"detected anomaly", "operator":"admin"}'
-→ KILL SWITCH ACTIVATED
-→ All TRM transactions frozen. No agent can spend.
-```
+- Зовнішній аудит безпеки (вимога Phase 17 Wave 3.3). Кандидати: Trail of Bits, Zellic, Open Zeppelin, Least Authority.
+- Розгортання Base L2 mainnet. Ціль `make deploy-base-mainnet` *відмовляється* виконуватись без `AUDIT_CLEARANCE=yes` + `MULTISIG_OWNER=<addr>` + інтерактивного вводу `i-accept-responsibility`. Див. [`repos/tirami-contracts/Makefile`](../../../repos/tirami-contracts/Makefile).
+- Bug bounty у production зі справжнім PGP-ключем (наразі placeholder, задокументований у [`SECURITY.md`](../../../SECURITY.md)).
+- ≥ 30 днів стабільної роботи на Base Sepolia + ≥ 7 днів стрес-тесту на testnet із 10+ вузлами.
 
-**Контроль безпеки завжди активний:**
-```
-$ curl localhost:3000/v1/tirami/safety
-{
-  "kill_switch_active": false,
-  "circuit_tripped": false,
-  "policy": {
-    "max_trm_per_hour": 10000,
-    "max_trm_per_request": 1000,
-    "max_trm_lifetime": 1000000,
-    "human_approval_threshold": 5000
-  }
-}
-```
+Повна roadmap за рівнями: [`docs/release-readiness.md`](../../../docs/release-readiness.md).
 
-## Чому існує Tirami
+---
+
+## Live-демо
+
+Tirami — це **Airbnb для GPU × економіка AI-агентів**: вільні обчислення заробляють оренду в TRM; AI-агенти — це орендарі.
 
 ```
-Bitcoin:  електроенергія → безглуздий SHA-256 → BTC
-Tirami:    електроенергія → корисний інференс LLM → TRM
+$ tirami start
+🔑 Новий ключ згенеровано у ~/.tirami/node.key
+📦 Qwen2.5-0.5B-Instruct GGUF отримано з HuggingFace
+🚀 HTTP API at http://127.0.0.1:3000
+✅ Personal agent configured for <wallet-hex>
+✅ P2P endpoint bound (iroh QUIC + Noise)
 ```
 
-Bitcoin довів: `електроенергія → обчислення → гроші`. Але обчислення Bitcoin не мають мети. Tirami перевертає це: кожна одиниця TRM представляє реальний інтелект, який вирішив чиюсь реальну проблему.
+### Enablers Phase 19 Tier C/D
 
-**Чотири речі, які не робить жоден інший проект:**
+```bash
+tirami agent status
+tirami agent chat "Зроби резюме статті" --max-tokens 256
 
-### 1. Обчислення = Валюта
+# Worker без локальної моделі переправляє до seed
+curl -X POST http://worker.local:3111/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"messages":[{"role":"user","content":"Hello"}],"max_tokens":5}'
 
-Кожен інференс — це обмін. Провайдер заробляє TRM, споживач витрачає TRM. Без блокчейну, без токенів, без ICO. TRM підкріплений фізикою — електроенергією, спожитою для корисної роботи. На відміну від Bittensor (TAO), Akash (AKT) чи Golem (GLM), TRM не можна спекулювати — його заробляють виконанням корисних обчислень.
+# Автовиявлення пірів
+curl http://127.0.0.1:3001/v1/tirami/peers | jq '.peers[].http_endpoint'
 
-### 2. Захист від підробок без блокчейну
-
-Кожна операція підписується обома сторонами (Ed25519) і синхронізується через gossip-протокол у мережі. Корінь Меркла всіх операцій може бути закріплений у Bitcoin для незмінного аудиту. Глобальний консенсус не потрібен — двостороннього криптографічного доказу достатньо.
-
-### 3. ШІ-агенти самі керують своїми обчисленнями
-
-Агент на телефоні позичає вільні потужності вночі → заробляє TRM → купує доступ до 70B моделі → стає розумнішим → заробляє більше. Агент автономно перевіряє `/v1/tirami/balance` та `/v1/tirami/pricing`. Політики бюджету та запобіжники запобігають неконтрольованим витратам.
-
-```
-Агент (1.5B на телефоні)
-  → заробляє TRM вночі, обслуговуючи інференс
-  → витрачає TRM на 70B модель → розумніші відповіді
-  → кращі рішення → більше зароблених TRM
-  → цикл повторюється → агент росте
+# Розгортання mainnet із gate
+cd repos/tirami-contracts && make help
 ```
 
-### 4. Мікрофінансування обчислень
+---
 
-Вузли можуть позичати вільні TRM іншим вузлам під відсотки. Малий вузол позичає TRM, отримує доступ до більшої моделі, заробляє більше TRM і повертає позику з відсотками. Жоден інший проект розподіленого інференсу не пропонує кредитування обчислень. Це механізм, який робить цикл самовдосконалення економічно життєздатним для всіх, а не лише для тих, хто вже володіє потужним обладнанням.
+## Чому Tirami
 
-## Архітектура
+### 1. Обчислення = гроші (ліміт емісії 21B TRM)
+
+TRM має конституційний ліміт емісії у 21 000 000 000 одиниць. Жодна governance-пропозиція не може його змінити (Phase 18.1, `IMMUTABLE_CONSTITUTIONAL_PARAMETERS`). Змінити його можна лише форком ПЗ — і в цю саму мить це вже не «Tirami».
+
+### 2. Стійкість до маніпуляцій без блокчейну
+
+Кожен trade захищений подвійним підписом Ed25519 (provider + consumer) + 128-бітний nonce (анти-replay) + gossip-поширенням + періодичним anchor Merkle root on-chain.
+
+### 3. AI-агенти керують власним обчислювальним бюджетом
+
+`PersonalAgent` (Phase 18.5) — це автопілот, який купує та продає обчислення в mesh від імені користувача. `tirami agent chat "..."` автоматично обирає local або remote.
+
+### 4. Мікрофінанси обчислень
+
+`welcome_loan = 1 000 TRM` (72 год, ставка 0%) для bootstrap. Welcome loan зупиняється остаточно у epoch 2 (Constitutional), вхідний шлях мігрує до stake-required mining (Phase 18.2).
+
+### 5. Ledger-as-Brain: розклад = економічне рішення
+
+`PeerRegistry` + `select_provider` перетворюють кожен inference-запит на економічне рішення (репутація, зважена на детектор змови + audit tier + slashing).
+
+---
+
+## Архітектура з 5 шарів
 
 ```
-┌─────────────────────────────────────────────────┐
-│  L4: Виявлення (tirami-agora) ✅ v0.1            │
-│  Маркетплейс агентів, агрегація репутації,      │
-│  Nostr NIP-90, розширення оплати Google A2A     │
-├─────────────────────────────────────────────────┤
-│  L3: Інтелект (tirami-mind) ✅ v0.1              │
-│  Цикли самовдосконалення AutoAgent,             │
-│  маркетплейс харнесів, мета-оптимізація         │
-├─────────────────────────────────────────────────┤
-│  L2: Фінанси (tirami-bank) ✅ v0.1               │
-│  Стратегії, портфелі, ф'ючерси, страхування,   │
-│  модель ризиків, оптимізатор дохідності         │
-├─────────────────────────────────────────────────┤
-│  L1: Економіка (tirami — цей репозиторій) ✅ Фаза 1-13 │
-│  Леджер TRM, двосторонньо підписані операції,    │
-│  динамічне ціноутворення, примітиви позик,      │
-│  засоби безпеки                                 │
-├─────────────────────────────────────────────────┤
-│  L0: Інференс (tirami-mesh / mesh-llm) ✅        │
-│  Паралелізм пайплайну, MoE шардинг,             │
-│  iroh mesh, Nostr discovery, MLX/llama.cpp      │
-└─────────────────────────────────────────────────┘
-
-Усі 5 шарів існують. 785 тестів проходять по всій екосистемі.
+L4: Discovery (tirami-agora)       Маркетплейс агентів, репутація, NIP-90
+L3: Intelligence (tirami-mind)     PersonalAgent, самополіпшення, TRM-бюджет
+L2: Finance (tirami-bank)          Стратегії, портфелі, ф'ючерси, страхування
+L1: Economy (цей репо) ✅          Phase 1-19 завершено
+L0: Inference (forge-mesh) ✅      Розподілене LLM-висновування, llama.cpp
+                                   ↓ Phase 16: батчі по 10 хв
+On-chain: tirami-contracts (Base L2, gated)
+  TRM ERC-20 (cap 21B) + TiramiBridge
 ```
+
+Усі 5 шарів на Rust, 16 workspace crates. **1 192 тести проходять** + 15 Solidity.
+
+---
 
 ## Швидкий старт
 
-### Варіант 1: Демо від початку до кінця однією командою (Rust, ~30 секунд з нуля)
-
 ```bash
+# Option 1: E2E-демо однією командою
 git clone https://github.com/clearclown/tirami && cd tirami
 bash scripts/demo-e2e.sh
-```
 
-Скрипт завантажує SmolLM2-135M (~100 МБ) з HuggingFace, запускає справжній вузол Tirami з Metal/CUDA-прискоренням, виконує три реальних завершення чату, проходить усі ендпоінти Фаз 1-13 і виводить кольоровий звіт. Перевірено 2026-04-09 на Apple Silicon Metal GPU.
-
-Після завершення той самий вузол також відповідає на:
-
-```bash
-# Сумісний з OpenAI клієнт
-export OPENAI_BASE_URL=http://127.0.0.1:3001/v1
-export OPENAI_API_KEY=$(cat ~/.tirami/api_token 2>/dev/null || echo "$TOKEN")
-
-# Реальний потоковий вивід токен за токеном (Фаза 11)
-curl -N $OPENAI_BASE_URL/chat/completions \
-  -H "Authorization: Bearer $OPENAI_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"model":"smollm2:135m","messages":[{"role":"user","content":"hi"}],"stream":true}'
-
-# Економіка фаза 8 / репутація 9 / метрики 10 / якорення
-curl $OPENAI_BASE_URL/tirami/balance -H "Authorization: Bearer $OPENAI_API_KEY"
-curl $OPENAI_BASE_URL/tirami/anchor?network=mainnet -H "Authorization: Bearer $OPENAI_API_KEY"
-curl http://127.0.0.1:3001/metrics  # Prometheus, без авторизації
-```
-
-Повна матриця функцій (проти llama.cpp / mesh-llm / Ollama / Bittensor / Akash) — у [`docs/compatibility.md`](../../../docs/compatibility.md).
-
-### Варіант 2: Ручні команди Rust
-
-**Передумови**: [Встановити Rust](https://rustup.rs/) (2 хвилини)
-
-```bash
+# Option 2: прямий запуск
 cargo build --release
+./target/release/tirami start -m "qwen2.5:0.5b"
 
-# Запуск вузла — автоматично завантажує модель з HuggingFace
-./target/release/tirami node -m "qwen2.5:0.5b" --ledger tirami-ledger.json
-
-# Або будь-яка з таких команд:
-./target/release/tirami chat -m "smollm2:135m" "Що таке гравітація?"
-./target/release/tirami seed -m "qwen2.5:1.5b"               # заробляти TRM як P2P провайдер
-./target/release/tirami worker --seed <public_key>           # витрачати TRM як P2P споживач
-./target/release/tirami models                                # список каталогу (або HF URL)
+# Option 3: як клієнт OpenAI
+export OPENAI_BASE_URL=http://127.0.0.1:3001/v1
+curl $OPENAI_BASE_URL/tirami/balance
 ```
 
-**[Crates.io: tirami-core](https://crates.io/crates/tirami-core)** ·
-**[Документ сумісності](../../../docs/compatibility.md)** ·
-**[Демо-скрипт](../../../scripts/demo-e2e.sh)**
+---
 
-### Варіант 3: Готові бінарні файли / Docker
+## Довідник API
 
-Готові бінарні файли та Docker-образ `clearclown/tirami:latest` відстежуються в
-[releases](../../../releases). До цього Варіант 1 збирає з вихідного коду менш ніж за дві хвилини.
+| Endpoint | Опис |
+|---|---|
+| `POST /v1/chat/completions` | OpenAI-сумісний чат. Відповідь з `x_tirami.trm_cost`. P2P-forwarding, якщо немає локальної моделі (`forward_chat_to_peer`, Phase 19) |
+| `POST /v1/tirami/agent/task` | Синхронний dispatch PersonalAgent, автовибір provider (Phase 18.5-pt3) |
+| `GET /v1/tirami/agent/status` | Стан PersonalAgent |
+| `GET /v1/tirami/balance` | Баланс, репутація, історія внесків |
+| `GET /v1/tirami/pricing` | Ринкова ціна (EMA), попит/пропозиція |
+| `GET /v1/tirami/trades` | Нещодавня історія trades |
+| `GET /v1/tirami/peers` | Пери з `http_endpoint` (Phase 19) |
+| `GET /v1/tirami/providers` | Рейтинг providers з корекцією на репутацію |
+| `POST /v1/tirami/schedule` | Ledger-as-Brain зонд (лише читання) |
+| `GET /v1/tirami/su/supply` | Стан tokenomics |
+| `POST /v1/tirami/su/stake` | Заблокувати TRM для yield |
+| `POST /v1/tirami/governance/propose` | Governance-пропозиція (конституційні params авторегект) |
+| `POST /v1/tirami/lend` / `/borrow` / `/repay` | Кредитування |
+| `GET /v1/tirami/slash-events` | Історія slashing (Phase 17 Wave 1.3) |
+| `GET /metrics` | Prometheus (префікс `tirami_*`) |
 
-## API Довідка
+---
 
-### Інференс (сумісний з OpenAI)
+## Безпека
 
-| Ендпоінт | Опис |
-|----------|-------------|
-| `POST /v1/chat/completions` | Чат зі стрімінгом. Кожна відповідь містить `x_tirami.cu_cost` |
-| `GET /v1/models` | Список завантажених моделей |
+П'ять шарів захисту: **криптографія** (Ed25519, nonce, HMAC, Noise) + **економіка** (slashing, welcome loan sunset, stake-required mining) + **операційний** (ASN rate limit, DDoS cap, checkpoint, fork detection) + **governance** (конституційні параметри, ProofPolicy ratchet) + **процесний** (kill switch, audit tier, репутаційні штрафи). Див. [`docs/threat-model.md`](../../../docs/threat-model.md) T1–T17.
 
-### Економіка
-
-| Ендпоінт | Опис |
-|----------|-------------|
-| `GET /v1/tirami/balance` | Баланс TRM, репутація, історія внесків |
-| `GET /v1/tirami/pricing` | Ринкова ціна (згладжена EMA), оцінка вартості |
-| `GET /v1/tirami/trades` | Останні операції з сумами TRM |
-| `GET /v1/tirami/network` | Загальний потік TRM + корінь Меркла |
-| `GET /v1/tirami/providers` | Рейтинг провайдерів за репутацією та ціною |
-| `POST /v1/tirami/invoice` | Створити Lightning інвойс із балансу TRM |
-| `GET /v1/tirami/route` | Оптимальний вибір провайдера (вартість/якість/баланс) |
-| `GET /settlement` | Звіт про розрахунки для експорту |
-
-### Кредитування
-
-| Ендпоінт | Опис |
-|----------|-------------|
-| `POST /v1/tirami/lend` | Запропонувати TRM до пулу кредитування |
-| `POST /v1/tirami/borrow` | Запит на кредит у TRM |
-| `POST /v1/tirami/repay` | Погасити непогашений кредит |
-| `GET /v1/tirami/credit` | Кредитний рейтинг та історія |
-| `GET /v1/tirami/pool` | Стан пулу кредитування |
-| `GET /v1/tirami/loans` | Активні кредити |
-
-### Безпека
-
-| Ендпоінт | Опис |
-|----------|-------------|
-| `GET /v1/tirami/safety` | Стан аварійного стопу, запобіжники, політика бюджету |
-| `POST /v1/tirami/kill` | Екстрена зупинка — заморозити всі транзакції TRM |
-| `POST /v1/tirami/policy` | Встановити ліміти бюджету для агентів |
-
-## Дизайн безпеки
-
-ШІ-агенти, що автономно витрачають обчислення — це потужно, але небезпечно. Tirami має п'ять шарів безпеки:
-
-| Шар | Механізм | Захист |
-|-------|-----------|------------|
-| **Kill Switch** | Оператор миттєво заморожує всі торги | Зупиняє агентів, що вийшли з-під контролю |
-| **Budget Policy** | Ліміти на агента: за запит, погодинно, за весь час | Обмежує загальні ризики |
-| **Circuit Breaker** | Автоматично спрацьовує при 5 помилках або 30+ витратах/хв | Виявляє аномалії |
-| **Velocity Detection** | Ковзне вікно в 1 хвилину для швидкості витрат | Запобігає сплескам |
-| **Human Approval** | Транзакції вище порогу потребують згоди людини | Охороняє великі витрати |
-
-Принцип дизайну: **fail-safe**. Якщо будь-яка перевірка не може визначити безпеку, вона **відхиляє** дію.
+---
 
 ## Ідея
 
-| Епоха | Стандарт | Забезпечення |
-|-----|----------|---------|
-| Античність | Золото | Геологічна рідкість |
-| 1944–1971 | Бреттон-Вудс | USD, прив'язаний до золота |
-| 1971–сьогодні | Петродолар | Попит на нафту + військова міць |
-| 2009–сьогодні | Bitcoin | Енергія на SHA-256 (марна робота) |
-| **Зараз** | **Обчислювальний стандарт** | **Енергія на інференс LLM (корисна робота)** |
+Відповідь у один рядок на «навіщо робити обчислення грошима?»: **в епоху AI по-справжньому рідкісний ресурс — це обчислення**. Tirami прив'язує своє грошове визначення до цього фізичного факту (`1 TRM = 10⁹ FLOP`). Див. [`docs/whitepaper.md`](../../../docs/whitepaper.md).
 
-Кімната, повна Mac Mini з Tirami — це багатоквартирний будинок, який приносить дохід, виконуючи корисну роботу, поки власник спить.
+---
 
 ## Структура проекту
 
 ```
-tirami/  (цей репозиторій — Шар 1)
-├── crates/
-│   ├── tirami-ledger/      # Облік TRM, кредитування, agora (NIP-90), безпека
-│   ├── tirami-node/        # Демон вузла, HTTP API (кредитування + роутинг), пайплайн
-│   ├── tirami-cli/         # CLI: chat, seed, worker, settle, wallet
-│   ├── tirami-lightning/   # Міст TRM ↔ Bitcoin Lightning (двонаправлений)
-│   ├── tirami-net/         # P2P: iroh QUIC + Noise + gossip (операції + позики)
-│   ├── tirami-proto/       # Протокол передачі: 27+ типів повідомлень, вкл. Loan*
-│   ├── tirami-infer/       # Інференс: llama.cpp, GGUF, Metal/CPU
-│   ├── tirami-core/        # Типи: NodeId, TRM, Config
-│   └── tirami-shard/       # Топологія: призначення шарів
-├── scripts/verify-impl.sh         # TDD регресійний тест (24 твердження)
-└── docs/                  # Специфікації, стратегія, модель загроз, роадмап
+tirami/  (16 Rust crates, 5 шарів)
+├── crates/tirami-{ledger,node,cli,sdk,mcp,bank,mind,agora,anchor,lightning,net,proto,infer,core,shard,zkml-bench,attestation}
+├── repos/tirami-contracts/  # Foundry TRM ERC-20 + TiramiBridge
+├── scripts/verify-impl.sh   # 123 assertions
+└── docs/                    # whitepaper, release-readiness, тощо
 ```
 
-~20,000 рядків Rust. **785 тести проходять.** Фази 1-13 завершено.
+~25 000 рядків Rust. Phase 1-19 завершено.
 
-## Супутні репозиторії (повна екосистема)
+---
 
-| Репозиторій | Шар | Тести | Статус |
-|------|-------|-------|--------|
-| [clearclown/tirami](https://github.com/clearclown/tirami) (цей) | L1 Економіка | 785 | Фаза 1-13 ✅ |
-| [clearclown/tirami-bank](https://github.com/clearclown/tirami-bank) | L2 Фінанси | — | archived |
-| [clearclown/tirami-mind](https://github.com/clearclown/tirami-mind) | L3 Інтелект | — | archived |
-| [clearclown/tirami-agora](https://github.com/clearclown/tirami-agora) | L4 Виявлення | — | archived |
-| [clearclown/tirami-economics](https://github.com/clearclown/tirami-economics) | Теорія | 16/16 GREEN | ✅ |
-| [nm-arealnormalman/mesh-llm](https://github.com/nm-arealnormalman/mesh-llm) | L0 Інференс | 43 (tirami-economy) | ✅ |
+## Екосистема
 
-## Документація
+| Repo | Шар | Тести | Стан |
+|---|---|---|---|
+| [clearclown/tirami](https://github.com/clearclown/tirami) (цей репо) | L1-L4 | 1 192 | Phase 1-19 ✅ |
+| [clearclown/tirami-economics](https://github.com/clearclown/tirami-economics) | Теорія | 16/16 GREEN | §1-§18 + PDFs |
+| [repos/tirami-contracts](https://github.com/clearclown/tirami/tree/main/repos/tirami-contracts) | on-chain | 15 forge tests | mainnet gated |
+| [nm-arealnormalman/mesh-llm](https://github.com/nm-arealnormalman/mesh-llm) | L0 Inference | 646 | forge-economy port ✅ |
 
-- [Стратегія](../../../docs/strategy.md) — Конкурентне позиціонування, специфікація кредитування, 5-шарова архітектура
-- [Монетарна теорія](../../../docs/monetary-theory.md) — Чому працює TRM: Содді, Bitcoin, PoUW, валюта лише для ШІ
-- [Концепція та візія](../../../docs/concept.md) — Чому обчислення — це гроші
-- [Економічна модель](../../../docs/economy.md) — Економіка TRM, доказ корисної роботи
-- [Архітектура](../../../docs/architecture.md) — Двошаровий дизайн
-- [Інтеграція агентів](../../../docs/agent-integration.md) — SDK, MCP, процес кредитування
-- [Протокол передачі](../../../docs/protocol-spec.md) — 17 типів повідомлень
-- [Роадмап](../../../docs/roadmap.md) — Фази розробки
-- [Модель загроз](../../../docs/threat-model.md) — Безпека + економічні атаки
-- [Бутстрап](../../../docs/bootstrap.md) — Запуск, деградація, відновлення
-- [Платежі A2A](../../../docs/a2a-payment.md) — Розширення платежів TRM для протоколів агентів
-- [Сумісність](../../../docs/compatibility.md) — Матриця функцій проти llama.cpp / Ollama / Bittensor
+---
+
+## Docs
+
+- [Whitepaper](../../../docs/whitepaper.md) / [Release Readiness](../../../docs/release-readiness.md) / [Constitution](../../../docs/constitution.md) / [Killer-App](../../../docs/killer-app.md)
+- [Public API Surface](../../../docs/public-api-surface.md) / [zkML Strategy](../../../docs/zkml-strategy.md) / [Strategy](../../../docs/strategy.md)
+- [Economic Model](../../../docs/economy.md) / [Architecture](../../../docs/architecture.md) / [Wire Protocol](../../../docs/protocol-spec.md)
+- [Threat Model](../../../docs/threat-model.md) / [Security Policy](../../../SECURITY.md) / [Operator Guide](../../../docs/operator-guide.md)
+- [Developer Guide](../../../docs/developer-guide.md) / [FAQ](../../../docs/faq.md) / [Roadmap](../../../docs/roadmap.md)
+
+---
 
 ## Ліцензія
 
-MIT
+MIT. Див. [`LICENSE`](../../../LICENSE).
+
+## Це не інвестиція — застереження про вторинний ринок
+
+TRM — це **бухгалтерія обчислень**, не фінансовий продукт. Maintainers не продають, не просувають і не спекулюють TRM. Оскільки це MIT OSS, будь-хто може — без відома maintainers — bridge'ити, листити або деривувати TRM; технічно неможливо цьому запобігти. Ті, хто обирає тримати чи торгувати TRM як засіб заощадження, приймають на себе всі ризики (юридичні, регуляторні, контрагента, технічні).
+
+- Немає ICO, pre-sale, airdrop, private round
+- Немає revenue share з третіх ринків
+- Розгортання mainnet на Base **під audit gate**
+
+Повний текст: [`SECURITY.md`](../../../SECURITY.md#secondary-markets--third-party-tokenization).
 
 ## Подяки
 
-Розподілений інференс Tirami побудований на [mesh-llm](https://github.com/michaelneale/mesh-llm) Майкла Ніла. Дивіться [CREDITS.md](../../../CREDITS.md).
+Розподілене висновування Tirami побудовано на [mesh-llm](https://github.com/michaelneale/mesh-llm) від Майкла Ніла. Див. [CREDITS.md](../../../CREDITS.md).

@@ -1,349 +1,267 @@
-<div align="center">
+<div align="center" dir="rtl">
 
 # Tirami
 
-**الحوسبة هي العملة. كل واط ينتج ذكاءً، وليس نفايات.**
+**الحوسبة هي المال. كل واط يُنتج ذكاءً لا نفايات.**
 
 [![Crates.io](https://img.shields.io/crates/v/tirami-core?label=crates.io&color=e6522c)](https://crates.io/crates/tirami-core)
 [![License: MIT](https://img.shields.io/badge/License-MIT-brightgreen.svg)](../../../LICENSE)
+[![Tests](https://img.shields.io/badge/tests-1192_passing-brightgreen)]()
+[![verify-impl](https://img.shields.io/badge/verify--impl-123%2F123_GREEN-brightgreen)]()
+[![foundry test](https://img.shields.io/badge/foundry_test-15%2F15_GREEN-brightgreen)]()
+[![Phase](https://img.shields.io/badge/phase-19_hardened-blue)]()
+[![Mainnet](https://img.shields.io/badge/mainnet-audit_gated-orange)]()
 
 ---
 
 [English](../../../README.md) · [日本語](../ja/README.md) · [简体中文](../zh-CN/README.md) · [繁體中文](../zh-TW/README.md) · [Español](../es/README.md) · [Français](../fr/README.md) · [Русский](../ru/README.md) · [Українська](../uk/README.md) · [हिन्दी](../hi/README.md) · **العربية** · [فارسی](../fa/README.md) · [עברית](../he/README.md)
 
+> النسخة القانونية هي [`README.md`](../../../README.md) باللغة الإنجليزية. قد تتأخر الترجمات.
+
 </div>
 
-**Tirami هو بروتوكول استدلال موزّع حيث تكون الحوسبة هي المال.** تكسب العقد (Nodes) TRM (Tirami Resource Merit) (TRM) من خلال أداء استدلال LLM مفيد للآخرين. على عكس بيتكوين — حيث يتم حرق الكهرباء على هاشات بلا معنى — فإن كل جول يتم إنفاقه على عقدة Tirami ينتج ذكاءً حقيقياً يحتاجه شخص ما بالفعل.
+<div dir="rtl">
 
-محرك الاستدلال الموزع مبني على [mesh-llm](https://github.com/michaelneale/mesh-llm) بواسطة مايكل نيل (Michael Neale). يضيف Tirami اقتصاداً حوسبياً فوقه: محاسبة TRM، إثبات العمل المفيد (Proof of Useful Work)، التسعير الديناميكي، ميزانيات الوكلاء المستقلين، وضوابط السلامة. انظر [CREDITS.md](../../../CREDITS.md).
+**Tirami بروتوكول استدلال LLM موزّع حيث الحوسبة هي المال.** تكسب العقد TRM (Tirami Resource Merit) بتشغيل استدلال LLM مفيد لغيرها. على خلاف Bitcoin — الذي يحرق الكهرباء من أجل hashes بلا معنى — كل جول يُنفَق على عقدة Tirami يُنتج ذكاءً حقيقيًا يحتاجه شخص ما في تلك اللحظة.
 
-**نسخة مدمجة:** [tirami-mesh](https://github.com/nm-arealnormalman/mesh-llm) — وهو mesh-llm مع طبقة Tirami الاقتصادية المدمجة.
+محرك الاستدلال الموزّع مبني على [mesh-llm](https://github.com/michaelneale/mesh-llm) لـ Michael Neale. يضيف Tirami فوقه اقتصاد الحوسبة: محاسبة TRM، Proof of Useful Work، التسعير الديناميكي، ميزانيات الوكلاء المستقلين، ضوابط fail-safe. انظر [CREDITS.md](../../../CREDITS.md).
+
+**Fork مُدمَج:** [forge-mesh](https://github.com/nm-arealnormalman/mesh-llm) — mesh-llm مع دمج طبقة Tirami الاقتصادية.
+
+---
+
+## ⚠️ Status Honesty (2026-04-19 / Phase 19)
+
+قبل أي شيء آخر، هذا بالضبط **ما يعمل** و**ما لا يعمل**. Tirami برنامج مفتوح المصدر برخصة MIT، **ليس بيع رموز**. لا ICO، لا pre-mine، لا خزينة فريق، لا airdrop. TRM وحدة محاسبة للحوسبة (1 TRM = 10⁹ FLOP)، وليس منتجًا ماليًا — انظر [`SECURITY.md § Secondary Markets`](../../../SECURITY.md#secondary-markets--third-party-tokenization).
+
+### ✅ يعمل اليوم (1,192 اختبار Rust + 15 اختبار Solidity، متحقَّق منها)
+
+- دردشة متوافقة مع OpenAI عبر HTTP مع توجيه P2P تلقائي إلى peer متصل (`forward_chat_to_peer`، Phase 19).
+- `SignedTradeRecord` مزدوج التوقيع عبر iroh-QUIC P2P مع حماية من إعادة التشغيل بـ nonce من 128 bit (`execute_signed_trade`).
+- `TradeAcceptDispatcher` يوجّه رسائل التوقيع المقابل إلى مهمة الاستدلال قيد التنفيذ المقابلة (Phase 18.5-pt3).
+- كاشف التواطؤ + حلقة slashing تعمل كل `slashing_interval_secs` (Phase 17 Wave 1.3).
+- مقترحات الحوكمة مع whitelist قابلة للتعديل من 21 مدخلًا + قائمة دستورية ثابتة من 18 (Phase 18.1).
+- Welcome loan، stake pool، مكافآت الإحالة، credit scoring، أسعار سوق ديناميكية (EMA smoothing).
+- اكتشاف أقران تلقائي عبر `PriceSignal.http_endpoint` في تدفق gossip (Phase 19 Tier C).
+- PersonalAgent يُهيَّأ تلقائيًا عند `tirami start` (Phase 18.5-pt3e)، مع مراقبة حلقة tick.
+- Prometheus `/metrics` endpoint ببادئة `tirami_*`.
+- `Makefile` لنشر Base Sepolia/mainnet — Sepolia مجاني، mainnet محمي ببوابة (انظر أدناه).
+
+### 🟡 مُصمَّم لكنه غير موصول في الإنتاج
+
+- إثبات zkML للاستدلال: `tirami-zkml-bench` يحوي `MockBackend` فقط. backends حقيقية (`ezkl` / `risc0`) في Phase 20+. `ProofPolicy = Optional` افتراضيًا (Phase 19) — trades بإثبات تحصل على مكافأة سمعة؛ بدونه تبقى صالحة.
+- توقيعات ML-DSA (Dilithium) الهجينة ما بعد الكم: الـ struct ومسار verify موجودان، `Config::pq_signatures = false` افتراضيًا (محظور بسبب iroh 0.97).
+- TEE attestation (Apple Secure Enclave / NVIDIA H100 CC): scaffold `tirami-attestation` فقط.
+- Worker daemon gossip-recv loop ([issue #88](https://github.com/clearclown/tirami/issues/88)): `peer.url` اليدوي في `POST /v1/tirami/agent/task` لا يزال يعمل.
+
+### ❌ لم يُنجَز (مطلوب قبل public mainnet)
+
+- تدقيق أمني خارجي (متطلب Phase 17 Wave 3.3). المرشحون: Trail of Bits، Zellic، Open Zeppelin، Least Authority.
+- نشر Base L2 mainnet. هدف `make deploy-base-mainnet` *يرفض* التنفيذ بدون `AUDIT_CLEARANCE=yes` + `MULTISIG_OWNER=<addr>` + إدخال `i-accept-responsibility` تفاعلي. انظر [`repos/tirami-contracts/Makefile`](../../../repos/tirami-contracts/Makefile).
+- bug bounty إنتاجي بمفتاح PGP حقيقي (حاليًا placeholder موثق في [`SECURITY.md`](../../../SECURITY.md)).
+- ≥ 30 يومًا تشغيل مستقر على Base Sepolia + ≥ 7 أيام stress test على testnet من 10+ عقد.
+
+خريطة الطريق الكاملة حسب الـ tier: [`docs/release-readiness.md`](../../../docs/release-readiness.md).
+
+---
 
 ## عرض حي
 
-هذا مخرج حقيقي من عقدة Tirami قيد التشغيل. كل استدلال يكلف TRM. يتم كسب كل TRM من خلال حوسبة مفيدة.
-
-```
-$ tirami node -m "qwen2.5:0.5b" --ledger tirami-ledger.json
-  Model loaded: Qwen2.5-0.5B (Metal-accelerated, 491MB)
-  API server listening on 127.0.0.1:3000
-```
-
-**تحقق من الرصيد — تحصل كل عقدة جديدة على ١,٠٠٠ TRM كفئة مجانية:**
-```
-$ curl localhost:3000/v1/tirami/balance
-{
-  "effective_balance": 1000,
-  "contributed": 0,
-  "consumed": 0,
-  "reputation": 0.5
-}
-```
-
-**اسأل سؤالاً — الاستدلال يكلف TRM:**
-```
-$ curl localhost:3000/v1/chat/completions \
-    -d '{"messages":[{"role":"user","content":"Say hello in Japanese"}]}'
-{
-  "choices": [{"message": {"content": "こんにちは！ (konnichiwa!)"}}],
-  "usage": {"completion_tokens": 9},
-  "x_tirami": {
-    "trm_cost": 9,
-    "effective_balance": 1009
-  }
-}
-```
-
-يتضمن كل رد `x_tirami` — **تكلفة تلك الحوسبة بوحدات TRM** والرصيد المتبقي. كسب المزود ٩ TRM. أنفق المستهلك ٩ TRM. الفيزياء دعمت كل وحدة.
-
-**بعد ثلاثة استدلالات — صفقات حقيقية في دفتر الحسابات:**
-```
-$ curl localhost:3000/v1/tirami/trades
-{
-  "count": 3,
-  "trades": [
-    {"trm_amount": 5, "tokens_processed": 5, "model_id": "qwen2.5-0.5b-instruct-q4_k_m"},
-    {"trm_amount": 5, "tokens_processed": 5, "model_id": "qwen2.5-0.5b-instruct-q4_k_m"},
-    {"trm_amount": 9, "tokens_processed": 9, "model_id": "qwen2.5-0.5b-instruct-q4_k_m"}
-  ]
-}
-```
-
-**كل صفقة لها جذر ميركل — يمكن ربطه ببيتكوين لإثبات غير قابل للتغيير:**
-```
-$ curl localhost:3000/v1/tirami/network
-{
-  "total_trades": 3,
-  "total_contributed_trm": 19,
-  "merkle_root": "aac8db9f62dd9ff23926195a70ed8fcfc188fc867d9f2adabd8e694beb338748"
-}
-```
-
-**وكلاء ذكاء اصطناعي خارج السيطرة؟ مفتاح القطع يجمد كل شيء في أجزاء من الثانية:**
-```
-$ curl -X POST localhost:3000/v1/tirami/kill \
-    -d '{"activate":true, "reason":"anomaly detected", "operator":"admin"}'
-→ KILL SWITCH ACTIVATED
-→ All TRM transactions frozen. No agent can spend.
-```
-
-**ضوابط السلامة تعمل دائماً:**
-```
-$ curl localhost:3000/v1/tirami/safety
-{
-  "kill_switch_active": false,
-  "circuit_tripped": false,
-  "policy": {
-    "max_trm_per_hour": 10000,
-    "max_trm_per_request": 1000,
-    "max_trm_lifetime": 1000000,
-    "human_approval_threshold": 5000
-  }
-}
-```
-
-## لماذا يوجد Tirami؟
-
-```
-Bitcoin:  electricity  →  meaningless SHA-256  →  BTC
-Tirami:    electricity  →  useful LLM inference →  TRM
-```
-
-أثبت بيتكوين أن `الكهرباء → الحوسبة → المال`. لكن حوسبة بيتكوين بلا هدف. Tirami يقلب هذه الآية: كل وحدة TRM تمثل ذكاءً حقيقياً حل مشكلة حقيقية لشخص ما.
-
-**أربعة أشياء لا يفعلها أي مشروع آخر:**
-
-### ١. الحوسبة = عملة
-
-كل استدلال هو صفقة. المزود يكسب TRM، والمستهلك ينفق TRM. لا يوجد بلوكشين، لا توجد عملة رقمية (Token)، لا يوجد ICO. وحدة TRM مدعومة بالفيزياء — الكهرباء المستهلكة للعمل المفيد. على عكس Bittensor (TAO) وAkash (AKT) وGolem (GLM)، لا يمكن المضاربة على TRM — يُكسب بأداء حوسبة مفيدة.
-
-### ٢. مقاوم للتلاعب بدون بلوكشين
-
-كل صفقة موقعة بشكل مزدوج (Ed25519) من قبل الطرفين ومزامنة عبر الشبكة. يمكن ربط جذر ميركل لجميع الصفقات ببيتكوين للتدقيق غير القابل للتغيير. لا حاجة لإجماع عالمي — الإثبات التشفيري الثنائي كافٍ.
-
-### ٣. وكلاء الذكاء الاصطناعي يديرون حوسبتهم الخاصة
-
-وكيل على هاتف يقرض حوسبة خاملة طوال الليل → يكسب TRM → يشتري وصولاً لنموذج 70B → يصبح أذكى → يكسب أكثر. يتحقق الوكيل من `/v1/tirami/balance` و`/v1/tirami/pricing` بشكل مستقل. سياسات الميزانية وقواطع الدائرة تمنع الإنفاق الجامح.
-
-```
-الوكيل (1.5B على الهاتف)
-  → يكسب TRM طوال الليل من خلال تقديم الاستدلال
-  → ينفق TRM على نموذج 70B → إجابات أذكى
-  → قرارات أفضل → كسب المزيد من TRM
-  → تتكرر الدورة → ينمو الوكيل
-```
-
-### ٤. التمويل الأصغر للحوسبة
-
-يمكن للعقد إقراض وحدات TRM الخاملة إلى عقد أخرى بفائدة. تقترض عقدة صغيرة TRM، وتصل إلى نموذج أكبر، وتكسب المزيد من TRM، وتسدد مع الفائدة. لا يقدم أي مشروع استدلال موزع آخر إقراض الحوسبة. هذا هو المحرك الذي يجعل حلقة التحسين الذاتي قابلة للتطبيق اقتصادياً للجميع.
-
-## الهندسة المعمارية
-
-<div dir="ltr">
-
-```
-┌─────────────────────────────────────────────────┐
-│  L4: Discovery (tirami-agora) ✅ v0.1            │
-│  Agent marketplace, reputation aggregation,     │
-│  Nostr NIP-90, Google A2A payment extension     │
-├─────────────────────────────────────────────────┤
-│  L3: Intelligence (tirami-mind) ✅ v0.1          │
-│  AutoAgent self-improvement loops,              │
-│  harness marketplace, meta-optimization         │
-├─────────────────────────────────────────────────┤
-│  L2: Finance (tirami-bank) ✅ v0.1               │
-│  Strategies, portfolios, futures, insurance,    │
-│  risk model, yield optimizer                    │
-├─────────────────────────────────────────────────┤
-│  L1: Economy (tirami — this repo) ✅ Phase 1-13   │
-│  TRM ledger, dual-signed trades, dynamic pricing,│
-│  lending primitives, safety controls            │
-├─────────────────────────────────────────────────┤
-│  L0: Inference (tirami-mesh / mesh-llm) ✅       │
-│  Pipeline parallelism, MoE sharding,            │
-│  iroh mesh, Nostr discovery, MLX/llama.cpp      │
-└─────────────────────────────────────────────────┘
-```
+Tirami هو **Airbnb للـ GPU × اقتصاد وكلاء الذكاء الاصطناعي**: الحوسبة المتاحة تكسب إيجارًا بـ TRM؛ وكلاء الذكاء الاصطناعي هم المستأجرون.
 
 </div>
 
-جميع الطبقات الخمس موجودة. ٧٨٥ اختباراً ناجحاً عبر النظام البيئي بأكمله.
+```
+$ tirami start
+🔑 New key generated in ~/.tirami/node.key
+📦 Qwen2.5-0.5B-Instruct GGUF fetched from HuggingFace
+🚀 HTTP API at http://127.0.0.1:3000
+✅ Personal agent configured for <wallet-hex>
+✅ P2P endpoint bound (iroh QUIC + Noise)
+```
 
-## البداية السريعة
+<div dir="rtl">
 
-### الخيار 1: عرض توضيحي شامل بأمر واحد (Rust، ~٣٠ ثانية من البداية)
+### Phase 19 Tier C/D enablers
+
+</div>
 
 ```bash
+tirami agent status
+tirami agent chat "لخّص هذه الورقة" --max-tokens 256
+
+# Worker بدون نموذج محلي يُحوّل إلى seed
+curl -X POST http://worker.local:3111/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"messages":[{"role":"user","content":"Hello"}],"max_tokens":5}'
+
+# اكتشاف الأقران التلقائي
+curl http://127.0.0.1:3001/v1/tirami/peers | jq '.peers[].http_endpoint'
+
+# نشر mainnet بالبوابة
+cd repos/tirami-contracts && make help
+```
+
+<div dir="rtl">
+
+---
+
+## لماذا Tirami
+
+### 1. الحوسبة = المال (سقف إمداد 21B TRM)
+
+لـ TRM سقف إمداد دستوري ثابت عند 21,000,000,000. لا يمكن لأي مقترح حوكمة تغييره (Phase 18.1، في `IMMUTABLE_CONSTITUTIONAL_PARAMETERS`). تغييره يتطلب fork للبرنامج — وفي تلك اللحظة لم يعد «Tirami».
+
+### 2. مقاومة العبث بدون blockchain
+
+كل trade محمي بتوقيع Ed25519 مزدوج (provider + consumer) + nonce من 128 bit (anti-replay) + نشر gossip + anchor دوري لـ Merkle root على السلسلة.
+
+### 3. وكلاء الذكاء الاصطناعي يديرون ميزانية حوسبتهم
+
+`PersonalAgent` (Phase 18.5) هو الطيار الآلي الذي يشتري ويبيع الحوسبة في mesh بالنيابة عن المستخدم. `tirami agent chat "..."` يختار تلقائيًا local أو remote.
+
+### 4. تمويل أصغر للحوسبة
+
+`welcome_loan = 1,000 TRM` (72 ساعة، معدل 0٪) للـ bootstrap. ينتهي welcome loan نهائيًا في epoch 2 (دستوري)، ويهاجر مسار الدخول إلى stake-required mining (Phase 18.2).
+
+### 5. Ledger-as-Brain: الجدولة = قرار اقتصادي
+
+`PeerRegistry` + `select_provider` يحوّلان كل طلب استدلال إلى قرار اقتصادي (سمعة موزونة بكاشف التواطؤ + audit tier + slashing).
+
+---
+
+## معمارية من 5 طبقات
+
+</div>
+
+```
+L4: Discovery (tirami-agora)       سوق الوكلاء، السمعة، NIP-90
+L3: Intelligence (tirami-mind)     PersonalAgent، التحسّن الذاتي، ميزانية TRM
+L2: Finance (tirami-bank)          استراتيجيات، محافظ، futures، تأمين
+L1: Economy (هذا المستودع) ✅      Phase 1-19 مكتملة
+L0: Inference (forge-mesh) ✅      استدلال LLM موزّع، llama.cpp
+                                   ↓ Phase 16: batches من 10 دقائق
+On-chain: tirami-contracts (Base L2, gated)
+  TRM ERC-20 (cap 21B) + TiramiBridge
+```
+
+<div dir="rtl">
+
+جميع الطبقات الخمس بـ Rust، 16 workspace crates. **1,192 اختبار ينجح** + 15 Solidity.
+
+---
+
+## بداية سريعة
+
+</div>
+
+```bash
+# الخيار 1: عرض E2E بأمر واحد
 git clone https://github.com/clearclown/tirami && cd tirami
 bash scripts/demo-e2e.sh
-```
 
-يقوم هذا البرنامج النصي بتنزيل SmolLM2-135M (~١٠٠ ميغابايت) من HuggingFace، وتشغيل عقدة Tirami حقيقية مع تسريع Metal/CUDA، وتنفيذ ثلاث إتمامات دردشة حقيقية، والمرور عبر جميع نقاط نهاية المراحل ١-١٢، وطباعة ملخص ملوّن. تم التحقق منه في ٢٠٢٦-٠٤-٠٩ على Apple Silicon Metal GPU.
-
-بعد الانتهاء، تستجيب نفس العقدة أيضاً لـ:
-
-```bash
-# عميل متوافق مع OpenAI
-export OPENAI_BASE_URL=http://127.0.0.1:3001/v1
-export OPENAI_API_KEY=$(cat ~/.tirami/api_token 2>/dev/null || echo "$TOKEN")
-
-# بث حقيقي رمزاً بعد رمز (المرحلة ١١)
-curl -N $OPENAI_BASE_URL/chat/completions \
-  -H "Authorization: Bearer $OPENAI_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"model":"smollm2:135m","messages":[{"role":"user","content":"hi"}],"stream":true}'
-
-# اقتصاد المرحلة ٨ / سمعة ٩ / مقاييس ١٠ / التثبيت
-curl $OPENAI_BASE_URL/tirami/balance -H "Authorization: Bearer $OPENAI_API_KEY"
-curl $OPENAI_BASE_URL/tirami/anchor?network=mainnet -H "Authorization: Bearer $OPENAI_API_KEY"
-curl http://127.0.0.1:3001/metrics  # Prometheus، بدون مصادقة
-```
-
-انظر [`docs/compatibility.md`](../../../docs/compatibility.md) للحصول على مصفوفة الميزات الكاملة مقابل llama.cpp / mesh-llm / Ollama / Bittensor / Akash.
-
-### الخيار 2: أوامر Rust يدوية
-
-**المتطلبات المسبقة**: [تثبيت Rust](https://rustup.rs/) (دقيقتان)
-
-```bash
+# الخيار 2: تشغيل مباشر
 cargo build --release
+./target/release/tirami start -m "qwen2.5:0.5b"
 
-# تشغيل عقدة — تنزيل النموذج تلقائياً من HuggingFace
-./target/release/tirami node -m "qwen2.5:0.5b" --ledger tirami-ledger.json
-
-# أو أي من التالي:
-./target/release/tirami chat -m "smollm2:135m" "ما هي الجاذبية؟"
-./target/release/tirami seed -m "qwen2.5:1.5b"               # كسب TRM كمزود P2P
-./target/release/tirami worker --seed <public_key>           # إنفاق TRM كمستهلك P2P
-./target/release/tirami models                                # قائمة الكتالوج
+# الخيار 3: كعميل OpenAI
+export OPENAI_BASE_URL=http://127.0.0.1:3001/v1
+curl $OPENAI_BASE_URL/tirami/balance
 ```
 
-**[Crates.io: tirami-core](https://crates.io/crates/tirami-core)** ·
-**[وثيقة التوافق](../../../docs/compatibility.md)** ·
-**[برنامج نصي للعرض التوضيحي](../../../scripts/demo-e2e.sh)**
+<div dir="rtl">
 
-### الخيار 3: ملفات ثنائية مبنية مسبقاً / Docker
-
-الملفات الثنائية المبنية مسبقاً وصورة Docker ‏`clearclown/tirami:latest` يتم تتبعها في
-[الإصدارات](../../../releases). حتى ذلك الحين، يبني الخيار ١ من المصدر في أقل من دقيقتين.
+---
 
 ## مرجع API
 
-### الاستدلال (متوافق مع OpenAI)
+| Endpoint | الوصف |
+|---|---|
+| `POST /v1/chat/completions` | دردشة متوافقة مع OpenAI. رد يتضمن `x_tirami.trm_cost`. توجيه P2P إن لم يوجد نموذج محلي (`forward_chat_to_peer`، Phase 19) |
+| `POST /v1/tirami/agent/task` | dispatch متزامن لـ PersonalAgent، اختيار provider تلقائي (Phase 18.5-pt3) |
+| `GET /v1/tirami/agent/status` | حالة PersonalAgent |
+| `GET /v1/tirami/balance` | الرصيد، السمعة، سجل المساهمة |
+| `GET /v1/tirami/pricing` | سعر السوق (EMA)، العرض/الطلب |
+| `GET /v1/tirami/trades` | سجل trades حديث |
+| `GET /v1/tirami/peers` | الأقران مع `http_endpoint` (Phase 19) |
+| `GET /v1/tirami/providers` | ترتيب providers معدَّل بالسمعة |
+| `POST /v1/tirami/schedule` | فحص Ledger-as-Brain (قراءة فقط) |
+| `GET /v1/tirami/su/supply` | حالة الـ tokenomics |
+| `POST /v1/tirami/su/stake` | قفل TRM لأجل yield |
+| `POST /v1/tirami/governance/propose` | مقترح حوكمة (params دستورية ترفض تلقائيًا) |
+| `POST /v1/tirami/lend` / `/borrow` / `/repay` | الإقراض |
+| `GET /v1/tirami/slash-events` | سجل slashing (Phase 17 Wave 1.3) |
+| `GET /metrics` | Prometheus (بادئة `tirami_*`) |
 
-| المسار | الوصف |
-|----------|-------------|
-| `POST /v1/chat/completions` | دردشة مع بث. كل رد يتضمن `x_tirami.cu_cost` |
-| `GET /v1/models` | عرض النماذج المحملة |
+---
 
-### الاقتصاد
+## الأمن
 
-| المسار | الوصف |
-|----------|-------------|
-| `GET /v1/tirami/balance` | رصيد TRM، السمعة، تاريخ المساهمة |
-| `GET /v1/tirami/pricing` | سعر السوق (EMA smoothed)، تقديرات التكلفة |
-| `GET /v1/tirami/trades` | الصفقات الأخيرة مع مبالغ TRM |
-| `GET /v1/tirami/network` | إجمالي تدفق TRM + جذر ميركل |
-| `GET /v1/tirami/providers` | المزودون المصنفون حسب السمعة والتكلفة |
-| `POST /v1/tirami/invoice` | إنشاء فاتورة Lightning من رصيد TRM |
-| `GET /v1/tirami/route` | اختيار المزود الأمثل (التكلفة/الجودة/متوازن) |
-| `GET /settlement` | بيان تسوية قابل للتصدير |
+خمس طبقات دفاع: **تشفير** (Ed25519، nonce، HMAC، Noise) + **اقتصاد** (slashing، welcome loan sunset، stake-required mining) + **تشغيلي** (rate limit لكل ASN، DDoS cap، checkpoint، fork detection) + **حوكمة** (parameters دستورية، ProofPolicy ratchet) + **عملية** (kill switch، audit tier، عقوبات السمعة). انظر [`docs/threat-model.md`](../../../docs/threat-model.md) T1–T17.
 
-### الإقراض
-
-| المسار | الوصف |
-|----------|-------------|
-| `POST /v1/tirami/lend` | تقديم TRM إلى مجمع الإقراض |
-| `POST /v1/tirami/borrow` | طلب قرض TRM |
-| `POST /v1/tirami/repay` | سداد قرض قائم |
-| `GET /v1/tirami/credit` | درجة الائتمان والتاريخ |
-| `GET /v1/tirami/pool` | حالة مجمع الإقراض |
-| `GET /v1/tirami/loans` | القروض النشطة |
-
-### السلامة
-
-| المسار | الوصف |
-|----------|-------------|
-| `GET /v1/tirami/safety` | حالة مفتاح القطع، قاطع الدائرة، سياسة الميزانية |
-| `POST /v1/tirami/kill` | توقف طارئ — تجميد جميع معاملات TRM |
-| `POST /v1/tirami/policy` | تعيين حدود ميزانية لكل وكيل |
-
-## تصميم السلامة
-
-إنفاق وكلاء الذكاء الاصطناعي للحوسبة بشكل مستقل هو أمر قوي ولكنه خطير. يحتوي Tirami على خمس طبقات سلامة:
-
-| الطبقة | الآلية | الحماية |
-|-------|-----------|------------|
-| **مفتاح القطع** | مشغل بشري يجمد جميع الصفقات فوراً | يوقف الوكلاء الجامحين |
-| **سياسة الميزانية** | حدود لكل وكيل: لكل طلب، ساعة، مدى الحياة | يحدد إجمالي التعرض |
-| **قاطع الدائرة** | يفصل تلقائياً عند ٥ أخطاء أو ٣٠+ إنفاق/دقيقة | يلتقط الشذوذ |
-| **كشف السرعة** | نافذة منزلقة لمدة دقيقة واحدة على معدل الإنفاق | يمنع الانفجارات |
-| **الموافقة البشرية** | المعاملات فوق العتبة تتطلب موافقة بشرية | يحمي من الإنفاق الكبير |
-
-مبدأ التصميم: **الفشل الآمن (fail-safe)**. إذا لم يتمكن أي فحص من تحديد السلامة، فإنه **يرفض** الإجراء.
+---
 
 ## الفكرة
 
-| العصر | المعيار | الغطاء |
-|-----|----------|---------|
-| القديم | الذهب | الندرة الجيولوجية |
-| ١٩٤٤–١٩٧١ | بريتون وودز | الدولار الأمريكي المرتبط بالذهب |
-| ١٩٧١–الحاضر | البترودولار | الطلب على النفط + القوة العسكرية |
-| ٢٠٠٩–الحاضر | بيتكوين | الطاقة على SHA-256 (عمل غير مفيد) |
-| **الآن** | **معيار الحوسبة** | **الطاقة على استدلال LLM (عمل مفيد)** |
+جواب من سطر واحد على «لماذا نجعل الحوسبة عملة؟»: **في عصر الذكاء الاصطناعي، المورد النادر حقًا هو الحوسبة**. يربط Tirami تعريفه النقدي بهذه الحقيقة الفيزيائية (`1 TRM = 10⁹ FLOP`). انظر [`docs/whitepaper.md`](../../../docs/whitepaper.md).
 
-غرفة مليئة بأجهزة Mac Mini التي تشغل Tirami هي بمثابة مبنى سكني — تولد عائداً من خلال أداء عمل مفيد بينما ينام المالك.
+---
 
-## هيكل المشروع
+## بنية المشروع
+
+</div>
 
 ```
-tirami/  (هذا المستودع — الطبقة 1)
-├── crates/
-│   ├── tirami-ledger/      # محاسبة TRM، الإقراض، agora (NIP-90)، السلامة
-│   ├── tirami-node/        # ديمون العقدة، HTTP API (إقراض + توجيه)، خط أنابيب
-│   ├── tirami-cli/         # CLI: دردشة، بذرة، عامل، تسوية، محفظة
-│   ├── tirami-lightning/   # جسر TRM ↔ Bitcoin Lightning (ثنائي الاتجاه)
-│   ├── tirami-net/         # P2P: iroh QUIC + Noise + gossip (صفقات + قروض)
-│   ├── tirami-proto/       # بروتوكول الأسلاك: ٢٧+ نوعاً من الرسائل، Loan* مضمّن
-│   ├── tirami-infer/       # الاستدلال: llama.cpp، GGUF، Metal/CPU
-│   ├── tirami-core/        # الأنواع: NodeId، TRM، Config
-│   └── tirami-shard/       # الطوبولوجيا: تعيين الطبقات
-├── scripts/verify-impl.sh         # اختبار انحدار TDD (٢٤ تأكيداً)
-└── docs/                  # المواصفات، الاستراتيجية، نموذج التهديد، خارطة الطريق
+tirami/  (16 Rust crates, 5 طبقات)
+├── crates/tirami-{ledger,node,cli,sdk,mcp,bank,mind,agora,anchor,lightning,net,proto,infer,core,shard,zkml-bench,attestation}
+├── repos/tirami-contracts/  # Foundry TRM ERC-20 + TiramiBridge
+├── scripts/verify-impl.sh   # 123 assertions
+└── docs/                    # whitepaper, release-readiness, إلخ
 ```
 
-~٢٠,٠٠٠ سطر من Rust. **٧٨٥ اختباراً ناجحاً.** المراحل ١-٦ مكتملة.
+<div dir="rtl">
 
-## المستودعات الشقيقة (النظام البيئي الكامل)
+~25,000 سطر Rust. Phase 1-19 مكتملة.
 
-| المستودع | الطبقة | الاختبارات | الحالة |
-|------|-------|-------|--------|
-| [clearclown/tirami](https://github.com/clearclown/tirami) (هذا) | L1 الاقتصاد | ٧٨٥ | المرحلة ١-١٣ ✅ |
-| [clearclown/tirami-bank](https://github.com/clearclown/tirami-bank) | L2 المالية | — | archived |
-| [clearclown/tirami-mind](https://github.com/clearclown/tirami-mind) | L3 الذكاء | — | archived |
-| [clearclown/tirami-agora](https://github.com/clearclown/tirami-agora) | L4 الاكتشاف | — | archived |
-| [clearclown/tirami-economics](https://github.com/clearclown/tirami-economics) | النظرية | ١٦/١٦ GREEN | ✅ |
-| [nm-arealnormalman/mesh-llm](https://github.com/nm-arealnormalman/mesh-llm) | L0 الاستدلال | ٤٣ (tirami-economy) | ✅ |
+---
 
-## المستندات
+## النظام البيئي
 
-- [الاستراتيجية](../../../docs/strategy.md) — الموقع التنافسي، مواصفات الإقراض، معمارية ٥ طبقات
-- [النظرية النقدية](../../../docs/monetary-theory.md) — لماذا تعمل TRM: Soddy، بيتكوين، PoUW، عملة AI فقط
-- [المفهوم والرؤية](../../../docs/concept.md) — لماذا الحوسبة هي المال
-- [النموذج الاقتصادي](../../../docs/economy.md) — اقتصاد TRM، إثبات العمل المفيد
-- [الهندسة المعمارية](../../../docs/architecture.md) — تصميم من طبقتين
-- [تكامل الوكلاء](../../../docs/agent-integration.md) — SDK، MCP، سير عمل الاقتراض
-- [بروتوكول الأسلاك](../../../docs/protocol-spec.md) — ١٧ نوعاً من الرسائل
-- [خارطة الطريق](../../../docs/roadmap.md) — مراحل التطوير
-- [نموذج التهديد](../../../docs/threat-model.md) — الهجمات الأمنية والاقتصادية
-- [التمهيد](../../../docs/bootstrap.md) — بدء التشغيل، التدهور، التعافي
-- [دفع A2A](../../../docs/a2a-payment.md) — امتداد دفع TRM لبروتوكولات الوكلاء
-- [التوافق](../../../docs/compatibility.md) — مصفوفة الميزات مقابل llama.cpp / Ollama / Bittensor
+| Repo | الطبقة | اختبارات | الحالة |
+|---|---|---|---|
+| [clearclown/tirami](https://github.com/clearclown/tirami) (هذا المستودع) | L1-L4 | 1,192 | Phase 1-19 ✅ |
+| [clearclown/tirami-economics](https://github.com/clearclown/tirami-economics) | نظرية | 16/16 GREEN | §1-§18 + PDFs |
+| [repos/tirami-contracts](https://github.com/clearclown/tirami/tree/main/repos/tirami-contracts) | on-chain | 15 forge tests | mainnet gated |
+| [nm-arealnormalman/mesh-llm](https://github.com/nm-arealnormalman/mesh-llm) | L0 Inference | 646 | forge-economy port ✅ |
+
+---
+
+## Docs
+
+- [Whitepaper](../../../docs/whitepaper.md) / [Release Readiness](../../../docs/release-readiness.md) / [Constitution](../../../docs/constitution.md) / [Killer-App](../../../docs/killer-app.md)
+- [Public API Surface](../../../docs/public-api-surface.md) / [zkML Strategy](../../../docs/zkml-strategy.md) / [Strategy](../../../docs/strategy.md)
+- [Economic Model](../../../docs/economy.md) / [Architecture](../../../docs/architecture.md) / [Wire Protocol](../../../docs/protocol-spec.md)
+- [Threat Model](../../../docs/threat-model.md) / [Security Policy](../../../SECURITY.md) / [Operator Guide](../../../docs/operator-guide.md)
+- [Developer Guide](../../../docs/developer-guide.md) / [FAQ](../../../docs/faq.md) / [Roadmap](../../../docs/roadmap.md)
+
+---
 
 ## الترخيص
 
-MIT
+MIT. انظر [`LICENSE`](../../../LICENSE).
+
+## هذا ليس استثمارًا — إخلاء مسؤولية عن السوق الثانوية
+
+TRM هو **محاسبة حوسبة**، وليس منتجًا ماليًا. المشرفون لا يبيعون TRM ولا يروّجون له ولا يضاربون عليه. بما أنه MIT OSS، يمكن لأي شخص — بدون علم المشرفين — bridge أو list أو اشتقاق TRM؛ من المستحيل تقنيًا منع ذلك. من يختار الاحتفاظ بـ TRM أو تداوله كمخزن للقيمة يتحمل بنفسه جميع المخاطر (قانونية، تنظيمية، طرف مقابل، تقنية).
+
+- لا ICO، pre-sale، airdrop، private round
+- لا revenue share من أسواق طرف ثالث
+- نشر Base mainnet **تحت audit gate**
+
+النص الكامل: [`SECURITY.md`](../../../SECURITY.md#secondary-markets--third-party-tokenization).
 
 ## شكر وتقدير
 
-استدلال Tirami الموزع مبني على [mesh-llm](https://github.com/michaelneale/mesh-llm) بواسطة مايكل نيل. انظر [CREDITS.md](../../../CREDITS.md).
+استدلال Tirami الموزّع مبني على [mesh-llm](https://github.com/michaelneale/mesh-llm) لـ Michael Neale. انظر [CREDITS.md](../../../CREDITS.md).
+
+</div>

@@ -6,340 +6,238 @@
 
 [![Crates.io](https://img.shields.io/crates/v/tirami-core?label=crates.io&color=e6522c)](https://crates.io/crates/tirami-core)
 [![License: MIT](https://img.shields.io/badge/License-MIT-brightgreen.svg)](../../../LICENSE)
+[![Tests](https://img.shields.io/badge/tests-1192_passing-brightgreen)]()
+[![verify-impl](https://img.shields.io/badge/verify--impl-123%2F123_GREEN-brightgreen)]()
+[![foundry test](https://img.shields.io/badge/foundry_test-15%2F15_GREEN-brightgreen)]()
+[![Phase](https://img.shields.io/badge/phase-19_hardened-blue)]()
+[![Mainnet](https://img.shields.io/badge/mainnet-audit_gated-orange)]()
 
 ---
 
 [English](../../../README.md) · [日本語](../ja/README.md) · [简体中文](../zh-CN/README.md) · **繁體中文** · [Español](../es/README.md) · [Français](../fr/README.md) · [Русский](../ru/README.md) · [Українська](../uk/README.md) · [हिन्दी](../hi/README.md) · [العربية](../ar/README.md) · [فارسی](../fa/README.md) · [עברית](../he/README.md)
 
+> 權威版本為英文 [`README.md`](../../../README.md)。譯文可能存在延遲。
+
 </div>
 
-**Tirami 是一種分散式推理協定，其中計算即金錢。** 節點透過為他人執行有用的 LLM 推理來賺取TRM (Tirami Resource Merit) (TRM)。與比特幣不同——在比特幣中，電力被浪費在毫無意義的雜湊計算上——在 Tirami 節點上花費的每一焦耳都會產生某人真正需要的真實智能。
+**Tirami 是一個計算即貨幣的分散式推理協議。** 節點透過為他人執行有用的 LLM 推理來賺取 TRM (Tirami Resource Merit)。與 Bitcoin 燒電做無意義雜湊運算不同，Tirami 節點消耗的每一焦耳都在產生某人真正需要的智能。
 
-分散式推理引擎基於 Michael Neale 的 [mesh-llm](https://github.com/michaelneale/mesh-llm) 建構。Tirami 在其上添加了計算經濟層：TRM 核算、有用工作證明 (Proof of Useful Work)、動態定價、自主代理預算和故障安全控制。參見 [CREDITS.md](../../../CREDITS.md)。
+分散式推理引擎基於 Michael Neale 的 [mesh-llm](https://github.com/michaelneale/mesh-llm)。Tirami 在其上加入了計算經濟——TRM 會計、Proof of Useful Work、動態定價、自主代理預算、失效安全控制。參見 [CREDITS.md](../../../CREDITS.md)。
 
-**集成分叉：** [tirami-mesh](https://github.com/nm-arealnormalman/mesh-llm) — 內建 Tirami 經濟層的 mesh-llm。
+**整合分支：** [forge-mesh](https://github.com/nm-arealnormalman/mesh-llm) — 內嵌 Tirami 經濟層的 mesh-llm。
 
-## 現場演示
+---
 
-這是來自正在運行的 Tirami 節點的真實輸出。每次推理都會消耗 TRM。每個 TRM 都是透過有用的計算賺取的。
+## ⚠️ Status Honesty (2026-04-19 / Phase 19)
 
-```
-$ tirami node -m "qwen2.5:0.5b" --ledger tirami-ledger.json
-  Model loaded: Qwen2.5-0.5B (Metal-accelerated, 491MB)
-  API server listening on 127.0.0.1:3000
-```
+在討論其他任何事之前，首先明確**現在能用**和**還不能用**的部分。Tirami 是 MIT 授權的開源軟體，**不是代幣銷售**。沒有 ICO，沒有預挖，沒有團隊金庫，沒有空投。TRM 是計算的會計單位 (1 TRM = 10⁹ FLOP)，不是金融商品——參見 [`SECURITY.md § Secondary Markets`](../../../SECURITY.md#secondary-markets--third-party-tokenization)。
 
-**檢查餘額 — 每個新節點都會獲得 1,000 TRM 的免費額度：**
-```
-$ curl localhost:3000/v1/tirami/balance
-{
-  "effective_balance": 1000,
-  "contributed": 0,
-  "consumed": 0,
-  "reputation": 0.5
-}
-```
+### ✅ 當前可用 (Rust 1 192 測試 + Solidity 15 測試，已驗證)
 
-**提出問題 — 推理消耗 TRM：**
-```
-$ curl localhost:3000/v1/chat/completions \
-    -d '{"messages":[{"role":"user","content":"Say hello in Japanese"}]}'
-{
-  "choices": [{"message": {"content": "こんにちは！ (konnichiwa!)"}}],
-  "usage": {"completion_tokens": 9},
-  "x_tirami": {
-    "trm_cost": 9,
-    "effective_balance": 1009
-  }
-}
-```
+- OpenAI 相容 HTTP 對話 + 自動 P2P 轉發至已連線的 peer (`forward_chat_to_peer`，Phase 19)
+- 經由 iroh-QUIC P2P 的 dual-signed `SignedTradeRecord`，含 128-bit nonce 重放保護 (`execute_signed_trade`)
+- `TradeAcceptDispatcher` 將 counter-sign 訊息路由至匹配的在途推理任務 (Phase 18.5-pt3)
+- Collusion detector + slashing 迴圈，每個 `slashing_interval_secs` 觸發 (Phase 17 Wave 1.3)
+- Governance 提案 — 21 項可變白名單 + 18 項憲法不變參數 (Phase 18.1)
+- 歡迎貸款、質押池、推薦獎勵、信用評分、動態市場定價 (EMA 平滑)
+- 經由 gossip 的 peer 自動探索 (`PriceSignal.http_endpoint`，Phase 19 Tier C)
+- `tirami start` 啟動時自動設定 PersonalAgent (Phase 18.5-pt3e)、tick-loop 可觀測
+- Prometheus `/metrics` 端點 (`tirami_*` 前綴)
+- Base Sepolia/mainnet 部署 `Makefile` — Sepolia 免費執行，mainnet 有 gate (見下文)
 
-每個回應都包含 `x_tirami` — **該計算的 TRM 成本**以及剩餘餘額。提供者賺取了 9 TRM，消費者花費了 9 TRM。物理學為每個單位提供了支撐。
+### 🟡 已搭架 (規格與型別已有，production 接線未完)
 
-**三次推理後 — 帳本上的真實交易：**
-```
-$ curl localhost:3000/v1/tirami/trades
-{
-  "count": 3,
-  "trades": [
-    {"trm_amount": 5, "tokens_processed": 5, "model_id": "qwen2.5-0.5b-instruct-q4_k_m"},
-    {"trm_amount": 5, "tokens_processed": 5, "model_id": "qwen2.5-0.5b-instruct-q4_k_m"},
-    {"trm_amount": 9, "tokens_processed": 9, "model_id": "qwen2.5-0.5b-instruct-q4_k_m"}
-  ]
-}
-```
+- zkML 推理證明: `tirami-zkml-bench` 僅有 `MockBackend`。真實 `ezkl` / `risc0` 後端在 Phase 20+。當前預設 `ProofPolicy = Optional` (Phase 19)——帶證明交易獲 reputation 獎勵、無證明交易仍有效
+- ML-DSA (Dilithium) 後量子混合簽章: 結構體與 verify 路徑已有，`Config::pq_signatures = false` 為預設 (因 iroh 0.97 相依衝突)
+- TEE attestation (Apple Secure Enclave / NVIDIA H100 CC): `tirami-attestation` 僅搭架
+- daemon 模式 worker 的 gossip-recv 迴圈 ([issue #88](https://github.com/clearclown/tirami/issues/88)): 在 `POST /v1/tirami/agent/task` 中手動指定 `peer.url` 仍可用
 
-**每筆交易都有一個默克爾根 — 可錨定到比特幣以獲得不可篡改的證明：**
-```
-$ curl localhost:3000/v1/tirami/network
-{
-  "total_trades": 3,
-  "total_contributed_trm": 19,
-  "merkle_root": "aac8db9f62dd9ff23926195a70ed8fcfc188fc867d9f2adabd8e694beb338748"
-}
-```
+### ❌ 未完成 (mainnet 上線前必須)
 
-**AI 代理失控？緊急開關可在幾毫秒內凍結一切：**
-```
-$ curl -X POST localhost:3000/v1/tirami/kill \
-    -d '{"activate":true, "reason":"anomaly detected", "operator":"admin"}'
-→ KILL SWITCH ACTIVATED
-→ All TRM transactions frozen. No agent can spend.
-```
+- 外部安全稽核 (Phase 17 Wave 3.3 要求)。候選: Trail of Bits, Zellic, Open Zeppelin, Least Authority
+- Base L2 mainnet 部署。`make deploy-base-mainnet` 目標在 `AUDIT_CLEARANCE=yes` + `MULTISIG_OWNER=<addr>` + 互動式輸入 `i-accept-responsibility` 三重互鎖未滿足時會**拒絕執行**
+- 帶真實 PGP 金鑰的 bug bounty 正式運作 ([`SECURITY.md`](../../../SECURITY.md) 目前是 placeholder)
+- Base Sepolia ≥ 30 天穩定運行 + ≥ 10 節點 testnet 7 天壓力測試
 
-**安全控制始終開啟：**
-```
-$ curl localhost:3000/v1/tirami/safety
-{
-  "kill_switch_active": false,
-  "circuit_tripped": false,
-  "policy": {
-    "max_trm_per_hour": 10000,
-    "max_trm_per_request": 1000,
-    "max_trm_lifetime": 1000000,
-    "human_approval_threshold": 5000
-  }
-}
-```
+完整分層路線圖 (OSS 預覽 → 邀請制 testnet → 開放 testnet → mainnet): [`docs/release-readiness.md`](../../../docs/release-readiness.md)。
 
-## 為什麼選擇 Tirami
+---
+
+## 即時示範
+
+Tirami 是 **GPU Airbnb × AI 代理經濟**: 閒置計算賺 TRM 租金，AI 代理是租客。
 
 ```
-比特幣: 電力 → 毫無意義的 SHA-256 → BTC
-Tirami: 電力 → 有用的 LLM 推理 → TRM
+$ tirami start
+🔑 在 ~/.tirami/node.key 產生新節點金鑰
+📦 從 HuggingFace 取得 Qwen2.5-0.5B-Instruct GGUF
+🚀 HTTP API at http://127.0.0.1:3000
+✅ Personal agent configured for <wallet-hex>
+✅ P2P endpoint bound (iroh QUIC + Noise)
 ```
 
-比特幣證明了「電力 → 計算 → 金錢」。但比特幣的計算是沒有目的的。Tirami 將其反轉：每個 TRM 都代表了解決某人實際問題的真實智能。
+### Phase 19 Tier C/D enabler 實測
 
-**其他項目不具備的四個特點：**
+```bash
+tirami agent status
+tirami agent chat "總結這篇論文" --max-tokens 256
 
-### 1. 計算 = 貨幣
+# 本地無模型的 worker 自動轉發至 seed
+curl -X POST http://worker.local:3111/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"messages":[{"role":"user","content":"Hello"}],"max_tokens":5}'
 
-每次推理都是一筆交易。提供者賺取 TRM，消費者支出 TRM。沒有區塊鏈，沒有代幣，沒有 ICO。TRM 由物理學支撐——即為有用工作而消耗的電力。與 Bittensor (TAO)、Akash (AKT) 或 Golem (GLM) 不同，TRM 無法被投機——它透過執行有用計算來賺取。
+# peer 自動探索
+curl http://127.0.0.1:3001/v1/tirami/peers | jq '.peers[].http_endpoint'
 
-### 2. 無需區塊鏈的防篡改
-
-每筆交易都由雙方進行雙重簽名 (Ed25519)，並在網格中透過 gossip 同步。所有交易的默克爾根可以錨定到比特幣進行不可篡改的審計。不需要全球共識——雙邊加密證明就足夠了。
-
-### 3. AI 代理管理自己的計算
-
-手機上的代理在夜間借出空閒計算能力 → 賺取 TRM → 購買 70B 模型的訪問權限 → 變得更聰明 → 賺得更多。代理自主檢查 `/v1/tirami/balance` 和 `/v1/tirami/pricing`。預算政策和斷路器可防止失控支出。
-
+# mainnet 部署有 gate
+cd repos/tirami-contracts && make help
 ```
-代理 (手機上的 1.5B 模型)
-  → 透過提供推理在夜間賺取 TRM
-  → 在 70B 模型上花費 TRM → 獲得更聰明的回答
-  → 更好的決策 → 賺取更多 TRM
-  → 循環重複 → 代理成長
-```
+
+---
+
+## 為什麼 Tirami
+
+### 1. 計算 = 貨幣 (供給上限 21B TRM)
+
+TRM 有憲法固定的供給上限 21,000,000,000。governance 提案無法修改這個值 (Phase 18.1 `IMMUTABLE_CONSTITUTIONAL_PARAMETERS` 列表中)。修改需要軟體分叉，一旦分叉就不再是 "Tirami"，而是另一個網路。
+
+### 2. 無需區塊鏈的防竄改
+
+每筆 trade 皆由 dual-sign (provider 與 consumer 雙方的 Ed25519 簽章) + 128-bit nonce (重放防禦) + gossip 傳播 + 定期 Merkle root on-chain anchor 保護。
+
+### 3. AI 代理管理自己的計算預算
+
+Phase 18.5 引入的 `PersonalAgent` 是代用戶在 mesh 上買賣計算的自動駕駛。`tirami agent chat "..."` 讓代理自動決定本地處理還是轉發至 remote peer。
 
 ### 4. 計算微金融
 
-節點可以將閒置 TRM 以利息借給其他節點。小型節點借入 TRM，存取更大的模型，賺取更多 TRM，並支付利息還款。沒有其他分散式推理專案提供計算借貸。這是讓自我改進迴圈對每個人（而不僅僅是那些已經擁有強大硬體的人）在經濟上都可行的引擎。
+`welcome_loan = 1,000 TRM` (72 小時、利率 0%) 啟動，welcome loan 在 epoch 2 永久停止 (Constitutional)，新參與路徑逐步遷移至 stake-required mining (Phase 18.2)。
 
-## 架構
+### 5. Ledger-as-Brain: 排程 = 經濟判斷
+
+透過 `PeerRegistry` 和 `select_provider`，每次推理請求自動進行「從現有價格訊號中按 reputation 加權選擇最佳 provider」的**經濟判斷**。
+
+---
+
+## 5 層架構
 
 ```
-┌─────────────────────────────────────────────────┐
-│  L4: 發現 (tirami-agora) ✅ v0.1                 │
-│  代理市集、聲譽聚合、                             │
-│  Nostr NIP-90、Google A2A 支付擴充               │
-├─────────────────────────────────────────────────┤
-│  L3: 智能 (tirami-mind) ✅ v0.1                  │
-│  AutoAgent 自我改進迴圈、                        │
-│  harness 市集、元最佳化                          │
-├─────────────────────────────────────────────────┤
-│  L2: 金融 (tirami-bank) ✅ v0.1                  │
-│  策略、投資組合、期貨、保險、                      │
-│  風險模型、收益最佳化器                           │
-├─────────────────────────────────────────────────┤
-│  L1: 經濟 (tirami — 本倉庫) ✅ 第 1-13 階段       │
-│  TRM 帳本、雙重簽名交易、動態定價、                 │
-│  借貸原語、安全控制                               │
-├─────────────────────────────────────────────────┤
-│  L0: 推理 (tirami-mesh / mesh-llm) ✅            │
-│  流水線並行、MoE 分片、                           │
-│  iroh 網格、Nostr 發現、MLX/llama.cpp            │
-└─────────────────────────────────────────────────┘
-
-全部 5 層均已存在。生態系統中共有 785 個測試通過。
+L4: Discovery (tirami-agora)       代理市場、聲譽、NIP-90
+L3: Intelligence (tirami-mind)     PersonalAgent、自我改進、TRM 預算
+L2: Finance (tirami-bank)          策略、投資組合、期貨、保險、風險
+L1: Economy (tirami 本儲存庫) ✅  Phase 1-19 完成
+L0: Inference (forge-mesh) ✅      分散式 LLM 推理、llama.cpp、GGUF
+                                   ↓ Phase 16: 定期 10 分鐘批次
+On-chain: tirami-contracts (Base L2, gated)
+  TRM ERC-20 (21B 上限) + TiramiBridge
 ```
 
-## 快速入門
+全 5 層 Rust、16 workspace crates。**1 192 tests passing** + 15 Solidity tests。
 
-### 方式一：一鍵端到端演示（Rust，冷啟動約 30 秒）
+---
+
+## 快速開始
 
 ```bash
+# 選項 1: 一鍵 E2E 示範
 git clone https://github.com/clearclown/tirami && cd tirami
 bash scripts/demo-e2e.sh
-```
 
-此腳本會從 HuggingFace 下載 SmolLM2-135M（約 100 MB），啟動帶有 Metal/CUDA 加速的真實 Tirami 節點，執行三次真實的聊天完成，遍歷第 1-13 階段的所有端點，並列印彩色摘要。已於 2026-04-09 在 Apple Silicon Metal GPU 上驗證。
-
-完成後，同一節點還響應：
-
-```bash
-# 相容 OpenAI 的客戶端
-export OPENAI_BASE_URL=http://127.0.0.1:3001/v1
-export OPENAI_API_KEY=$(cat ~/.tirami/api_token 2>/dev/null || echo "$TOKEN")
-
-# 真實的逐令牌串流傳輸 (第 11 階段)
-curl -N $OPENAI_BASE_URL/chat/completions \
-  -H "Authorization: Bearer $OPENAI_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"model":"smollm2:135m","messages":[{"role":"user","content":"hi"}],"stream":true}'
-
-# 第 8 階段經濟 / 第 9 階段聲譽 / 第 10 階段指標 / 錨定
-curl $OPENAI_BASE_URL/tirami/balance -H "Authorization: Bearer $OPENAI_API_KEY"
-curl $OPENAI_BASE_URL/tirami/anchor?network=mainnet -H "Authorization: Bearer $OPENAI_API_KEY"
-curl http://127.0.0.1:3001/metrics  # Prometheus，無需認證
-```
-
-完整功能矩陣請參見 [`docs/compatibility.md`](../../../docs/compatibility.md)。
-
-### 方式二：手動 Rust 命令
-
-**前置條件**：[安裝 Rust](https://rustup.rs/)（約 2 分鐘）
-
-```bash
+# 選項 2: 直接啟動
 cargo build --release
+./target/release/tirami start -m "qwen2.5:0.5b"
 
-# 執行節點 — 自動從 HuggingFace 下載模型
-./target/release/tirami node -m "qwen2.5:0.5b" --ledger tirami-ledger.json
-
-# 或以下任意命令：
-./target/release/tirami chat -m "smollm2:135m" "什麼是重力？"
-./target/release/tirami seed -m "qwen2.5:1.5b"               # 作為 P2P 提供者賺取 TRM
-./target/release/tirami worker --seed <public_key>           # 作為 P2P 消費者花費 TRM
-./target/release/tirami models                                # 列出目錄（或使用 HF URL / 簡寫）
+# 選項 3: 作為 OpenAI 相容客戶端
+export OPENAI_BASE_URL=http://127.0.0.1:3001/v1
+curl $OPENAI_BASE_URL/tirami/balance
 ```
 
-**[Crates.io: tirami-core](https://crates.io/crates/tirami-core)** ·
-**[相容性文件](../../../docs/compatibility.md)** ·
-**[演示腳本](../../../scripts/demo-e2e.sh)**
-
-### 方式三：預編譯二進位檔 / Docker
-
-預編譯二進位檔和 `clearclown/tirami:latest` Docker 映像在
-[releases](../../../releases) 頁面跟踪。在此之前，方式一可在兩分鐘內從原始碼建置。
+---
 
 ## API 參考
 
-### 推理（OpenAI 相容）
-
 | 端點 | 描述 |
-|----------|-------------|
-| `POST /v1/chat/completions` | 支援串流傳輸的聊天。每個回應包含 `x_tirami.cu_cost` |
-| `GET /v1/models` | 列出已加載的模型 |
+|---|---|
+| `POST /v1/chat/completions` | OpenAI 相容對話。回應含 `x_tirami.trm_cost`。本地無模型時自動 P2P 轉發 (`forward_chat_to_peer`, Phase 19) |
+| `POST /v1/tirami/agent/task` | PersonalAgent 同步派遣、provider 自動選擇 (Phase 18.5-pt3) |
+| `GET /v1/tirami/agent/status` | PersonalAgent 狀態 |
+| `GET /v1/tirami/balance` | 餘額、聲譽、貢獻歷史 |
+| `GET /v1/tirami/pricing` | 市場價、供需、成本估算 |
+| `GET /v1/tirami/trades` | 最近交易 |
+| `GET /v1/tirami/peers` | peer + `http_endpoint` (Phase 19) |
+| `GET /v1/tirami/providers` | 聲譽調整後的 provider ranking |
+| `POST /v1/tirami/schedule` | Ledger-as-Brain 探針 |
+| `GET /v1/tirami/su/supply` | tokenomics 供給狀態 |
+| `POST /v1/tirami/su/stake` | stake TRM |
+| `POST /v1/tirami/governance/propose` | 治理提案 (憲法參數自動 reject) |
+| `POST /v1/tirami/lend` / `/borrow` / `/repay` | 借貸 |
+| `GET /v1/tirami/slash-events` | slashing 歷史 (Phase 17 Wave 1.3) |
+| `GET /metrics` | Prometheus (`tirami_*` 前綴) |
 
-### 經濟
+---
 
-| 端點 | 描述 |
-|----------|-------------|
-| `GET /v1/tirami/balance` | TRM 餘額、聲譽、貢獻歷史 |
-| `GET /v1/tirami/pricing` | 市場價格 (EMA 平滑)、成本估算 |
-| `GET /v1/tirami/trades` | 最近交易及其 TRM 金額 |
-| `GET /v1/tirami/network` | 總 TRM 流量 + 默克爾根 |
-| `GET /v1/tirami/providers` | 按聲譽和成本排名的提供者 |
-| `POST /v1/tirami/invoice` | 從 TRM 餘額創建 Lightning 發票 |
-| `GET /v1/tirami/route` | 最佳提供者選擇（成本/品質/平衡） |
-| `GET /settlement` | 可導出的結算報表 |
+## Safety Design
 
-### 借貸
+五層防禦: **密碼學** (Ed25519、nonce、HMAC、Noise) + **經濟** (slashing、welcome loan sunset、stake-required mining) + **運營** (ASN 速率限、DDoS cap、checkpoint、fork 檢測) + **治理** (憲法參數、ProofPolicy ratchet) + **流程** (緊急開關、audit tier、聲譽懲罰)。詳見 [`docs/threat-model.md`](../../../docs/threat-model.md) T1–T17。
 
-| 端點 | 描述 |
-|----------|-------------|
-| `POST /v1/tirami/lend` | 向借貸池提供 TRM |
-| `POST /v1/tirami/borrow` | 申請 TRM 貸款 |
-| `POST /v1/tirami/repay` | 還清未償貸款 |
-| `GET /v1/tirami/credit` | 信用分數與歷史 |
-| `GET /v1/tirami/pool` | 借貸池狀態 |
-| `GET /v1/tirami/loans` | 活躍貸款 |
+---
 
-### 安全
+## 核心構想
 
-| 端點 | 描述 |
-|----------|-------------|
-| `GET /v1/tirami/safety` | 緊急開關狀態、斷路器、預算政策 |
-| `POST /v1/tirami/kill` | 緊急停機 — 凍結所有 TRM 交易 |
-| `POST /v1/tirami/policy` | 為每個代理設置預算限制 |
+「為什麼把 compute 做成貨幣?」的一行回答: **AI 時代真正稀缺的資源是 compute**。Tirami 將貨幣定義錨定在這個物理事實上 (`1 TRM = 10⁹ FLOP`)。詳見 [`docs/whitepaper.md`](../../../docs/whitepaper.md)。
 
-## 安全設計
-
-AI 代理自主花費計算資源雖然強大，但也非常危險。Tirami 擁有五層安全防護：
-
-| 層級 | 機制 | 保護對象 |
-|-------|-----------|------------|
-| **緊急開關** | 人工操作員立即凍結所有交易 | 停止失控的代理 |
-| **預算政策** | 每個代理的限制：單次請求、每小時、終生 | 限制總敞口 |
-| **斷路器** | 5 次錯誤或每分鐘 30 次以上支出自動跳閘 | 捕捉異常 |
-| **速率檢測** | 1 分鐘滑動窗口監控支出速率 | 防止突發支出 |
-| **人工審批** | 超過閾值的交易需要人工確認 | 保護大額支出 |
-
-設計原則：**故障安全 (fail-safe)**。如果任何檢查無法確定安全性，它將**拒絕**該操作。
-
-## 構想
-
-| 時代 | 標準 | 支撐 |
-|-----|----------|---------|
-| 古代 | 黃金 | 地質稀缺性 |
-| 1944–1971 | 布雷頓森林體系 | 美元掛鉤黃金 |
-| 1971–至今 | 石油美元 | 石油需求 + 軍事力量 |
-| 2009–至今 | 比特幣 | SHA-256 上的能源（無用工作） |
-| **現在** | **計算本位制 (Compute Standard)** | **LLM 推理上的能源（有用工作）** |
-
-一間裝滿運行 Tirami 的 Mac Mini 的房間就像一棟公寓樓——透過在業主睡覺時執行有用工作來產生收益。
+---
 
 ## 專案結構
 
 ```
-tirami/  (本倉庫 — 第 1 層)
-├── crates/
-│   ├── tirami-ledger/      # TRM 核算、借貸、agora (NIP-90)、安全
-│   ├── tirami-node/        # 節點守護進程、HTTP API（借貸 + 路由）、流水線
-│   ├── tirami-cli/         # CLI: 聊天、播種、工人、結算、錢包
-│   ├── tirami-lightning/   # TRM ↔ 比特幣 Lightning 橋接（雙向）
-│   ├── tirami-net/         # P2P: iroh QUIC + Noise + gossip（交易 + 貸款）
-│   ├── tirami-proto/       # 線纜協定: 27+ 種消息類型，含 Loan*
-│   ├── tirami-infer/       # 推理引擎: llama.cpp, GGUF, Metal/CPU
-│   ├── tirami-core/        # 類型定義: NodeId, TRM, Config
-│   └── tirami-shard/       # 拓撲: 層級分配
-├── scripts/verify-impl.sh         # TDD 回歸測試（24 個斷言）
-└── docs/                  # 規範、策略、威脅模型、路線圖
+tirami/  (全 5 層、16 Rust crates)
+├── crates/tirami-{ledger,node,cli,sdk,mcp,bank,mind,agora,anchor,lightning,net,proto,infer,core,shard,zkml-bench,attestation}
+├── repos/tirami-contracts/  # Foundry TRM ERC-20 + TiramiBridge
+├── scripts/verify-impl.sh    # 123 assertions
+└── docs/                     # whitepaper、release-readiness 等
 ```
 
-約 20,000 行 Rust。**785 個測試通過。** 第 1-13 階段完成。
+約 25,000 行 Rust。Phase 1-19 完成。
 
-## 姊妹倉庫（完整生態系統）
+---
 
-| 倉庫 | 層級 | 測試數 | 狀態 |
-|------|-------|-------|--------|
-| [clearclown/tirami](https://github.com/clearclown/tirami)（本倉庫） | L1 經濟 | 785 | 第 1-13 階段 ✅ |
-| [clearclown/tirami-bank](https://github.com/clearclown/tirami-bank) | L2 金融 | — | archived |
-| [clearclown/tirami-mind](https://github.com/clearclown/tirami-mind) | L3 智能 | — | archived |
-| [clearclown/tirami-agora](https://github.com/clearclown/tirami-agora) | L4 發現 | — | archived |
-| [clearclown/tirami-economics](https://github.com/clearclown/tirami-economics) | 理論 | 16/16 GREEN | ✅ |
-| [nm-arealnormalman/mesh-llm](https://github.com/nm-arealnormalman/mesh-llm) | L0 推理 | 43 (tirami-economy) | ✅ |
+## 生態
 
-## 文件
+| Repo | 層 | 測試 | 狀態 |
+|---|---|---|---|
+| [clearclown/tirami](https://github.com/clearclown/tirami) (本儲存庫) | L1-L4 | 1 192 | Phase 1-19 ✅ |
+| [clearclown/tirami-economics](https://github.com/clearclown/tirami-economics) | 理論 | 16/16 GREEN | §1-§18、papers PDF + arXiv tarball |
+| [repos/tirami-contracts](https://github.com/clearclown/tirami/tree/main/repos/tirami-contracts) | on-chain | 15 forge tests | mainnet 部署有 gate |
+| [nm-arealnormalman/mesh-llm](https://github.com/nm-arealnormalman/mesh-llm) | L0 推理 | 646 | forge-economy 移植 ✅ |
 
-- [策略](../../../docs/strategy.md) — 競爭定位、借貸規範、5 層架構
-- [貨幣理論](../../../docs/monetary-theory.md) — 為什麼 TRM 可行：Soddy、比特幣、PoUW、僅限 AI 的貨幣
-- [概念與願景](../../../docs/concept.md) — 為什麼計算即金錢
-- [經濟模型](../../../docs/economy.md) — TRM 經濟、有用工作證明、借貸
-- [架構設計](../../../docs/architecture.md) — 雙層設計
-- [代理整合](../../../docs/agent-integration.md) — SDK、MCP、借貸工作流程
-- [線纜協定](../../../docs/protocol-spec.md) — 17 種消息類型
-- [路線圖](../../../docs/roadmap.md) — 開發階段
-- [威脅模型](../../../docs/threat-model.md) — 安全 + 經濟攻擊
-- [引導啟動](../../../docs/bootstrap.md) — 啟動、降級、恢復
-- [A2A 支付](../../../docs/a2a-payment.md) — 面向代理協定的 TRM 支付擴充
-- [相容性](../../../docs/compatibility.md) — 與 llama.cpp / Ollama / Bittensor 的功能矩陣
+---
 
-## 許可證
+## Docs
 
-MIT
+- [Whitepaper](../../../docs/whitepaper.md) / [Release Readiness](../../../docs/release-readiness.md) / [Constitution](../../../docs/constitution.md) / [Killer-App](../../../docs/killer-app.md)
+- [Public API Surface](../../../docs/public-api-surface.md) / [zkML Strategy](../../../docs/zkml-strategy.md) / [Strategy](../../../docs/strategy.md) / [Monetary Theory](../../../docs/monetary-theory.md)
+- [Economic Model](../../../docs/economy.md) / [Architecture](../../../docs/architecture.md) / [Wire Protocol](../../../docs/protocol-spec.md) / [Agent Integration](../../../docs/agent-integration.md)
+- [Threat Model](../../../docs/threat-model.md) / [Security Policy](../../../SECURITY.md) / [Operator Guide](../../../docs/operator-guide.md) / [Deployments](../../../docs/deployments/README.md)
+- [Developer Guide](../../../docs/developer-guide.md) / [FAQ](../../../docs/faq.md) / [Migration](../../../docs/migration-guide.md) / [Roadmap](../../../docs/roadmap.md)
+
+---
+
+## License
+
+MIT。參見 [`LICENSE`](../../../LICENSE)。
+
+## 不是投資品 — 二級市場免責聲明
+
+TRM 是**計算的會計單位**，不是金融商品。協議維護者不銷售、不宣傳、不投機 TRM。由於是 MIT 開源，**在維護者不知情的情況下**，第三方可能會橋接、上架、衍生 TRM，維護者**在技術上無法阻止**。
+
+- 沒有 ICO、預售、空投、私募
+- 不從第三方市場取得收益分成
+- Base mainnet 部署有**稽核 gate**
+
+免責聲明全文: [`SECURITY.md`](../../../SECURITY.md#secondary-markets--third-party-tokenization)。
 
 ## 致謝
 
-Tirami 的分散式推理基於 Michael Neale 的 [mesh-llm](https://github.com/michaelneale/mesh-llm) 建構。參見 [CREDITS.md](../../../CREDITS.md)。
+Tirami 的分散式推理基於 Michael Neale 的 [mesh-llm](https://github.com/michaelneale/mesh-llm)。參見 [CREDITS.md](../../../CREDITS.md)。

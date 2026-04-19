@@ -6,10 +6,10 @@
 
 [![Crates.io](https://img.shields.io/crates/v/tirami-core?label=crates.io&color=e6522c)](https://crates.io/crates/tirami-core)
 [![License: MIT](https://img.shields.io/badge/License-MIT-brightgreen.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-1185_passing-brightgreen)]()
+[![Tests](https://img.shields.io/badge/tests-1192_passing-brightgreen)]()
 [![verify-impl](https://img.shields.io/badge/verify--impl-123%2F123_GREEN-brightgreen)]()
-[![forge test](https://img.shields.io/badge/forge_test-15%2F15_GREEN-brightgreen)]()
-[![Phase](https://img.shields.io/badge/phase-18.5_hardened-blue)]()
+[![foundry test](https://img.shields.io/badge/foundry_test-15%2F15_GREEN-brightgreen)]()
+[![Phase](https://img.shields.io/badge/phase-19_hardened-blue)]()
 [![Mainnet](https://img.shields.io/badge/mainnet-audit_gated-orange)]()
 
 ---
@@ -23,6 +23,43 @@
 The distributed inference engine is built on [mesh-llm](https://github.com/michaelneale/mesh-llm) by Michael Neale. Tirami adds a compute economy on top: TRM accounting, Proof of Useful Work, dynamic pricing, autonomous agent budgets, and fail-safe controls. See [CREDITS.md](CREDITS.md).
 
 **Integrated fork:** [forge-mesh](https://github.com/nm-arealnormalman/mesh-llm) — mesh-llm with Tirami economic layer built in.
+
+---
+
+## ⚠️ Status Honesty (2026-04-19 / Phase 19)
+
+Before anything else, here is exactly what works and what does not. Tirami is MIT-licensed open-source software, **not a token sale**. No ICO, no pre-mine, no team treasury, no airdrop. TRM is compute accounting (1 TRM = 10⁹ FLOP), not a financial product — see [`SECURITY.md § Secondary Markets`](SECURITY.md#secondary-markets--third-party-tokenization).
+
+### ✅ Functional today (1 192 Rust tests + 15 Solidity tests, verified)
+
+- HTTP OpenAI-compatible chat with automatic P2P forwarding to a connected peer (`forward_chat_to_peer`, Phase 19).
+- Dual-signed `SignedTradeRecord` via iroh-QUIC P2P with 128-bit nonce replay protection (`execute_signed_trade`).
+- `TradeAcceptDispatcher` routes counter-sign messages to the matching in-flight inference task (Phase 18.5-pt3).
+- Collusion detector + stake-slashing loop running every `slashing_interval_secs` (Phase 17 Wave 1.3).
+- Governance proposals with a 21-entry mutable whitelist and an 18-entry constitutional-parameter immutable list (Phase 18.1).
+- Welcome loan, stake pool, referral bonuses, credit scoring, dynamic market pricing (EMA-smoothed).
+- Peer auto-discovery via `PriceSignal.http_endpoint` on the gossip wire (Phase 19 Tier C).
+- PersonalAgent auto-configured on `tirami start` (Phase 18.5-pt3e), with tick-loop observability.
+- Prometheus `/metrics` endpoint using the `tirami_*` prefix.
+- Base Sepolia/mainnet deploy `Makefile` targets — sepolia is free to run, mainnet is gated (see below).
+
+### 🟡 Scaffolded (spec + types exist; production wiring pending)
+
+- zkML proof-of-inference: `tirami-zkml-bench` has a `MockBackend` only. Real `ezkl` / `risc0` backends land in Phase 20+. Default `ProofPolicy = Optional` (Phase 19) — proofs are accepted and rewarded when supplied, but trades without proofs are still valid during the rollout.
+- ML-DSA (Dilithium) post-quantum hybrid signatures: struct + verify path exist, `Config::pq_signatures = false` by default (blocked on iroh 0.97 dep chain).
+- TEE attestation (Apple Secure Enclave / NVIDIA H100 CC): `tirami-attestation` scaffold only.
+- Daemon-mode worker gossip-recv loop ([issue #88](https://github.com/clearclown/tirami/issues/88)): manual `peer.url` override in `POST /v1/tirami/agent/task` still works.
+
+### ❌ Not done (required before public mainnet)
+
+- External security audit (Phase 17 Wave 3.3 requirement). Candidates: Trail of Bits, Zellic, Open Zeppelin, Least Authority.
+- Base L2 mainnet deploy. The `make deploy-base-mainnet` target *refuses* to run unless `AUDIT_CLEARANCE=yes` + `MULTISIG_OWNER=<addr>` + operator types `i-accept-responsibility` at an interactive prompt. See [`repos/tirami-contracts/Makefile`](repos/tirami-contracts/Makefile) and [`docs/deployments/README.md`](docs/deployments/README.md).
+- Live bug bounty with a real PGP key (currently a documented placeholder in [`SECURITY.md`](SECURITY.md)).
+- ≥ 30-day stable operation on Base Sepolia + ≥ 7-day stress-test on a 10+ node testnet.
+
+Full tier roadmap (OSS preview → invited testnet → open testnet → mainnet): [`docs/release-readiness.md`](docs/release-readiness.md).
+
+---
 
 ## Live Demo
 
@@ -241,14 +278,21 @@ single loop.
 │  Not deployed yet — in-memory MockChainClient   │
 └─────────────────────────────────────────────────┘
 
-All 5 layers are Rust. **1 071 tests passing.** 123/123 verify-impl
-GREEN. Phase 17 shipped 24 security primitives across 4 waves for
-public-network readiness — see [`docs/security/phase-17-summary.md`](docs/security/phase-17-summary.md).
-Mainnet deploy gated on external audit + 30-day Sepolia stability
-+ multi-sig custody + bug bounty live (`docs/security/audit-scope.md`).
+All 5 layers are Rust across 16 workspace crates. **1 192 tests passing
++ 15 Solidity tests.** 123/123 verify-impl GREEN. Phase 17 shipped 24
+security primitives across 4 waves for public-network readiness; Phase
+18-19 layered on Constitutional parameters, stake-required mining, the
+zkML `ProofPolicy` ratchet, peer HTTP auto-discovery, and a gated
+mainnet deploy path — see [`docs/release-readiness.md`](docs/release-readiness.md) for the tier A-D roadmap.
+
+Mainnet deploy is gated on external audit + 30-day Sepolia stability +
+multi-sig custody + bug bounty live ([`docs/security/audit-scope.md`](docs/security/audit-scope.md)).
 
 Phase 14-16 added unified Ledger-as-Brain scheduling, FLOP measurement,
-audit challenge-response, and the on-chain anchor layer (tirami-anchor + tirami-contracts).
+audit challenge-response, and the on-chain anchor layer
+(`tirami-anchor` + `tirami-contracts`). Phase 18.3 added
+`tirami-zkml-bench` (MockBackend + ezkl/risc0/halo2 feature-gated
+stubs). Phase 17 Wave 3.1 added the `tirami-attestation` scaffold.
 ```
 
 ## Quick Start
@@ -262,7 +306,7 @@ bash scripts/demo-e2e.sh
 
 This downloads SmolLM2-135M (~100 MB) from HuggingFace, starts a real Tirami
 node with Metal/CUDA acceleration, runs real chat completions, walks
-through every Phase 1-13 endpoint, and prints a colored summary.
+through every Phase 1-19 endpoint, and prints a colored summary.
 
 After it finishes, the same node also responds to:
 
@@ -278,9 +322,29 @@ curl -N $OPENAI_BASE_URL/chat/completions \
   -d '{"model":"smollm2:135m","messages":[{"role":"user","content":"hi"}],"stream":true}'
 
 # Economy / reputation / metrics / anchoring
-curl $OPENAI_BASE_URL/forge/balance -H "Authorization: Bearer $OPENAI_API_KEY"
-curl $OPENAI_BASE_URL/forge/anchor?network=mainnet -H "Authorization: Bearer $OPENAI_API_KEY"
+curl $OPENAI_BASE_URL/tirami/balance -H "Authorization: Bearer $OPENAI_API_KEY"
+curl $OPENAI_BASE_URL/tirami/anchors  -H "Authorization: Bearer $OPENAI_API_KEY"
 curl http://127.0.0.1:3001/metrics  # Prometheus, no auth
+```
+
+Phase 19 Tier C/D enablers you can exercise in the same flow:
+
+```bash
+# Personal agent — auto-configured on `tirami start`; talk to your agent from the CLI
+tirami agent status            # balance + today's earn/spend + loop state
+tirami agent chat "Summarize this paper" --max-tokens 256
+
+# HTTP → P2P forwarding — worker with no local model forwards to a seed over iroh.
+# The seed runs inference, streams tokens back, and both sides counter-sign the trade.
+curl -X POST http://worker.local:3111/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"messages":[{"role":"user","content":"Hello"}],"max_tokens":5}'
+
+# Peer auto-discovery — seeds advertise their HTTP endpoint on the gossip wire
+curl http://127.0.0.1:3001/v1/tirami/peers | jq '.peers[].http_endpoint'
+
+# Mainnet deploy is gated (will refuse to run without audit clearance)
+cd repos/tirami-contracts && make help
 ```
 
 See [`docs/compatibility.md`](docs/compatibility.md) for the full feature matrix
@@ -322,7 +386,9 @@ cargo build --release
 
 | Endpoint | Description |
 |----------|-------------|
-| `POST /v1/chat/completions` | Chat with streaming. Every response includes `x_forge.cu_cost` |
+| `POST /v1/chat/completions` | Chat with streaming. Every response includes `x_tirami.trm_cost`. If the local engine has no model loaded, the request is forwarded to a connected peer over P2P (`forward_chat_to_peer`, Phase 19 Tier C) and a dual-signed trade is recorded on settlement. |
+| `POST /v1/tirami/agent/task` | Synchronous agent dispatch — classifies local vs. remote, picks a provider via `select_provider` + `peer_http_endpoint`, returns the decision (`run_local` / `run_remote` / `ask_user`). Phase 18.5-pt3. |
+| `GET /v1/tirami/agent/status` | Personal agent state (balance, today's tally, preferences, tick-loop counters). Phase 18.5-pt3. |
 | `GET /v1/models` | List loaded models |
 
 ### Economy
@@ -413,41 +479,46 @@ A room full of Mac Minis running Tirami is an apartment building — generating 
 ## Project Structure
 
 ```
-tirami/  (this repo — all 5 layers, 15 Rust crates)
+tirami/  (this repo — all 5 layers, 16 Rust crates)
 ├── crates/
-│   ├── tirami-ledger/      # TRM accounting, lending, tokenomics, staking,
-│   │                       # governance, collusion, PeerRegistry (Phase 14.1),
-│   │                       # select_provider (Phase 14.2), audit (Phase 14.3)
-│   ├── tirami-node/        # Node daemon, HTTP API (60+ endpoints), pipeline,
-│   │                       # anchor/audit/price-signal background loops
-│   ├── tirami-cli/         # CLI: chat, seed, worker, start, settle, wallet, su
-│   ├── tirami-sdk/         # Rust async HTTP client (60+ methods incl. peers/schedule/anchors)
-│   ├── tirami-mcp/         # Rust MCP server (44 tools for Claude/Cursor)
-│   ├── tirami-bank/        # L2: Strategies, portfolios, futures, insurance, risk
-│   ├── tirami-mind/        # L3: AutoAgent self-improvement, federated training
-│   ├── tirami-agora/       # L4: Agent marketplace, reputation, NIP-90
-│   ├── tirami-anchor/      # Phase 16: periodic Merkle-root anchor to on-chain
-│   ├── tirami-lightning/   # TRM <-> Bitcoin Lightning bridge (bidirectional)
-│   ├── tirami-net/         # P2P: iroh QUIC + Noise + gossip (trades/loans/reputation/price)
-│   ├── tirami-proto/       # Wire protocol: 30+ message types incl. audit challenge/response
-│   ├── tirami-infer/       # Inference: llama.cpp, GGUF, Metal/CPU, generate_metered/audit
-│   ├── tirami-core/        # Types: NodeId, TRM, Config, PriceSignal, AuditTier, InferenceTicket
-│   └── tirami-shard/       # Topology: layer assignment
-├── scripts/verify-impl.sh  # TDD conformance (123 assertions)
-└── docs/                   # Specs, strategy, threat model, roadmap, Phase 14-16 designs
-
-Companion: clearclown/tirami-contracts — Solidity/Foundry TRM ERC-20 + Bridge
+│   ├── tirami-ledger/       # TRM accounting, lending, tokenomics, staking,
+│   │                        # governance whitelist + constitutional params,
+│   │                        # collusion, slashing, PeerRegistry, audit,
+│   │                        # ProofPolicy ratchet, nonce replay protection
+│   ├── tirami-node/         # Node daemon, HTTP API (70+ endpoints), pipeline,
+│   │                        # TradeAcceptDispatcher, forward_chat_to_peer,
+│   │                        # agent_loop, anchor/audit/price-signal loops
+│   ├── tirami-cli/          # CLI: chat, seed, worker, start, settle, wallet, su, agent
+│   ├── tirami-sdk/          # Rust async HTTP client (60+ methods)
+│   ├── tirami-mcp/          # Rust MCP server (44 tools for Claude / Cursor)
+│   ├── tirami-bank/         # L2: Strategies, portfolios, futures, insurance, risk
+│   ├── tirami-mind/         # L3: PersonalAgent, self-improvement, federated training
+│   ├── tirami-agora/        # L4: Agent marketplace, reputation, NIP-90
+│   ├── tirami-anchor/       # Phase 16: periodic Merkle-root anchor to on-chain
+│   ├── tirami-lightning/    # TRM ↔ Bitcoin Lightning bridge (bidirectional)
+│   ├── tirami-net/          # P2P: iroh QUIC + Noise + gossip, ASN rate-limit
+│   ├── tirami-proto/        # Wire protocol: 30+ message types
+│   ├── tirami-infer/        # Inference: llama.cpp, GGUF, Metal/CPU
+│   ├── tirami-core/         # Types: NodeId, TRM, Config, PriceSignal (+ http_endpoint)
+│   ├── tirami-shard/        # Topology: layer assignment
+│   ├── tirami-zkml-bench/   # zkML benchmark harness (MockBackend + ezkl/risc0/halo2 stubs, Phase 18.3)
+│   └── tirami-attestation/  # TEE attestation scaffold (Apple SE / NVIDIA H100 CC, Phase 17 Wave 3.1)
+├── repos/tirami-contracts/  # Foundry workspace for TRM ERC-20 + TiramiBridge
+│   ├── src/                 # 15 passing Solidity tests
+│   └── Makefile             # Base Sepolia deploy + gated mainnet (AUDIT_CLEARANCE interlock)
+├── scripts/verify-impl.sh   # TDD conformance (123 assertions)
+└── docs/                    # Specs, whitepaper, threat model, roadmap, release-readiness
 ```
 
-~22,000 lines of Rust. **891 tests passing.** Phase 1-16 complete.
+~25,000 lines of Rust. **1 192 tests passing** + 15 Solidity tests. Phase 1-19 complete.
 
 ## Ecosystem
 
 | Repo | Layer | Tests | Status |
 |------|-------|-------|--------|
-| [clearclown/tirami](https://github.com/clearclown/tirami) (this) | L1-L4 | 891 | Phase 1-16 ✅ |
-| [clearclown/tirami-economics](https://github.com/clearclown/tirami-economics) | Theory | 16/16 GREEN | Spec + papers (v0.5 with §20-§21) ✅ |
-| clearclown/tirami-contracts | On-chain | Foundry skeleton | TRM ERC-20 + Bridge (Phase 16), not deployed |
+| [clearclown/tirami](https://github.com/clearclown/tirami) (this) | L1-L4 | 1 192 | Phase 1-19 ✅ |
+| [clearclown/tirami-economics](https://github.com/clearclown/tirami-economics) | Theory | 16/16 verify-audit GREEN | Spec §1-§25, chapters §1-§18, papers PDF + arXiv tarball |
+| [repos/tirami-contracts](https://github.com/clearclown/tirami/tree/main/repos/tirami-contracts) (in-tree) | On-chain | 15 forge tests | TRM ERC-20 + TiramiBridge, mainnet deploy gated (see `Makefile`) |
 | [nm-arealnormalman/mesh-llm](https://github.com/nm-arealnormalman/mesh-llm) | L0 Inference | 646 | forge-economy port ✅ |
 | clearclown/tirami-bank | L2 Finance | archived | Superseded by `crates/tirami-bank/` |
 | clearclown/tirami-mind | L3 Intelligence | archived | Superseded by `crates/tirami-mind/` |
@@ -455,20 +526,35 @@ Companion: clearclown/tirami-contracts — Solidity/Foundry TRM ERC-20 + Bridge
 
 ## Docs
 
+### Vision & strategy
+- [Whitepaper](docs/whitepaper.md) — 16-section protocol spec (read top-to-bottom in one sitting)
+- [Release Readiness](docs/release-readiness.md) — Tier A–D tier roadmap, what's ready now vs after audit
+- [Constitution](docs/constitution.md) — 11 articles + amendment log, the governance whitelist doctrine
+- [Killer-App](docs/killer-app.md) — product commitment: "My AI runs on my Mac. And yours. And theirs."
+- [Public API Surface](docs/public-api-surface.md) — 5 public crates, 12 internal, stability contract
+- [zkML Strategy](docs/zkml-strategy.md) — `ProofPolicy` rollout, backend evaluation (ezkl / risc0 / halo2)
 - [Strategy](docs/strategy.md) — Competitive positioning, lending spec, 5-layer architecture
 - [Monetary Theory](docs/monetary-theory.md) — Why TRM works: Soddy, Bitcoin, PoUW, AI-only currency
 - [Concept & Vision](docs/concept.md) — Why compute is money
-- [Economic Model](docs/economy.md) — TRM economy, Proof of Useful Work, lending
-- [Architecture](docs/architecture.md) — Two-layer design
-- [Agent Integration](docs/agent-integration.md) — SDK, MCP, borrowing workflow
-- [Wire Protocol](docs/protocol-spec.md) — 27+ message types
 - [Roadmap](docs/roadmap.md) — Development phases
-- [Threat Model](docs/threat-model.md) — Security + economic attacks
-- [Bootstrap](docs/bootstrap.md) — Startup, degradation, recovery
+
+### Protocol
+- [Economic Model](docs/economy.md) — TRM economy, Proof of Useful Work, lending
+- [Architecture](docs/architecture.md) — Two-layer design (inference × economy)
+- [Wire Protocol](docs/protocol-spec.md) — 30+ message types
+- [Agent Integration](docs/agent-integration.md) — SDK, MCP, borrowing workflow
 - [A2A Payment](docs/a2a-payment.md) — TRM payment extension for agent protocols
-- [Compatibility](docs/compatibility.md) — llama.cpp / mesh-llm / Ollama / Bittensor comparison
 - [BitVM Design](docs/bitvm-design.md) — Optimistic verification via fraud proofs
+
+### Security & operations
+- [Threat Model](docs/threat-model.md) — Security + economic attacks (T1-T17)
+- [Security Policy](SECURITY.md) — Reporting vulnerabilities, secondary-market disclaimer, mainnet deploy gate
 - [Operator Guide](docs/operator-guide.md) — How to run a node in production
+- [Bootstrap](docs/bootstrap.md) — Startup, degradation, recovery
+- [Compatibility](docs/compatibility.md) — llama.cpp / mesh-llm / Ollama / Bittensor comparison
+- [Deployments Record](docs/deployments/README.md) — On-chain deploy history (empty until Sepolia ship)
+
+### Developer
 - [Developer Guide](docs/developer-guide.md) — How to contribute
 - [FAQ](docs/faq.md) — Common questions
 - [Migration Guide](docs/migration-guide.md) — From llama-server / Ollama / Bittensor

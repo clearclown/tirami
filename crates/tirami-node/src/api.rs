@@ -1918,6 +1918,22 @@ async fn forge_balance(
     })
 }
 
+/// Fix #85 — round pricing floats to 6 decimal places before
+/// serializing.
+///
+/// The pricing engine uses EMA smoothing, which produces
+/// `1.0 ± tiny_epsilon` at the steady state. Operators reading
+/// `/v1/tirami/pricing` shouldn't see `0.9990014976703275` for a
+/// mostly-idle node. 6 decimals keeps enough precision for
+/// anything operationally meaningful (sub-cent on a $1 TRM) while
+/// silencing the f64 noise.
+fn round_price(x: f64) -> f64 {
+    if !x.is_finite() {
+        return x;
+    }
+    (x * 1_000_000.0).round() / 1_000_000.0
+}
+
 /// GET /v1/tirami/pricing — current market price and cost estimates.
 async fn forge_pricing(
     State(state): State<AppState>,
@@ -1928,11 +1944,11 @@ async fn forge_pricing(
     let trm_per_token = price.effective_trm_per_token();
 
     Ok(Json(TiramiPricingResponse {
-        trm_per_token,
-        supply_factor: price.supply_factor,
-        demand_factor: price.demand_factor,
-        cu_purchasing_power: price.cu_purchasing_power(),
-        deflation_factor: price.deflation_factor(),
+        trm_per_token: round_price(trm_per_token),
+        supply_factor: round_price(price.supply_factor),
+        demand_factor: round_price(price.demand_factor),
+        cu_purchasing_power: round_price(price.cu_purchasing_power()),
+        deflation_factor: round_price(price.deflation_factor()),
         total_trades_ever: price.total_trades_ever,
         estimated_cost_100_tokens: ledger.estimate_cost(100, 1, 1),
         estimated_cost_1000_tokens: ledger.estimate_cost(1000, 1, 1),
@@ -2040,9 +2056,11 @@ async fn forge_providers(
             serde_json::json!({
                 "node_id": n.node_id.to_hex(),
                 "contributed_cu": n.contributed,
-                "reputation": n.reputation,
+                "reputation": round_price(n.reputation),
                 "cu_per_100_tokens": rep_cost,
-                "base_trm_per_token": price,
+                // Fix #85 — snap to 6 decimals to hide EMA fp noise
+                // that otherwise renders as 0.9990014976703275.
+                "base_trm_per_token": round_price(price),
             })
         })
         .collect();
@@ -4970,6 +4988,22 @@ mod tests {
         assert_eq!(json["scope"], "read_only");
         assert!(json["token"].as_str().unwrap().len() == 64);
         assert_eq!(json["label"], "ci-bot");
+    }
+
+    // ------------------------------------------------------------------
+    // Fix #85 — round_price eliminates EMA f64 noise
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn round_price_snaps_noise_near_one() {
+        assert!((round_price(0.9990014976703275) - 0.999001).abs() < 1e-9);
+        // Exactly 1.0 stays 1.0.
+        assert_eq!(round_price(1.0), 1.0);
+        // Values already at 6-decimal precision are unchanged.
+        assert_eq!(round_price(0.5), 0.5);
+        // NaN / Inf are passed through.
+        assert!(round_price(f64::NAN).is_nan());
+        assert!(round_price(f64::INFINITY).is_infinite());
     }
 
     #[tokio::test]

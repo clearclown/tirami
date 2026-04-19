@@ -31,6 +31,17 @@ pub(crate) fn is_anonymous_consumer(node_id: &tirami_core::NodeId) -> bool {
     node_id.0 == ANONYMOUS_CONSUMER_SENTINEL
 }
 
+/// Fix #85 — round a Prometheus gauge value to 9 decimal places so
+/// long-tail f64 drift (e.g. `0.9999999993809524` from `1.0 -
+/// minted/TOTAL_SUPPLY` with tens minted against 21 B) doesn't
+/// surface on operator dashboards.
+fn round_to_9dp(x: f64) -> f64 {
+    if !x.is_finite() {
+        return x;
+    }
+    (x * 1_000_000_000.0).round() / 1_000_000_000.0
+}
+
 pub struct TiramiMetrics {
     pub registry: Registry,
     pub cu_contributed: GaugeVec,
@@ -406,14 +417,18 @@ impl TiramiMetrics {
         }
 
         // Phase 13 tokenomics gauges — ledger-derived.
+        // Fix #85 — round supply_factor / yield_rate to 9 decimals
+        // (nano-unit precision, well below any operationally
+        // meaningful alert threshold) to silence f64 long-tail
+        // noise on dashboards.
         let minted = ledger.total_minted;
         self.total_minted.set(minted as i64);
         self.supply_factor
-            .set(crate::tokenomics::supply_factor(minted));
+            .set(round_to_9dp(crate::tokenomics::supply_factor(minted)));
         self.current_epoch
             .set(crate::tokenomics::current_epoch(minted) as i64);
         self.yield_rate
-            .set(crate::tokenomics::epoch_yield_rate(minted));
+            .set(round_to_9dp(crate::tokenomics::epoch_yield_rate(minted)));
 
         // Optional staking pool data.
         if let Some(pool) = staking_pool {

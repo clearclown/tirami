@@ -3171,8 +3171,12 @@ async fn forge_slash_events(
 
 #[derive(serde::Deserialize)]
 struct TokenIssueBody {
-    /// Hex-encoded 64-char NodeId for the token owner.
-    node_id: String,
+    /// Hex-encoded 64-char NodeId for the token owner. Optional:
+    /// when omitted, defaults to the local node's id so the common
+    /// "issue me a token" flow doesn't require extra plumbing
+    /// (fix #84).
+    #[serde(default)]
+    node_id: Option<String>,
     /// One of "read_only" | "inference" | "economy" | "admin".
     scope: String,
     /// Seconds until expiry. `0` means "never expires" (infra-only).
@@ -3206,8 +3210,14 @@ async fn forge_tokens_issue(
     require_admin_scope(&state, &headers).await?;
     check_forge_rate_limit(&state).await?;
 
-    let node_id = NodeId::from_hex(&body.node_id)
-        .map_err(|e| (StatusCode::BAD_REQUEST, format!("invalid node_id: {e}")))?;
+    // Fix #84 — default the node_id to the local node's identity
+    // when the caller omits it. Matches the "issue me a token"
+    // mental model that originally tripped up integrators.
+    let node_id = match body.node_id.as_deref() {
+        Some(hex) if !hex.is_empty() => NodeId::from_hex(hex)
+            .map_err(|e| (StatusCode::BAD_REQUEST, format!("invalid node_id: {e}")))?,
+        _ => state.local_node_id.clone(),
+    };
     let scope = crate::api_tokens::ApiScope::parse(&body.scope).ok_or((
         StatusCode::BAD_REQUEST,
         format!(
@@ -4960,6 +4970,44 @@ mod tests {
         assert_eq!(json["scope"], "read_only");
         assert!(json["token"].as_str().unwrap().len() == 64);
         assert_eq!(json["label"], "ci-bot");
+    }
+
+    #[tokio::test]
+    async fn tokens_issue_defaults_node_id_to_local_node_when_omitted() {
+        // Fix #84 — integrators shouldn't need to know the local
+        // node_id to issue a token "for me". Omit the field and
+        // the server fills it in.
+        let mut config = Config::default();
+        config.api_bearer_token = Some("root".to_string());
+        let app = test_router(config);
+
+        let body = serde_json::json!({
+            "scope": "read_only",
+            "ttl_secs": 60,
+            "label": "auto-fill-test",
+            // no node_id
+        })
+        .to_string();
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/tirami/tokens/issue")
+                    .header(AUTHORIZATION, "Bearer root")
+                    .header("content-type", "application/json")
+                    .body(Body::from(body))
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let json = body_json(response).await;
+        // Expect a non-empty node_id — the local one the test router
+        // bound to. We don't pin the exact value (that's wiring
+        // detail), just that the handler resolved SOME node id.
+        let node_id = json["node_id"].as_str().unwrap_or("");
+        assert!(!node_id.is_empty(), "node_id auto-fill must not be empty");
+        assert_eq!(node_id.len(), 64, "hex NodeId must be 64 chars");
     }
 
     #[tokio::test]

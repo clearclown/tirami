@@ -6,6 +6,80 @@ numbers follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Phase 18.5-part-3 — E2E hardening for testnet-B (2026-04-19)
+
+Closes every open issue surfaced by the 2-node live E2E on
+`100.112.10.128`. Workspace: **1 185 passing, 0 failed.**
+
+**#80 P0 — HTTP → P2P forwarding + TradeAcceptDispatcher**
+- `openai_sync_response` / `openai_stream_response` now forward to
+  a connected peer when the local engine has no model loaded.
+- `TradeAcceptDispatcher`: per-request_id `oneshot` channel so the
+  seed's main recv loop no longer eats `TradeAccept` messages
+  that should land in the matching `handle_inference` task. This
+  was the root cause of every trade being recorded on the
+  half-TRM penalty path.
+- Worker's `request_inference` loop keeps the recv open after the
+  `is_final` TokenStream until the trailing `TradeProposal` is
+  counter-signed (or a 3 s trailing timeout). Both sides are now
+  wired for a real dual-signed `SignedTradeRecord`.
+- E2E verified: `Signed trade recorded: 24 CU for 16 tokens to …`
+  between two live nodes over HTTP.
+
+**#81 P1 — RunLocal no longer charges agent spend tally**
+- Self-served tasks (agent RunLocal) leave `spent_today_trm`
+  untouched. No TRM leaves the wallet when the node pays itself
+  in compute. RunRemote unchanged (records real peer spend).
+
+**#82 P1 — Worker daemon resolved by #80**
+- `tirami worker --daemon` + HTTP chat endpoint now yields real
+  economic activity via P2P forward.
+
+**#83 P2 — Anonymous sentinel stripped from /metrics**
+- `NodeId([0xFF;32])` no longer surfaces as a node_id label on
+  Prometheus gauges. Helper `is_anonymous_consumer`.
+
+**#84 P2 — Token /issue auto-fills node_id**
+- `POST /v1/tirami/tokens/issue` with just `{scope, label,
+  ttl_secs}` now returns 200 using the local node's identity.
+
+**#85 P2 — Pricing float noise rounded**
+- `round_price` (6 dp) on `/v1/tirami/pricing` and
+  `/v1/tirami/providers`, `round_to_9dp` on the supply / yield
+  Prometheus gauges. `0.9990014976703275` → `0.999001` etc.
+
+### Phase 18.5-part-2 — Personal agent runtime polish (2026-04-18)
+
+**#73 P0 — Auto-configure PersonalAgent on `tirami start`**
+- `TiramiNode::ensure_personal_agent` populates the slot using
+  the local node identity as wallet. New `--no-agent` opt-out.
+- Closes the Phase 18.5 killer-app gap: `tirami start` →
+  `/v1/tirami/agent/*` reachable immediately.
+
+**#74 P1 — JSON error envelope middleware**
+- `json_error_envelope` axum layer rewraps every non-JSON
+  4xx/5xx body into `{error:{code,message}}`. No handler
+  signature churn.
+
+**#75 P1 — Default tracing filter**
+- Silences `swarm_discovery`, `iroh::socket::transports::relay`,
+  `iroh_relay`, `noq_udp` warnings by default. `RUST_LOG=info`
+  restores raw output.
+
+**#76 P1 — `tirami_*` metrics prefix**
+- 11 Prometheus metric identifiers renamed from `forge_*`.
+  Docs + regression tests.
+
+**#77 P2 — TIRAMI branding sweep**
+- `NodeId::Display` emits `tirami_<hex>`; parser still accepts
+  legacy `forge_` prefix. Startup banner, worker hint, CLI
+  printlns, env var names all renamed.
+
+**#78 P2 — Agent tick loop stats**
+- `ticks` counter advances even when no agent is configured;
+  tagged `last_action = "no_agent"`. Distinguishes "loop alive,
+  idle" from "loop dead".
+
 ### Phase 17 — Large-Scale Security Hardening (Wave 1 in progress, 2026-04-18)
 
 Prepares the protocol for adversarial public deployment. Wave 1 closes

@@ -83,7 +83,13 @@ pub enum ProofPolicy {
 
 impl Default for ProofPolicy {
     fn default() -> Self {
-        Self::Disabled
+        // Phase 19 Tier C — default promoted from `Disabled` to
+        // `Optional` to match `Config::default_proof_policy()`.
+        // Optional means "proofs are accepted and rewarded when
+        // provided, but trades without proofs are still valid".
+        // Constitutional ratchet (`try_ratchet_proof_policy`)
+        // prevents downgrade; governance can only move UP from here.
+        Self::Optional
     }
 }
 
@@ -501,8 +507,12 @@ mod tests {
     // -------------------------------------------------------------
 
     #[test]
-    fn proof_policy_default_is_disabled() {
-        assert_eq!(ProofPolicy::default(), ProofPolicy::Disabled);
+    fn proof_policy_default_is_optional() {
+        // Phase 19 Tier C — the enum default must match the
+        // `Config::default_proof_policy()` string default so that
+        // consumers using `ProofPolicy::default()` and consumers
+        // reading from the config see the same value.
+        assert_eq!(ProofPolicy::default(), ProofPolicy::Optional);
     }
 
     #[test]

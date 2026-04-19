@@ -6,8 +6,24 @@ use tirami_proto::{
     RpcServerFailed, RpcServerReady, TokenStreamMsg, TradeAccept, TradeProposal, Welcome,
 };
 use tirami_net::gossip::handle_reputation_gossip;
+use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::{Mutex, Semaphore};
+use tokio::sync::{oneshot, Mutex, Semaphore};
+
+/// Per-request TradeAccept dispatcher.
+///
+/// The seed's main recv loop is the single consumer of
+/// `transport.recv()`. When it pulls a `Payload::TradeAccept` off
+/// the wire, it must hand the consumer's signature back to the
+/// matching `handle_inference` task — otherwise that task times
+/// out at 5s and records a half-TRM penalized trade. This map
+/// keys per-request oneshot senders created by `handle_inference`
+/// and looked up by the main loop.
+///
+/// Same problem applies to the borrow flow (`LoanAccept`) — a
+/// follow-up can adopt the same pattern.
+pub(crate) type TradeAcceptDispatcher =
+    Arc<Mutex<HashMap<u64, oneshot::Sender<Vec<u8>>>>>;
 
 /// The role of a node in the inference pipeline.
 #[derive(Debug, Clone, PartialEq)]
@@ -51,6 +67,12 @@ impl PipelineCoordinator {
         let request_slots = Arc::new(Semaphore::new(
             config.max_concurrent_remote_inference_requests,
         ));
+        // Fix #80 — per-request TradeAccept dispatcher. Main recv
+        // loop routes incoming TradeAccept messages to the matching
+        // `handle_inference` task so the 5s timeout + penalty path
+        // only fires when the consumer is truly unresponsive.
+        let trade_accept_dispatcher: TradeAcceptDispatcher =
+            Arc::new(Mutex::new(HashMap::new()));
 
         loop {
             match self.transport.recv().await {
@@ -153,6 +175,7 @@ impl PipelineCoordinator {
                         let config = config.clone();
                         let ledger_path = ledger_path.clone();
                         let gossip = gossip.clone();
+                        let dispatcher = trade_accept_dispatcher.clone();
 
                         tokio::spawn(async move {
                             let _permit = permit;
@@ -167,6 +190,7 @@ impl PipelineCoordinator {
                                 &peer_id,
                                 req,
                                 gossip,
+                                dispatcher,
                             )
                             .await
                             {
@@ -241,9 +265,25 @@ impl PipelineCoordinator {
                             failed.reason
                         );
                     }
-                    Payload::TradeAccept(_) | Payload::TradeProposal(_) => {
-                        // Handled within handle_inference tasks via wait_for_trade_accept
-                        tracing::debug!("Trade message in main loop from {} (handled by task)", peer_id);
+                    Payload::TradeAccept(accept) => {
+                        // Fix #80 — route the consumer signature to
+                        // the matching handle_inference task.
+                        let mut dispatch = trade_accept_dispatcher.lock().await;
+                        if let Some(sender) = dispatch.remove(&accept.request_id) {
+                            let _ = sender.send(accept.consumer_sig);
+                        } else {
+                            tracing::debug!(
+                                "Orphan TradeAccept for request_id={} from {}",
+                                accept.request_id,
+                                peer_id
+                            );
+                        }
+                    }
+                    Payload::TradeProposal(_) => {
+                        tracing::debug!(
+                            "Unexpected TradeProposal in seed main loop from {}",
+                            peer_id
+                        );
                     }
                     Payload::LoanAccept(_) => {
                         // Handled by wait_for_loan_accept on the lender side.
@@ -719,6 +759,7 @@ async fn handle_inference(
     peer_id: &str,
     req: InferenceRequest,
     gossip: Arc<Mutex<GossipState>>,
+    trade_accept_dispatcher: TradeAcceptDispatcher,
 ) -> anyhow::Result<()> {
     use tirami_infer::InferenceEngine;
 
@@ -854,6 +895,14 @@ async fn handle_inference(
     let canonical = trade.canonical_bytes();
     let provider_sig = transport.sign(&canonical).to_vec();
 
+    // Fix #80 — register the dispatcher slot BEFORE sending the
+    // TradeProposal so we can't race a very-fast counter-sign.
+    let (accept_tx, accept_rx) = oneshot::channel::<Vec<u8>>();
+    {
+        let mut dispatch = trade_accept_dispatcher.lock().await;
+        dispatch.insert(req.request_id, accept_tx);
+    }
+
     // Send TradeProposal to consumer
     let proposal_msg = Envelope {
         msg_id: req.request_id * 10000 + 9999,
@@ -871,17 +920,31 @@ async fn handle_inference(
             nonce: trade.nonce,
         }),
     };
-    transport.send_to(peer_id, &proposal_msg).await?;
+    if let Err(e) = transport.send_to(peer_id, &proposal_msg).await {
+        // Cancel the dispatcher slot so stale entries don't
+        // accumulate when we can't even reach the peer.
+        let mut dispatch = trade_accept_dispatcher.lock().await;
+        dispatch.remove(&req.request_id);
+        drop(dispatch);
+        return Err(e.into());
+    }
 
-    // Wait for TradeAccept with timeout (5 seconds)
+    // Wait for TradeAccept with timeout (5 seconds). The
+    // dispatcher delivers the consumer signature through the
+    // oneshot channel when the main recv loop receives it.
     let accept_result = tokio::time::timeout(
         std::time::Duration::from_secs(5),
-        wait_for_trade_accept(&transport, req.request_id),
+        accept_rx,
     )
     .await;
+    // Remove any remaining slot on timeout so the map doesn't grow.
+    if accept_result.is_err() {
+        let mut dispatch = trade_accept_dispatcher.lock().await;
+        dispatch.remove(&req.request_id);
+    }
 
     match accept_result {
-        Ok(Some(consumer_sig)) => {
+        Ok(Ok(consumer_sig)) => {
             // Record dual-signed trade
             let signed = SignedTradeRecord {
                 trade: trade.clone(),
@@ -953,26 +1016,6 @@ async fn handle_inference(
     Ok(())
 }
 
-/// Wait for a TradeAccept message matching the given request_id.
-async fn wait_for_trade_accept(
-    transport: &ForgeTransport,
-    request_id: u64,
-) -> Option<Vec<u8>> {
-    loop {
-        match transport.recv().await {
-            Some((_peer_id, envelope)) => {
-                if let Payload::TradeAccept(accept) = envelope.payload {
-                    if accept.request_id == request_id {
-                        return Some(accept.consumer_sig);
-                    }
-                }
-                // Ignore other messages while waiting
-            }
-            None => return None,
-        }
-    }
-}
-
 /// Wait for a LoanAccept message matching the given request_id.
 ///
 /// Used by the lender-side `/v1/tirami/lend-to` flow after a `LoanProposal`
@@ -1033,6 +1076,58 @@ mod tests {
     use tirami_ledger::ComputeLedger;
     use tirami_net::ForgeTransport;
     use tokio::time::{Duration, timeout};
+
+    // ---------------------------------------------------------------------
+    // Fix #80 — TradeAcceptDispatcher
+    // ---------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn trade_accept_dispatcher_delivers_signature() {
+        let dispatcher: TradeAcceptDispatcher = Arc::new(Mutex::new(HashMap::new()));
+        let (tx, rx) = oneshot::channel::<Vec<u8>>();
+        dispatcher.lock().await.insert(42, tx);
+
+        // Simulate the seed main loop receiving a TradeAccept for
+        // request_id=42 and routing the consumer_sig through the
+        // oneshot channel.
+        let sender = dispatcher
+            .lock()
+            .await
+            .remove(&42)
+            .expect("slot for 42 must exist");
+        sender
+            .send(vec![0xAAu8; 64])
+            .expect("oneshot::send must succeed");
+
+        let sig = rx.await.expect("handle_inference side must get the sig");
+        assert_eq!(sig.len(), 64);
+        assert!(dispatcher.lock().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn trade_accept_dispatcher_orphan_request_is_noop() {
+        // When the main loop receives a TradeAccept for a request_id
+        // that has no registered waiter (e.g. the handle_inference
+        // task already timed out and cleaned up), remove returns
+        // None and the message is dropped without panic.
+        let dispatcher: TradeAcceptDispatcher = Arc::new(Mutex::new(HashMap::new()));
+        let slot = dispatcher.lock().await.remove(&99);
+        assert!(slot.is_none());
+    }
+
+    #[tokio::test]
+    async fn trade_accept_dispatcher_timeout_cleans_up_slot() {
+        // Simulate: handle_inference registers a slot, the consumer
+        // never sends TradeAccept, and the timeout branch removes
+        // the entry. The map must not grow unboundedly.
+        let dispatcher: TradeAcceptDispatcher = Arc::new(Mutex::new(HashMap::new()));
+        let (tx, _rx) = oneshot::channel::<Vec<u8>>();
+        dispatcher.lock().await.insert(7, tx);
+        assert_eq!(dispatcher.lock().await.len(), 1);
+        // Timeout branch in handle_inference removes the slot.
+        dispatcher.lock().await.remove(&7);
+        assert!(dispatcher.lock().await.is_empty());
+    }
 
     #[tokio::test]
     async fn worker_request_inference_surfaces_typed_error() {

@@ -928,14 +928,15 @@ fn gen_request_id() -> String {
 }
 
 /// Get model name from manifest or fallback.
-/// Returns the actual loaded model name, or "forge-no-model" if none is loaded.
+/// Returns the actual loaded model name, or "tirami-no-model" when
+/// running as a pure forwarder without a local model.
 async fn model_name(manifest: &ModelState) -> String {
     manifest
         .lock()
         .await
         .as_ref()
         .map(|m| m.id.0.clone())
-        .unwrap_or_else(|| "forge-no-model".to_string())
+        .unwrap_or_else(|| "tirami-no-model".to_string())
 }
 
 /// Parse an `X-Tirami-Node-Id` header (64-char hex → NodeId).
@@ -1295,13 +1296,20 @@ async fn openai_sync_response(
 ) -> Result<Json<OpenAIChatResponse>, (StatusCode, String)> {
     let mut engine = state.engine.lock().await;
     if !engine.is_loaded() {
-        return Err((
-            StatusCode::SERVICE_UNAVAILABLE,
-            serde_json::json!({
-                "error": {"message": "model not loaded", "type": "server_error"}
-            })
-            .to_string(),
-        ));
+        // Phase 18.5-part-4 (fix #80) — local engine has no model;
+        // try to forward the inference request to a connected peer
+        // over P2P. This is the only path that triggers a real
+        // dual-signed TRM negotiation from an HTTP client.
+        drop(engine);
+        return forward_chat_to_peer(
+            &state,
+            &prompt,
+            max_tokens,
+            temperature,
+            model,
+            has_tools,
+        )
+        .await;
     }
 
     // Use the engine's tokenizer for accurate prompt token count (#P11-prompt-tokens).
@@ -1418,6 +1426,223 @@ async fn openai_sync_response(
     }))
 }
 
+/// Phase 18.5-part-4 (fix #80) — forward a chat request to a
+/// connected peer via the P2P pipeline.
+///
+/// Invoked from `openai_sync_response` / `openai_stream_response`
+/// when the local engine isn't loaded. Picks the first connected
+/// peer (a smarter routing policy can slot into the same hook
+/// later) and drives `PipelineCoordinator::request_inference`,
+/// which:
+///   - Sends `Payload::InferenceRequest` to the peer.
+///   - Collects `Payload::TokenStream` chunks back.
+///   - On `Payload::TradeProposal`, counter-signs and returns
+///     `Payload::TradeAccept` so the peer records a dual-signed
+///     `SignedTradeRecord` and gossips it to the mesh.
+///
+/// Returns an OpenAI-shape response with the peer's tokens. The
+/// `x_tirami.effective_balance` reflects the local node's balance
+/// *after* the trade is gossiped back to us (which may not have
+/// happened yet by the time we respond — we report the pre-trade
+/// balance in that window).
+pub(crate) async fn forward_chat_to_peer(
+    state: &AppState,
+    prompt: &str,
+    max_tokens: u32,
+    temperature: f32,
+    model: String,
+    has_tools: bool,
+) -> Result<Json<OpenAIChatResponse>, (StatusCode, String)> {
+    let cluster = state.cluster.as_ref().ok_or_else(|| {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "no connected peer cluster — model not loaded and transport inactive".to_string(),
+        )
+    })?;
+    let transport = cluster.transport_arc();
+    let peers = transport.connected_peers().await;
+    let peer_id = peers.first().cloned().ok_or_else(|| {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "model not loaded locally and no peers connected to forward to".to_string(),
+        )
+    })?;
+    let local_node_id = transport.tirami_node_id();
+
+    let text = crate::pipeline::PipelineCoordinator::request_inference(
+        &transport,
+        &peer_id,
+        &local_node_id,
+        prompt,
+        max_tokens,
+        temperature,
+    )
+    .await
+    .map_err(|e| (StatusCode::BAD_GATEWAY, format!("peer inference failed: {e}")))?;
+
+    // Count completion tokens using the local tokenizer if loaded
+    // (best effort — most workers won't have it). Fall back to a
+    // whitespace-split estimate so usage.completion_tokens is never 0.
+    let completion_tokens = {
+        let mut engine = state.engine.lock().await;
+        engine.tokenize(&text).ok().map(|t| t.len() as u32)
+    }
+    .unwrap_or_else(|| text.split_whitespace().count().max(1) as u32);
+
+    let effective_balance = state
+        .ledger
+        .lock()
+        .await
+        .effective_balance(&local_node_id);
+
+    let (message, finish_reason) = if has_tools {
+        let (content_before, maybe_tc) = extract_tool_call(&text);
+        if let Some(tc) = maybe_tc {
+            let tool_call = OpenAIToolCall {
+                id: tc.id,
+                call_type: "function".to_string(),
+                function: OpenAIFunctionCall {
+                    name: tc.name,
+                    arguments: tc.arguments,
+                },
+            };
+            (
+                OpenAIChatMessage {
+                    role: "assistant".to_string(),
+                    content: if content_before.is_empty() { None } else { Some(content_before) },
+                    tool_calls: Some(vec![tool_call]),
+                },
+                "tool_calls".to_string(),
+            )
+        } else {
+            (
+                OpenAIChatMessage {
+                    role: "assistant".to_string(),
+                    content: Some(text),
+                    tool_calls: None,
+                },
+                "stop".to_string(),
+            )
+        }
+    } else {
+        (
+            OpenAIChatMessage {
+                role: "assistant".to_string(),
+                content: Some(text),
+                tool_calls: None,
+            },
+            "stop".to_string(),
+        )
+    };
+
+    // The concrete trm_cost of the just-negotiated trade lives on
+    // the peer; until the signed trade lands locally via gossip we
+    // report 0 here. Clients relying on trm_cost should wait for
+    // the gossip round-trip (bounded by `state.config.anchor_interval_secs`).
+    Ok(Json(OpenAIChatResponse {
+        id: gen_request_id(),
+        object: "chat.completion".to_string(),
+        created: now_secs(),
+        model,
+        choices: vec![OpenAIChoice {
+            index: 0,
+            message,
+            finish_reason,
+        }],
+        usage: OpenAIUsage {
+            prompt_tokens: 0,
+            completion_tokens,
+            total_tokens: completion_tokens,
+        },
+        x_tirami: Some(TiramiUsageExt {
+            trm_cost: 0,
+            effective_balance,
+        }),
+    }))
+}
+
+/// Fix #80 — wrap a forwarded (non-stream) OpenAIChatResponse in a
+/// minimal SSE stream so streaming callers get the same shape they
+/// would from the local path: role chunk, one content chunk, stop
+/// chunk, [DONE] sentinel.
+fn forwarded_to_sse_stream(
+    resp: OpenAIChatResponse,
+    model: &str,
+) -> Sse<
+    impl tokio_stream::Stream<Item = Result<Event, std::convert::Infallible>> + Send + 'static,
+> {
+    let id = resp.id.clone();
+    let created = resp.created;
+    let choice = resp.choices.into_iter().next();
+    let (content, tool_calls, finish_reason) = match choice {
+        Some(c) => (
+            c.message.content.unwrap_or_default(),
+            c.message.tool_calls,
+            c.finish_reason,
+        ),
+        None => (String::new(), None, "stop".to_string()),
+    };
+
+    let role_chunk = serde_json::to_string(&OpenAIStreamChunk {
+        id: id.clone(),
+        object: "chat.completion.chunk".to_string(),
+        created,
+        model: model.to_string(),
+        choices: vec![OpenAIStreamChoice {
+            index: 0,
+            delta: OpenAIStreamDelta {
+                role: Some("assistant".to_string()),
+                content: None,
+                tool_calls: None,
+            },
+            finish_reason: None,
+        }],
+    })
+    .unwrap_or_default();
+
+    let content_chunk = serde_json::to_string(&OpenAIStreamChunk {
+        id: id.clone(),
+        object: "chat.completion.chunk".to_string(),
+        created,
+        model: model.to_string(),
+        choices: vec![OpenAIStreamChoice {
+            index: 0,
+            delta: OpenAIStreamDelta {
+                role: None,
+                content: Some(content),
+                tool_calls: None,
+            },
+            finish_reason: None,
+        }],
+    })
+    .unwrap_or_default();
+
+    let stop_chunk = serde_json::to_string(&OpenAIStreamChunk {
+        id,
+        object: "chat.completion.chunk".to_string(),
+        created,
+        model: model.to_string(),
+        choices: vec![OpenAIStreamChoice {
+            index: 0,
+            delta: OpenAIStreamDelta {
+                role: None,
+                content: None,
+                tool_calls,
+            },
+            finish_reason: Some(finish_reason),
+        }],
+    })
+    .unwrap_or_default();
+
+    let events: Vec<Result<Event, std::convert::Infallible>> = vec![
+        Ok(Event::default().data(role_chunk)),
+        Ok(Event::default().data(content_chunk)),
+        Ok(Event::default().data(stop_chunk)),
+        Ok(Event::default().data("[DONE]")),
+    ];
+    Sse::new(tokio_stream::iter(events))
+}
+
 /// Streaming SSE response in OpenAI format.
 ///
 /// Uses `InferenceEngine::generate_streaming` so tokens are emitted to the
@@ -1444,13 +1669,23 @@ async fn openai_stream_response(
     {
         let engine = state.engine.lock().await;
         if !engine.is_loaded() {
-            return Err((
-                StatusCode::SERVICE_UNAVAILABLE,
-                serde_json::json!({
-                    "error": {"message": "model not loaded", "type": "server_error"}
-                })
-                .to_string(),
-            ));
+            // Fix #80 — forward to a connected peer when no local
+            // model is loaded. The peer path returns the full text
+            // in one shot, so we emit it as a single SSE content
+            // chunk + stop + [DONE]. True chunked streaming across
+            // the P2P boundary is a follow-up (the pipeline already
+            // streams tokens, we just need a stream-forwarding hook).
+            drop(engine);
+            let json = forward_chat_to_peer(
+                &state,
+                &prompt,
+                max_tokens,
+                temperature,
+                model.clone(),
+                has_tools,
+            )
+            .await?;
+            return Ok(forwarded_to_sse_stream(json.0, &model).into_response());
         }
     } // release lock before blocking
 
@@ -3851,11 +4086,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_model_name_fallback_when_no_model_loaded() {
-        // When no manifest is set, model_name() should return "forge-no-model"
-        // (not the old "forge-model" hardcoded string).
+        // When no manifest is set, model_name() returns the "no model
+        // loaded" sentinel. Phase 17 rename: `forge-no-model` →
+        // `tirami-no-model`.
         let manifest_state: ModelState = Arc::new(Mutex::new(None));
         let name = model_name(&manifest_state).await;
-        assert_eq!(name, "forge-no-model");
+        assert_eq!(name, "tirami-no-model");
     }
 
     // -------------------------------------------------------------------------

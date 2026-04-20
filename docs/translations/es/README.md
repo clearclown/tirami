@@ -52,14 +52,15 @@ Antes que nada, aquí está exactamente **qué funciona** y **qué no**. Tirami 
 - TEE attestation (Apple Secure Enclave / NVIDIA H100 CC): scaffold `tirami-attestation` solamente.
 - Bucle gossip-recv del worker daemon ([issue #88](https://github.com/clearclown/tirami/issues/88)): el override manual `peer.url` en `POST /v1/tirami/agent/task` sigue funcionando.
 
-### ❌ No hecho (requerido antes de mainnet público)
+### ❌ No hecho
 
 - Auditoría externa de seguridad (requisito Phase 17 Wave 3.3). Candidatos: Trail of Bits, Zellic, Open Zeppelin, Least Authority.
-- Deploy en Base L2 mainnet. El target `make deploy-base-mainnet` *se niega* a ejecutarse sin `AUDIT_CLEARANCE=yes` + `MULTISIG_OWNER=<addr>` + operador escribe `i-accept-responsibility`. Ver [`repos/tirami-contracts/Makefile`](../../../repos/tirami-contracts/Makefile).
 - Bug bounty en vivo con clave PGP real (actualmente placeholder documentado en [`SECURITY.md`](../../../SECURITY.md)).
 - ≥ 30 días de operación estable en Base Sepolia + ≥ 7 días de stress test en testnet de 10+ nodos.
 
-Ruta de roadmap por tiers (OSS preview → testnet por invitación → testnet público → mainnet): [`docs/release-readiness.md`](../../../docs/release-readiness.md).
+**Sobre mainnet**: los mantenedores **no** planean, operan, ni rastrean ningún deploy de TRM / TiramiBridge en Base L2 mainnet. El target `make deploy-base-mainnet` es una **comprobación de auto-protección** para quien decida desplegar — se niega a ejecutarse sin `AUDIT_CLEARANCE=yes` + `MULTISIG_OWNER=<addr>` + un prompt interactivo `i-accept-responsibility`. Al ser MIT OSS, terceros pueden desplegar técnicamente, pero lo hacen por completo bajo su propia decisión y responsabilidad, sin ninguna implicación de los mantenedores. Ver [`SECURITY.md § Secondary Markets`](../../../SECURITY.md#secondary-markets--third-party-tokenization).
+
+Roadmap por tiers (OSS preview → testnet por invitación → testnet público; mainnet queda intencionalmente en manos de terceros): [`docs/release-readiness.md`](../../../docs/release-readiness.md).
 
 ---
 

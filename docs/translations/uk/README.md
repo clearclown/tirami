@@ -52,14 +52,15 @@
 - TEE-атестація (Apple Secure Enclave / NVIDIA H100 CC): лише scaffold `tirami-attestation`.
 - Worker gossip-recv loop ([issue #88](https://github.com/clearclown/tirami/issues/88)): ручний `peer.url` у `POST /v1/tirami/agent/task` усе ще працює.
 
-### ❌ Не зроблено (потрібно до public mainnet)
+### ❌ Не зроблено
 
 - Зовнішній аудит безпеки (вимога Phase 17 Wave 3.3). Кандидати: Trail of Bits, Zellic, Open Zeppelin, Least Authority.
-- Розгортання Base L2 mainnet. Ціль `make deploy-base-mainnet` *відмовляється* виконуватись без `AUDIT_CLEARANCE=yes` + `MULTISIG_OWNER=<addr>` + інтерактивного вводу `i-accept-responsibility`. Див. [`repos/tirami-contracts/Makefile`](../../../repos/tirami-contracts/Makefile).
 - Bug bounty у production зі справжнім PGP-ключем (наразі placeholder, задокументований у [`SECURITY.md`](../../../SECURITY.md)).
 - ≥ 30 днів стабільної роботи на Base Sepolia + ≥ 7 днів стрес-тесту на testnet із 10+ вузлами.
 
-Повна roadmap за рівнями: [`docs/release-readiness.md`](../../../docs/release-readiness.md).
+**Про mainnet**: мейнтейнери **не** планують, не експлуатують і не відстежують розгортання TRM / TiramiBridge на Base L2 mainnet. Ціль `make deploy-base-mainnet` — це **самозахисна перевірка** для оператора, що сам обрав розгортатися: вона відмовляється виконуватись без `AUDIT_CLEARANCE=yes` + `MULTISIG_OWNER=<addr>` + інтерактивного `i-accept-responsibility`. Оскільки це MIT OSS, треті особи технічно можуть розгорнути — але це повністю їхнє власне рішення й відповідальність, мейнтейнери не залучені. Див. [`SECURITY.md § Secondary Markets`](../../../SECURITY.md#secondary-markets--third-party-tokenization).
+
+Roadmap за рівнями (OSS preview → testnet за запрошеннями → відкритий testnet; mainnet свідомо залишено третім особам): [`docs/release-readiness.md`](../../../docs/release-readiness.md).
 
 ---
 

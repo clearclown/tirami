@@ -215,7 +215,8 @@ All `/v1/tirami/*` endpoints are rate-limited (token bucket, 30 req/sec).
 **Status Honesty baseline for the public README**:
 - ✅ 14 Functional-today items (dual-signed P2P trade, slashing loop, governance whitelist, welcome loan, stake pool, referral, anchors, Base Sepolia contracts, `PersonalAgent`, HTTP→P2P forwarding, peer auto-discovery, collusion detection, Prometheus, nonce replay protection).
 - 🟡 5 Scaffolded (zkML MockBackend, ML-DSA PQ hybrid, TEE attestation, worker gossip-recv loop #88, stake-required mining enforcement).
-- ❌ 4 Not done (external security audit, Base L2 mainnet deploy, live bug-bounty w/ real PGP, ≥ 30-day Sepolia stable + ≥ 7-day 10-node stress test).
+- ❌ 3 Not done (external security audit, live bug-bounty w/ real PGP, ≥ 30-day Sepolia stable + ≥ 7-day 10-node stress test).
+- On **Base L2 mainnet**: maintainers do not plan, operate, or track any mainnet deploy of TRM / TiramiBridge. The `make deploy-base-mainnet` Makefile gate is a self-protective check for any operator who chooses to deploy, not a maintainer-authorization switch. MIT OSS means third parties technically can; they do so entirely on their own account. See `SECURITY.md § Secondary Markets`.
 
 ### Phase 10 — Productization (DONE 2026-04-09, 359 tests)
 - **P1 PyPI release artifacts**: tirami-sdk 0.3.0 + forge-cu-mcp 0.3.0 wheels built, twine-checked, git-tagged. User executes `twine upload` when ready (PyPI credentials required). Release checklist at `sdk/python/PUBLISH-0.3.0.md`.

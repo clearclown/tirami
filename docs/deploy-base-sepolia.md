@@ -101,6 +101,10 @@ the deployed addresses. `84532` is the Base Sepolia chain ID.
   `i-accept-responsibility` verbatim.
 
 See the `deploy-base-mainnet` target in `Makefile` for the enforcement
-code. The mainnet deploy state is tracked in
-`docs/release-readiness.md § Tier D`; the maintainers' public stance is
-that deploy is not authorised until all three conditions hold.
+code. The three-gate mechanism is a **self-protective check for the
+operator** — it prevents accidental deploys of unaudited code. The
+maintainers do not authorise, license, gate, or track any third-party
+mainnet deployment of the TRM or TiramiBridge contracts. Anyone choosing
+to deploy to mainnet does so entirely on their own account, at their own
+risk, and is solely responsible for auditing, operating, and (if
+applicable) regulatory compliance. The maintainers have no involvement.

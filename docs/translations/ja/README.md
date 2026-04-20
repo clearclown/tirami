@@ -52,14 +52,15 @@
 - TEE attestation (Apple Secure Enclave / NVIDIA H100 CC): `tirami-attestation` スカフォールドのみ
 - daemon モード worker の gossip-recv ループ ([issue #88](https://github.com/clearclown/tirami/issues/88)): `POST /v1/tirami/agent/task` の `peer.url` 手動指定は引き続き有効
 
-### ❌ 未着手 (mainnet 公開前に必須)
+### ❌ 未着手
 
 - 外部セキュリティ監査 (Phase 17 Wave 3.3 要件)。候補: Trail of Bits, Zellic, Open Zeppelin, Least Authority
-- Base L2 mainnet デプロイ。`make deploy-base-mainnet` ターゲットは `AUDIT_CLEARANCE=yes` + `MULTISIG_OWNER=<addr>` + 対話プロンプトで `i-accept-responsibility` 入力の 3 連鎖がないと**実行を拒否**する。[`repos/tirami-contracts/Makefile`](../../../repos/tirami-contracts/Makefile) および [`docs/deployments/README.md`](../../../docs/deployments/README.md) 参照
 - 本番用 PGP 鍵を伴う bug bounty の稼働 ([`SECURITY.md`](../../../SECURITY.md) の現在の鍵は placeholder)
 - Base Sepolia 30 日以上安定稼働 + 10 ノード以上 testnet の 7 日 stress test
 
-完全なティア別ロードマップ (OSS プレビュー → 招待制 testnet → オープン testnet → mainnet): [`docs/release-readiness.md`](../../../docs/release-readiness.md)。
+**mainnet について**: メンテナは TRM / TiramiBridge の Base L2 mainnet デプロイを計画・運用・追跡**しません**。`make deploy-base-mainnet` ターゲットは、デプロイを選ぶ運用者のための**自己防護チェック**であって、`AUDIT_CLEARANCE=yes` + `MULTISIG_OWNER=<addr>` + 対話プロンプトで `i-accept-responsibility` の 3 連鎖がないと実行を拒否する。MIT OSS なのでそれでも第三者がデプロイすることは技術的に可能だが、それは**完全に第三者の判断と責任**であり、メンテナは関与しない。[`SECURITY.md § Secondary Markets`](../../../SECURITY.md#secondary-markets--third-party-tokenization) 参照。
+
+ティア別ロードマップ (OSS プレビュー → 招待制 testnet → オープン testnet。mainnet は第三者に委ねる設計): [`docs/release-readiness.md`](../../../docs/release-readiness.md)。
 
 ---
 

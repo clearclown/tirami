@@ -52,14 +52,15 @@
 - TEE attestation (Apple Secure Enclave / NVIDIA H100 CC): `tirami-attestation` 僅搭架
 - daemon 模式 worker 的 gossip-recv 迴圈 ([issue #88](https://github.com/clearclown/tirami/issues/88)): 在 `POST /v1/tirami/agent/task` 中手動指定 `peer.url` 仍可用
 
-### ❌ 未完成 (mainnet 上線前必須)
+### ❌ 未完成
 
 - 外部安全稽核 (Phase 17 Wave 3.3 要求)。候選: Trail of Bits, Zellic, Open Zeppelin, Least Authority
-- Base L2 mainnet 部署。`make deploy-base-mainnet` 目標在 `AUDIT_CLEARANCE=yes` + `MULTISIG_OWNER=<addr>` + 互動式輸入 `i-accept-responsibility` 三重互鎖未滿足時會**拒絕執行**
 - 帶真實 PGP 金鑰的 bug bounty 正式運作 ([`SECURITY.md`](../../../SECURITY.md) 目前是 placeholder)
 - Base Sepolia ≥ 30 天穩定運行 + ≥ 10 節點 testnet 7 天壓力測試
 
-完整分層路線圖 (OSS 預覽 → 邀請制 testnet → 開放 testnet → mainnet): [`docs/release-readiness.md`](../../../docs/release-readiness.md)。
+**關於 mainnet**: 維護者**不**計畫、運作或追蹤 TRM / TiramiBridge 的 Base L2 mainnet 部署。`make deploy-base-mainnet` 目標是為自願部署的運作者提供的**自我保護檢查**，在 `AUDIT_CLEARANCE=yes` + `MULTISIG_OWNER=<addr>` + 互動式 `i-accept-responsibility` 三重互鎖未滿足時會拒絕執行。由於是 MIT OSS，第三方技術上仍可部署——但那完全是第三方自主的決定與責任，與維護者無關。參見 [`SECURITY.md § Secondary Markets`](../../../SECURITY.md#secondary-markets--third-party-tokenization)。
+
+分層路線圖 (OSS 預覽 → 邀請制 testnet → 開放 testnet，mainnet 有意留給第三方): [`docs/release-readiness.md`](../../../docs/release-readiness.md)。
 
 ---
 

@@ -50,14 +50,15 @@ Before anything else, here is exactly what works and what does not. Tirami is MI
 - TEE attestation (Apple Secure Enclave / NVIDIA H100 CC): `tirami-attestation` scaffold only.
 - Daemon-mode worker gossip-recv loop ([issue #88](https://github.com/clearclown/tirami/issues/88)): manual `peer.url` override in `POST /v1/tirami/agent/task` still works.
 
-### ❌ Not done (required before public mainnet)
+### ❌ Not done
 
 - External security audit (Phase 17 Wave 3.3 requirement). Candidates: Trail of Bits, Zellic, Open Zeppelin, Least Authority.
-- Base L2 mainnet deploy. The `make deploy-base-mainnet` target *refuses* to run unless `AUDIT_CLEARANCE=yes` + `MULTISIG_OWNER=<addr>` + operator types `i-accept-responsibility` at an interactive prompt. See [`repos/tirami-contracts/Makefile`](repos/tirami-contracts/Makefile) and [`docs/deployments/README.md`](docs/deployments/README.md).
 - Live bug bounty with a real PGP key (currently a documented placeholder in [`SECURITY.md`](SECURITY.md)).
 - ≥ 30-day stable operation on Base Sepolia + ≥ 7-day stress-test on a 10+ node testnet.
 
-Full tier roadmap (OSS preview → invited testnet → open testnet → mainnet): [`docs/release-readiness.md`](docs/release-readiness.md).
+**On mainnet**: the maintainers do not plan, operate, or track any Base L2 mainnet deployment of TRM / TiramiBridge. The `make deploy-base-mainnet` target in `Makefile` is a *self-protective check* for any operator who chooses to deploy — it refuses to run without `AUDIT_CLEARANCE=yes` + `MULTISIG_OWNER=<addr>` + an interactive `i-accept-responsibility` prompt. Since this is MIT OSS, third parties can deploy regardless; they do so on their own account, entirely without maintainer involvement. See [`SECURITY.md § Secondary Markets`](SECURITY.md#secondary-markets--third-party-tokenization).
+
+Full tier roadmap (OSS preview → invited testnet → open testnet, with mainnet intentionally left to third parties): [`docs/release-readiness.md`](docs/release-readiness.md).
 
 ---
 

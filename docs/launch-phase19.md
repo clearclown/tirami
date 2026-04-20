@@ -51,15 +51,20 @@ post-quantum hybrid signatures (blocked by iroh 0.97), TEE attestation
 (`tirami-attestation` is a scaffold), daemon worker gossip-recv loop
 (issue #88).
 
-**What's explicitly not done** (gates before public mainnet):
+**What's explicitly not done**:
 
 - External security audit (candidates: Trail of Bits, Zellic, Open Zeppelin,
   Least Authority).
-- Base L2 mainnet deploy. The `make deploy-base-mainnet` target *refuses*
-  to execute without `AUDIT_CLEARANCE=yes` + `MULTISIG_OWNER` + an
-  interactive prompt.
 - Live bug-bounty (PGP key is placeholder).
 - ≥ 30-day Sepolia stable + ≥ 7-day 10-node stress test.
+
+**On mainnet**: the maintainers don't plan, operate, or track any mainnet
+deploy. The `make deploy-base-mainnet` gate in `Makefile` is a
+self-protective check for any operator who chooses to deploy (refuses to
+run without `AUDIT_CLEARANCE=yes` + `MULTISIG_OWNER` + an interactive
+prompt), not a maintainer-authorization switch. Since this is MIT OSS,
+third parties technically can deploy regardless; they do so entirely on
+their own account, maintainer-uninvolved.
 
 Full status breakdown in `README.md` — I wrote a "Status Honesty" section
 specifically so HN readers know what is real vs design intent.
@@ -189,7 +194,7 @@ fixed at 21 B in a Rust `const` that governance proposals cannot rewrite.
 - 1,192 Rust unit tests pass. 15 Solidity tests pass.
 - zkML backend is a `MockBackend` — shape-correct but cryptographically invalid.
 - No external security audit yet.
-- Base L2 mainnet deploy is Makefile-gated on audit clearance.
+- No maintainer-operated mainnet. Any mainnet deploy is third-party, maintainer-uninvolved; the Makefile's audit-clearance gate self-protects the operator who chooses to deploy.
 - Not a token sale. No ICO, no pre-mine, no treasury. See
   `SECURITY.md § Secondary Markets` for the maintainers' non-involvement
   stance on third-party tokenization.
@@ -222,7 +227,7 @@ the cryptographic open problems.
 > zkML proof-of-inference is Phase 20+ — today we run `MockBackend`. `ProofPolicy` ratchets only forward (Optional → Recommended → Required, never backward). Honest compute accounting today, cryptographic proofs as `ezkl` / `risc0` mature.
 
 **5/5**
-> No mainnet until external audit clears. Makefile physically refuses to deploy without `AUDIT_CLEARANCE=yes` + multisig owner + interactive prompt. Code: https://github.com/clearclown/tirami. Theory: https://github.com/clearclown/tirami-economics.
+> No reference mainnet from the maintainers. The repo Makefile self-gates `deploy-base-mainnet` on `AUDIT_CLEARANCE=yes` + multisig owner + interactive prompt — that protects any operator choosing to deploy, not a maintainer-controlled switch. Any mainnet is third-party, maintainer-uninvolved. Code: https://github.com/clearclown/tirami. Theory: https://github.com/clearclown/tirami-economics.
 
 ---
 
@@ -237,5 +242,5 @@ the cryptographic open problems.
 7. Confirm `papers/build/compute-standard.pdf` and `.arxiv.tar.gz` are present and readable.
 8. Have a draft response ready for the three questions that always come up:
    - "Is this a token sale?" → No. See `SECURITY.md § Secondary Markets`.
-   - "Is mainnet deployed?" → No. Makefile-gated on audit. Sepolia only.
+   - "Is mainnet deployed?" → The maintainers have not deployed, and don't plan to. If someone else does, that's their decision and their risk; the maintainers aren't involved. Any Makefile audit-clearance gate exists only as self-protection for operators who choose to deploy.
    - "Does zkML actually work?" → `MockBackend` today; real backends Phase 20+.

@@ -1,10 +1,12 @@
 # Tirami Documentation Index
 
-> Entry point for every doc under `docs/`. Updated 2026-04-18
-> (post-Phase-17 Wave 4).
+> Entry point for every doc under `docs/`. Updated 2026-04-27
+> after the two-node Tailscale agent-dispatch experiment.
 
 New reader? Start with **concept** → **architecture** → **roadmap**.
-Operator? Start with **operator-guide** → **security**.
+Japanese reader? Start with **tirami-note-ja** for the diagram-first
+public explanation.
+Operator? Start with **operator-guide** → **public-testnet-launch** → **security**.
 Security researcher? Start with **security/audit-scope** →
 **security/threat-model-v2** → **security/known-issues**.
 
@@ -14,11 +16,13 @@ Security researcher? Start with **security/audit-scope** →
 
 | Role | Start here |
 |------|------------|
+| First-time Japanese reader | [`tirami-note-ja.md`](tirami-note-ja.md) |
 | First-time reader | [`concept.md`](concept.md) |
 | Protocol developer | [`architecture.md`](architecture.md) → [`protocol-spec.md`](protocol-spec.md) |
 | Node operator | [`operator-guide.md`](operator-guide.md) → [`security/`](security/) |
+| Public testnet operator | [`public-testnet-launch.md`](public-testnet-launch.md) → [`operator-guide.md`](operator-guide.md) |
 | AI agent integrator | [`agent-integration.md`](agent-integration.md) |
-| Economic reasoner | [`economy.md`](economy.md) → [`monetary-theory.md`](monetary-theory.md) |
+| Economic reasoner | [`economy.md`](economy.md) → [`monetary-theory.md`](monetary-theory.md) → [`theory-audit-2026-04.md`](theory-audit-2026-04.md) |
 | Security researcher / auditor | [`security/audit-scope.md`](security/audit-scope.md) |
 | Bug-bounty hunter | [`../SECURITY.md`](../SECURITY.md) |
 
@@ -26,10 +30,14 @@ Security researcher? Start with **security/audit-scope** →
 
 ## Concept & theory
 
+- [`tirami-note-ja.md`](tirami-note-ja.md) — Japanese note-style public explainer with diagrams, the 2026-04-26 experiment, and next measurement gates
 - [`concept.md`](concept.md) — why compute is money, the post-marketing economy
 - [`monetary-theory.md`](monetary-theory.md) — why TRM works: Soddy + Bitcoin + PoUW synthesis
 - [`economy.md`](economy.md) — CU-native economy, Proof of Useful Work, lending
 - [`strategy.md`](strategy.md) — competitive positioning, 5-layer architecture
+- [`theory-audit-2026-04.md`](theory-audit-2026-04.md) —
+  objective historical/economic review after the first private-lab
+  remote-agent spend/earn test
 
 ## Architecture
 
@@ -46,6 +54,9 @@ Security researcher? Start with **security/audit-scope** →
 ## Operation
 
 - [`operator-guide.md`](operator-guide.md) — install, configure, monitor, back up, DDoS mitigation
+- [`public-testnet-launch.md`](public-testnet-launch.md) — Ring 0/Ring 1/Ring 2 launch runbook for worldwide node joins
+- [`release-readiness.md`](release-readiness.md) — status honesty,
+  scale-tier verdicts, and the 2026-04-26 two-node E2E result
 - [`bootstrap.md`](bootstrap.md) — startup, degradation, recovery
 - [`faq.md`](faq.md) — frequent questions
 - [`compatibility.md`](compatibility.md) — GGUF/model compatibility

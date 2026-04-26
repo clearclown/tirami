@@ -1,5 +1,8 @@
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
-use tirami_core::{LayerRange, ModelId, NodeId, PeerCapability, PipelineStage, TensorMeta};
+use tirami_core::{
+    LayerRange, ModelId, NodeId, PeerCapability, PipelineStage, TensorMeta,
+    is_supported_protocol_version,
+};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -878,11 +881,8 @@ impl Payload {
     }
 }
 
-/// Supported protocol versions.
-const SUPPORTED_VERSIONS: &[u16] = &[1];
-
 fn validate_protocol_version(version: u16) -> Result<(), ProtocolValidationError> {
-    if !SUPPORTED_VERSIONS.contains(&version) {
+    if !is_supported_protocol_version(version) {
         return Err(ProtocolValidationError::InvalidVersion);
     }
     Ok(())
@@ -1303,6 +1303,8 @@ mod tests {
     fn sample_price_signal(sender: NodeId) -> tirami_core::PriceSignal {
         tirami_core::PriceSignal {
             node_id: sender,
+            protocol_version: tirami_core::TIRAMI_PROTOCOL_VERSION,
+            features: vec![],
             price_multiplier: 1.0,
             available_cu: 1000,
             model_capabilities: vec![ModelId("qwen2.5-0.5b".into())],

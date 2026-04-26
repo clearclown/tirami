@@ -1,4 +1,4 @@
-//! JSON persistence for L2/L3/L4 state (BankServices, Marketplace, TiramiMindAgent).
+//! JSON persistence for durable economy/agent state.
 //!
 //! Simple, unencrypted, integrity-less. HMAC-SHA256 can be added later if needed.
 //! Phase 10 TODO: add HMAC-SHA256 integrity check if tampering becomes a concern.
@@ -11,7 +11,7 @@ use std::io;
 use std::path::Path;
 
 use tirami_agora::{AgentRegistry, Marketplace};
-use tirami_mind::{TiramiMindAgent, MindAgentSnapshot};
+use tirami_mind::{TiramiMindAgent, MindAgentSnapshot, PersonalAgent};
 
 use crate::bank_adapter::{BankServices, BankServicesSnapshot};
 
@@ -104,6 +104,36 @@ pub fn load_mind_snapshot(path: &Path) -> io::Result<Option<MindAgentSnapshot>> 
 }
 
 // ---------------------------------------------------------------------------
+// PersonalAgent
+// ---------------------------------------------------------------------------
+
+/// Persist the user-facing `PersonalAgent` state to `path` as compact JSON.
+pub fn save_personal_agent(agent: &PersonalAgent, path: &Path) -> io::Result<()> {
+    let json = serde_json::to_string(agent)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    fs::write(path, json)
+}
+
+/// Load a `PersonalAgent` from `path`.
+///
+/// Returns `Ok(None)` if the file does not exist. Preferences are validated
+/// after deserialization so a hand-edited or tampered file cannot silently
+/// widen the agent's autonomy bounds.
+pub fn load_personal_agent(path: &Path) -> io::Result<Option<PersonalAgent>> {
+    if !path.exists() {
+        return Ok(None);
+    }
+    let raw = fs::read_to_string(path)?;
+    let agent: PersonalAgent = serde_json::from_str(&raw)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    agent
+        .preferences
+        .validate()
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    Ok(Some(agent))
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -111,7 +141,8 @@ pub fn load_mind_snapshot(path: &Path) -> io::Result<Option<MindAgentSnapshot>> 
 mod tests {
     use super::*;
     use tirami_agora::types::{AgentProfile, ModelTier};
-    use tirami_mind::{EchoMetaOptimizer, Harness, InMemoryBenchmark};
+    use tirami_core::NodeId;
+    use tirami_mind::{EchoMetaOptimizer, Harness, InMemoryBenchmark, TrmBudget};
 
     fn tmp_path(suffix: &str) -> std::path::PathBuf {
         std::env::temp_dir().join(format!(
@@ -227,6 +258,33 @@ mod tests {
     }
 
     // ---------------------------------------------------------------------------
+    // PersonalAgent round-trip
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn test_personal_agent_round_trip() {
+        let path = tmp_path("personal_agent");
+        let _ = std::fs::remove_file(&path);
+
+        let mut agent = PersonalAgent::new(NodeId([9u8; 32]), TrmBudget::default(), 1_700);
+        agent.record_spend(7);
+        agent.record_earn(11);
+        agent.preferences.auto_spend_enabled = false;
+
+        save_personal_agent(&agent, &path).expect("save_personal_agent failed");
+        let loaded = load_personal_agent(&path)
+            .expect("load_personal_agent returned Err")
+            .expect("load_personal_agent returned None");
+
+        assert_eq!(loaded.wallet, agent.wallet);
+        assert_eq!(loaded.spent_today_trm, 7);
+        assert_eq!(loaded.earned_today_trm, 11);
+        assert!(!loaded.preferences.auto_spend_enabled);
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    // ---------------------------------------------------------------------------
     // Missing file returns None
     // ---------------------------------------------------------------------------
 
@@ -239,6 +297,46 @@ mod tests {
         assert!(load_bank(&nonexistent).unwrap().is_none());
         assert!(load_marketplace(&nonexistent).unwrap().is_none());
         assert!(load_mind_snapshot(&nonexistent).unwrap().is_none());
+        assert!(load_personal_agent(&nonexistent).unwrap().is_none());
+    }
+
+    #[test]
+    fn sec_deep_load_personal_agent_invalid_preferences_returns_err() {
+        let path = tmp_path("bad_personal_agent");
+        std::fs::write(
+            &path,
+            r#"{
+                "wallet": [1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],
+                "budget": {
+                    "max_trm_per_cycle": 5000,
+                    "max_trm_per_day": 50000,
+                    "max_cycles_per_day": 20,
+                    "min_score_delta": 0.01,
+                    "min_roi_threshold": 1.0,
+                    "spent_today_cu": 0,
+                    "cycles_today": 0,
+                    "day_started_at_ms": 0
+                },
+                "preferences": {
+                    "daily_spend_limit_trm": 20,
+                    "per_task_budget_trm": 21,
+                    "auto_earn_enabled": true,
+                    "auto_spend_enabled": true,
+                    "auto_stake_fraction": 0.9,
+                    "idle_utilization_threshold": 0.2,
+                    "idle_grace_seconds": 60,
+                    "min_peer_reputation": 0.3,
+                    "content_filter": "default"
+                },
+                "spent_today_trm": 0,
+                "earned_today_trm": 0,
+                "day_started_at_ms": 0
+            }"#,
+        )
+        .unwrap();
+
+        assert!(load_personal_agent(&path).is_err());
+        let _ = std::fs::remove_file(&path);
     }
 
     // ===========================================================================

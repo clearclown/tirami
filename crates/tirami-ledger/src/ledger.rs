@@ -148,6 +148,12 @@ impl NonceCache {
         self.set.contains(nonce)
     }
 
+    /// Number of nonces currently retained in the bounded replay window.
+    #[allow(dead_code)] // Used by Kani proofs compiled only under cfg(kani).
+    pub(crate) fn len(&self) -> usize {
+        self.order.len()
+    }
+
     /// Record `nonce` as seen. Evicts the oldest entry when full.
     /// Returns `true` when the nonce was newly inserted, `false` if
     /// it was already present (caller should have rejected the trade).
@@ -5894,6 +5900,8 @@ mod tests {
     fn price_signal_for(node: NodeId, model: &str, multiplier: f64, available: u64) -> tirami_core::PriceSignal {
         tirami_core::PriceSignal {
             node_id: node,
+            protocol_version: tirami_core::TIRAMI_PROTOCOL_VERSION,
+            features: vec![],
             price_multiplier: multiplier,
             available_cu: available,
             model_capabilities: vec![ModelId(model.to_string())],

@@ -379,6 +379,8 @@ mod tests {
     fn sample_signal(node: NodeId, multiplier: f64, timestamp: u64) -> PriceSignal {
         PriceSignal {
             node_id: node,
+            protocol_version: tirami_core::TIRAMI_PROTOCOL_VERSION,
+            features: vec![],
             price_multiplier: multiplier,
             available_cu: 1000,
             model_capabilities: vec![ModelId("qwen2.5-0.5b".into())],

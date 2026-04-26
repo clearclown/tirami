@@ -31,6 +31,8 @@ async fn two_nodes_connect_and_exchange_hello() {
             version: 1,
             capability: tirami_core::PeerCapability {
                 node_id: transport_a.tirami_node_id(),
+                protocol_version: tirami_core::TIRAMI_PROTOCOL_VERSION,
+                features: tirami_core::base_protocol_features(),
                 cpu_cores: 8,
                 memory_gb: 16.0,
                 metal_available: true,

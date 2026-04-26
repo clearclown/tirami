@@ -61,6 +61,8 @@ cargo install --path crates/tirami-cli
 |---|---|
 | `FORGE_URL` | Base URL of a running node (default `http://127.0.0.1:3000`) |
 | `FORGE_API_TOKEN` | Bearer token for protected endpoints |
+| `TIRAMI_API_TOKEN` | Primary bearer token env var for the daemon and CLI. `FORGE_API_TOKEN` remains a legacy alias. |
+| `TIRAMI_BOOTSTRAP_PEERS` | Comma-separated public P2P peers to join at startup. Entry format: `PUBLIC_KEY`, `PUBLIC_KEY@RELAY_URL`, or `PUBLIC_KEY@IP:PORT`. |
 | `FORGE_MODELS_DIR` | Directory to search for local GGUF files (overrides default HF cache path) |
 | `FORGE_BANK_STATE_PATH` | Path for tirami-bank (L2) state persistence |
 | `FORGE_MARKETPLACE_STATE_PATH` | Path for tirami-agora (L4) marketplace state |
@@ -77,10 +79,14 @@ All configuration fields come from `crates/tirami-core/src/config.rs`. The daemo
 | `api_port` | `3000` | Port the HTTP API binds to. Change with `--port`. |
 | `api_bind_addr` | `"127.0.0.1"` | Bind address. Set to `0.0.0.0` to accept external connections (requires `--api-token`). |
 | `api_bearer_token` | `None` | When set, all `/v1/tirami/*` and `/v1/chat/*` routes require `Authorization: Bearer <token>`. `/metrics` and `/health` are always unauthenticated. |
+| `node_key_path` | `None` | Persistent Ed25519 P2P identity. `tirami start` and `tirami seed` use `~/.tirami/node.key` by default. Do not rotate this unless you intend to become a new network identity. |
+| `p2p_bind_addr` | `None` | Optional fixed iroh QUIC bind socket, e.g. `0.0.0.0:7700`. Set this when publishing direct `PUBLIC_KEY@IP:PORT` bootstrap peers. |
+| `bootstrap_peers` | `[]` | Public peers to dial on startup. Each entry is `PUBLIC_KEY`, `PUBLIC_KEY@RELAY_URL`, or `PUBLIC_KEY@IP:PORT`. Used by public meshes so new machines can join without a manually-directed worker command. |
 | `ledger_path` | `None` | Path to `tirami-ledger.json`. If `None`, ledger is in-memory only and lost on restart. Always set this in production. |
 | `bank_state_path` | `None` | Path for L2 tirami-bank strategy/portfolio state. Survives restarts if set. |
 | `marketplace_state_path` | `None` | Path for L4 tirami-agora marketplace snapshot. Survives restarts if set. |
 | `mind_state_path` | `None` | Path for L3 tirami-mind agent snapshot. Survives restarts if set. |
+| `personal_agent_state_path` | `None` | Path for the user-facing PersonalAgent state. `Config::for_data_dir` wires this to `personal_agent.json`. |
 | `settlement_window_hours` | `24` | Default time window for the `GET /settlement` export. `0` = manual only. |
 | `max_memory_gb` | `4.0` | Soft cap on memory dedicated to inference. Does not OOM-kill — inference layer may exceed this under load. |
 | `max_prompt_chars` | `8192` | Maximum prompt length accepted. Requests exceeding this are rejected with 400. |
@@ -118,6 +124,95 @@ Holds a model, earns TRM by serving inference requests from worker nodes. Requir
 ```
 
 The public key printed at startup is what workers use to connect. Keep it stable (tied to the Ed25519 keypair stored on first launch).
+
+### Public mesh bootstrap
+
+For an internet-wide testnet, publish at least two stable seed public keys and have every node dial them on startup. Bootstrap relays do not decrypt traffic; Iroh still uses encrypted QUIC/Noise end-to-end.
+
+```bash
+export TIRAMI_API_TOKEN="$(openssl rand -hex 32)"
+export TIRAMI_BOOTSTRAP_PEERS="<seed-a-public-key>@https://relay.example.com,<seed-b-public-key>@https://relay.example.com"
+
+./target/release/tirami start \
+  --model qwen2.5:1.5b \
+  --bind 0.0.0.0 \
+  --p2p-bind 0.0.0.0:7700 \
+  --port 3000
+```
+
+Equivalent CLI flags:
+
+```bash
+./target/release/tirami seed \
+  --model qwen2.5:1.5b \
+  --api-token "$TIRAMI_API_TOKEN" \
+  --p2p-bind 0.0.0.0:7700 \
+  --bootstrap-peer "<seed-a-public-key>@https://relay.example.com" \
+  --bootstrap-peer "<seed-b-public-key>@https://relay.example.com"
+```
+
+Run public nodes with stable storage under `~/.tirami` or `/var/lib/tirami`, a non-empty API token, and the default connection cap enabled. The CLI refuses `0.0.0.0`, `::`, or any non-loopback API bind unless `--api-token` or `TIRAMI_API_TOKEN` is set. Do not advertise `0.0.0.0` as a peer URL; it is only a local bind address.
+
+For the staged open-testnet launch procedure, use [`public-testnet-launch.md`](public-testnet-launch.md).
+
+### Agent remote dispatch
+
+When nodes advertise a reachable HTTP endpoint in their PriceSignal,
+the PersonalAgent can select a provider without the caller passing
+`--peer-node-id` and `--peer-url` each time. The endpoint is advertised
+only when `--bind` is a concrete non-loopback address, for example a
+Tailscale `100.x` address. Wildcard binds such as `0.0.0.0` are not
+advertised because they are not caller-reachable URLs.
+
+For a private lab where all HTTP APIs share one bearer token:
+
+```bash
+export TIRAMI_API_TOKEN="$(openssl rand -hex 24)"
+
+# Provider
+tirami start \
+  --model qwen2.5:0.5b \
+  --bind 100.112.10.128 \
+  --port 3000 \
+  --p2p-bind 0.0.0.0:7700
+
+# Consumer
+tirami start \
+  --model qwen2.5:0.5b \
+  --bind 100.107.30.86 \
+  --port 3000 \
+  --p2p-bind 0.0.0.0:7700 \
+  --bootstrap-peer <provider-public-key>@100.112.10.128:7700
+```
+
+Once `GET /v1/tirami/peers` on the consumer shows the provider's
+`http_endpoint` and `price-signal:http-endpoint` feature, the agent
+can run remotely with no explicit peer hint:
+
+```bash
+tirami agent \
+  --url http://100.107.30.86:3000 \
+  --api-token "$TIRAMI_API_TOKEN" \
+  chat "Summarize useful compute in one sentence." \
+  --size remote \
+  --estimated-trm 8 \
+  -n 8
+```
+
+The consumer's bearer token is forwarded to the selected peer. This is
+appropriate for a shared-token private testnet. For open public
+testnets, prefer P2P-only or a gateway-specific token policy.
+
+Check the local node's protocol surface before inviting outside peers:
+
+```bash
+curl -H "Authorization: Bearer $TIRAMI_API_TOKEN" \
+  http://127.0.0.1:3000/v1/tirami/protocol | jq
+```
+
+The response includes the supported protocol range, feature flags,
+proof policy, transport, and whether this node is advertising an HTTP
+endpoint in `PriceSignal`.
 
 ### P2P worker node (`tirami worker`)
 
@@ -280,7 +375,7 @@ The `script_hex` is a valid 40-byte Bitcoin OP_RETURN payload (`6a28 FRGE <versi
 - Expose the HTTP API over HTTPS via a reverse proxy (nginx or Caddy) when accepting traffic from outside localhost. Tirami does not handle TLS termination.
 - Firewall the QUIC port to only allow connections from expected peers if you're running a private mesh. Public seed nodes must leave the QUIC port open.
 - Back up `tirami-ledger.json` off-host. A stolen or corrupted ledger file means a lost TRM balance.
-- Never run `--bind 0.0.0.0` without `--api-token`. The default `127.0.0.1` binding protects against accidental public exposure.
+- `tirami` refuses public or wildcard binds without `--api-token` / `TIRAMI_API_TOKEN`. Keep the default `127.0.0.1` binding unless you intentionally expose the API.
 
 ---
 

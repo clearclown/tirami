@@ -1,13 +1,14 @@
 use crate::FORGE_ALPN;
 use crate::connection::PeerConnection;
-use tirami_core::NodeId;
-use tirami_proto::Envelope;
 use iroh::endpoint::presets;
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::net::SocketAddr;
 use std::sync::{
     Arc,
     atomic::{AtomicBool, AtomicU64, Ordering},
 };
+use tirami_core::NodeId;
+use tirami_proto::Envelope;
 use tokio::sync::{Mutex, Notify, mpsc};
 
 const MAX_RECENT_MSG_IDS_PER_PEER: usize = 2_048;
@@ -70,13 +71,69 @@ impl ForgeTransport {
     /// Create a new transport with a fresh Iroh endpoint.
     /// Enables mDNS for automatic LAN peer discovery.
     pub async fn new() -> anyhow::Result<Self> {
+        Self::new_with_options(None, None, None).await
+    }
+
+    /// Create a new transport with a caller-supplied Iroh secret key.
+    ///
+    /// This is the production path for stable NodeIds: the same secret key
+    /// yields the same Iroh public key and therefore the same Tirami NodeId
+    /// across process restarts.
+    pub async fn new_with_secret_key(secret_key: iroh::SecretKey) -> anyhow::Result<Self> {
+        Self::new_with_options(None, Some(secret_key), None).await
+    }
+
+    /// Phase 17 Wave 4.2 — construct with an explicit connection cap.
+    /// `0` disables the cap entirely (intentionally dangerous on
+    /// public nodes; documented in the operator guide).
+    pub async fn new_with_max_connections(max_connections: usize) -> anyhow::Result<Self> {
+        Self::new_with_options(Some(max_connections), None, None).await
+    }
+
+    /// Construct with an explicit connection cap and P2P bind address.
+    pub async fn new_with_max_connections_and_bind_addr(
+        max_connections: usize,
+        bind_addr: SocketAddr,
+    ) -> anyhow::Result<Self> {
+        Self::new_with_options(Some(max_connections), None, Some(bind_addr)).await
+    }
+
+    /// Construct with an explicit connection cap and stable identity key.
+    pub async fn new_with_max_connections_and_secret_key(
+        max_connections: usize,
+        secret_key: iroh::SecretKey,
+    ) -> anyhow::Result<Self> {
+        Self::new_with_options(Some(max_connections), Some(secret_key), None).await
+    }
+
+    /// Construct with an explicit connection cap, stable identity key,
+    /// and P2P bind address.
+    pub async fn new_with_max_connections_secret_key_and_bind_addr(
+        max_connections: usize,
+        secret_key: iroh::SecretKey,
+        bind_addr: SocketAddr,
+    ) -> anyhow::Result<Self> {
+        Self::new_with_options(Some(max_connections), Some(secret_key), Some(bind_addr)).await
+    }
+
+    async fn new_with_options(
+        max_connections: Option<usize>,
+        secret_key: Option<iroh::SecretKey>,
+        bind_addr: Option<SocketAddr>,
+    ) -> anyhow::Result<Self> {
         let mdns = iroh::address_lookup::mdns::MdnsAddressLookup::builder();
 
-        let endpoint = iroh::Endpoint::builder(presets::N0)
+        let mut builder = iroh::Endpoint::builder(presets::N0)
             .alpns(vec![FORGE_ALPN.to_vec()])
-            .address_lookup(mdns)
-            .bind()
-            .await?;
+            .address_lookup(mdns);
+        if let Some(secret_key) = secret_key {
+            builder = builder.secret_key(secret_key);
+        }
+        if let Some(bind_addr) = bind_addr {
+            builder = builder.bind_addr(bind_addr)?;
+            tracing::info!("P2P bind address configured: {}", bind_addr);
+        }
+        let endpoint = builder.bind().await?;
 
         let endpoint_id = endpoint.id();
         tracing::info!("Forge node started: {}", endpoint_id.fmt_short());
@@ -98,20 +155,11 @@ impl ForgeTransport {
             // Phase 17 Wave 4.2 — 1 000 is the plan default; callers
             // that want a different cap construct via
             // `new_with_max_connections`.
-            max_connections: 1_000,
+            max_connections: max_connections.unwrap_or(1_000),
             dropped_over_cap: Arc::new(AtomicU64::new(0)),
             asn_limiter: None,
             dropped_asn_over_cap: Arc::new(AtomicU64::new(0)),
         })
-    }
-
-    /// Phase 17 Wave 4.2 — construct with an explicit connection cap.
-    /// `0` disables the cap entirely (intentionally dangerous on
-    /// public nodes; documented in the operator guide).
-    pub async fn new_with_max_connections(max_connections: usize) -> anyhow::Result<Self> {
-        let mut t = Self::new().await?;
-        t.max_connections = max_connections;
-        Ok(t)
     }
 
     /// Current accept-cap. 0 means unlimited.
@@ -176,10 +224,7 @@ impl ForgeTransport {
         let peer_id = peer_conn.peer_id().to_string();
 
         // Save address for potential reconnection
-        self.peer_addrs
-            .lock()
-            .await
-            .insert(peer_id.clone(), addr);
+        self.peer_addrs.lock().await.insert(peer_id.clone(), addr);
 
         self.peers
             .lock()
@@ -330,8 +375,7 @@ impl ForgeTransport {
             // Refill tokens based on elapsed time
             let now = tokio::time::Instant::now();
             let elapsed = now.duration_since(last_refill).as_secs_f64();
-            tokens = (tokens + elapsed * MAX_MESSAGES_PER_SECOND as f64)
-                .min(BURST_CAPACITY as f64);
+            tokens = (tokens + elapsed * MAX_MESSAGES_PER_SECOND as f64).min(BURST_CAPACITY as f64);
             last_refill = now;
 
             match peer.recv_message().await {
@@ -470,7 +514,10 @@ mod tests {
         // During grace period, messages should never be dropped even if
         // we exceed BURST_CAPACITY.
         let in_grace = connection_start.elapsed() < GRACE_PERIOD;
-        assert!(in_grace, "should be in grace period immediately after start");
+        assert!(
+            in_grace,
+            "should be in grace period immediately after start"
+        );
 
         // Drain all tokens — during grace period this should not matter
         for _ in 0..300 {
@@ -502,9 +549,12 @@ mod tests {
 
         // Simulate refill: 0.1 seconds at 500/s = 50 tokens
         let refill_elapsed = 0.1_f64;
-        tokens = (tokens + refill_elapsed * MAX_MESSAGES_PER_SECOND as f64)
-            .min(BURST_CAPACITY as f64);
-        assert!((tokens - 50.0).abs() < 1.0, "should have ~50 tokens after refill");
+        tokens =
+            (tokens + refill_elapsed * MAX_MESSAGES_PER_SECOND as f64).min(BURST_CAPACITY as f64);
+        assert!(
+            (tokens - 50.0).abs() < 1.0,
+            "should have ~50 tokens after refill"
+        );
     }
 
     #[test]
@@ -527,5 +577,18 @@ mod tests {
             window.record(0),
             "msg_id 0 should be accepted again after eviction"
         );
+    }
+
+    #[tokio::test]
+    async fn stable_secret_key_yields_stable_node_id() {
+        let secret_key = iroh::SecretKey::from_bytes(&[42u8; 32]);
+        let expected = NodeId(*secret_key.public().as_bytes());
+
+        let transport = ForgeTransport::new_with_secret_key(secret_key)
+            .await
+            .expect("transport");
+        assert_eq!(transport.tirami_node_id(), expected);
+
+        transport.close().await;
     }
 }

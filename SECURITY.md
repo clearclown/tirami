@@ -1,6 +1,6 @@
 # Security Policy
 
-**Last reviewed:** 2026-04-19 (Phase 19 Tier C/D enablers).
+**Last reviewed:** 2026-04-26 (public testnet preparation).
 
 Tirami is a protocol for buying and selling compute as a currency on
 an adversarial public network. Security is not optional. If you find
@@ -136,10 +136,11 @@ code execution, ledger corruption, signature bypass) may fast-track.
 ## Hardening guidance
 
 Run a Tirami node in a dedicated user account with minimal privileges.
-Do not expose the P2P QUIC port to the public internet without a
-reverse proxy or WAF. Keep the `api_bearer_token` secret and rotate
-periodically. Back up `tirami-ledger.json` and the L2/L3/L4 state
-snapshots off-host.
+Do not expose the HTTP API to the public internet without a reverse
+proxy or WAF. The CLI refuses public or wildcard API binds unless
+`--api-token` or `TIRAMI_API_TOKEN` is set; keep that token secret
+and rotate periodically. Back up `node.key`, `tirami-ledger.json`,
+and the L2/L3/L4 state snapshots off-host.
 
 For production deployments see `docs/operator-guide.md` (security
 checklist section).

@@ -7,6 +7,13 @@ pub struct Config {
     /// Path to the local GGUF model file.
     pub model_path: Option<PathBuf>,
 
+    /// Optional path to the persisted P2P node identity secret key.
+    ///
+    /// The NodeId is derived from this Ed25519 key. If this is unset,
+    /// the networking layer may create an ephemeral identity, which is
+    /// only appropriate for tests and disposable dev sessions.
+    pub node_key_path: Option<PathBuf>,
+
     /// Optional path to a persisted ledger snapshot.
     pub ledger_path: Option<PathBuf>,
 
@@ -18,6 +25,9 @@ pub struct Config {
 
     /// Optional path to the persisted forge-mind (L3) agent snapshot.
     pub mind_state_path: Option<PathBuf>,
+
+    /// Optional path to the persisted user-facing PersonalAgent state.
+    pub personal_agent_state_path: Option<PathBuf>,
 
     /// Whether to share compute with the network.
     pub share_compute: bool,
@@ -39,6 +49,21 @@ pub struct Config {
 
     /// Bootstrap relay addresses for WAN discovery.
     pub bootstrap_relays: Vec<String>,
+
+    /// Optional fixed P2P bind socket address for the iroh QUIC transport.
+    ///
+    /// Leave unset for an ephemeral port. Set this to something like
+    /// `0.0.0.0:7700` when publishing direct bootstrap peers such as
+    /// `PUBLIC_KEY@100.83.54.6:7700`.
+    pub p2p_bind_addr: Option<String>,
+
+    /// Public bootstrap peers to connect to on startup.
+    ///
+    /// Each entry is `PUBLIC_KEY`, `PUBLIC_KEY@RELAY_URL`, or
+    /// `PUBLIC_KEY@IP:PORT`. Relays are Iroh relay URLs and are still
+    /// encrypted end-to-end; direct IPs are useful for private WANs such
+    /// as Tailscale.
+    pub bootstrap_peers: Vec<String>,
 
     /// Region hint for peer discovery.
     pub region: String,
@@ -200,6 +225,29 @@ fn default_personal_agent_enabled() -> bool {
 }
 
 impl Config {
+    /// Build a production-oriented config rooted at `data_dir`.
+    ///
+    /// This wires all durable identity/economy state to predictable files:
+    /// node key, ledger, L2 bank state, L4 marketplace, L3 mind snapshot,
+    /// PersonalAgent state, and the append-only trade archive.
+    pub fn for_data_dir(data_dir: impl Into<PathBuf>) -> Self {
+        let mut config = Self::default();
+        config.set_data_dir(data_dir);
+        config
+    }
+
+    /// Set all durable state paths under `data_dir`.
+    pub fn set_data_dir(&mut self, data_dir: impl Into<PathBuf>) {
+        let data_dir = data_dir.into();
+        self.node_key_path = Some(data_dir.join("node.key"));
+        self.ledger_path = Some(data_dir.join("ledger.json"));
+        self.bank_state_path = Some(data_dir.join("bank_state.json"));
+        self.marketplace_state_path = Some(data_dir.join("marketplace_state.json"));
+        self.mind_state_path = Some(data_dir.join("mind_state.json"));
+        self.personal_agent_state_path = Some(data_dir.join("personal_agent.json"));
+        self.archive_path = Some(data_dir.join("trades.jsonl"));
+    }
+
     pub fn api_socket_addr(&self) -> String {
         format!("{}:{}", self.api_bind_addr, self.api_port)
     }
@@ -255,10 +303,12 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             model_path: None,
+            node_key_path: None,
             ledger_path: None,
             bank_state_path: None,
             marketplace_state_path: None,
             mind_state_path: None,
+            personal_agent_state_path: None,
             share_compute: false,
             max_memory_gb: 4.0,
             api_port: 3000,
@@ -266,6 +316,8 @@ impl Default for Config {
             api_bearer_token: None,
             api_max_request_body_bytes: 64 * 1024,
             bootstrap_relays: vec![],
+            p2p_bind_addr: None,
+            bootstrap_peers: vec![],
             region: "unknown".to_string(),
             max_prompt_chars: 8_192,
             max_generate_tokens: 1_024,
@@ -283,5 +335,45 @@ impl Default for Config {
             agent_tick_interval_secs: 30,
             personal_agent_enabled: true,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Config;
+    use std::path::PathBuf;
+
+    #[test]
+    fn for_data_dir_wires_all_durable_paths() {
+        let config = Config::for_data_dir("/tmp/tirami-state");
+
+        assert_eq!(
+            config.node_key_path,
+            Some(PathBuf::from("/tmp/tirami-state/node.key"))
+        );
+        assert_eq!(
+            config.ledger_path,
+            Some(PathBuf::from("/tmp/tirami-state/ledger.json"))
+        );
+        assert_eq!(
+            config.bank_state_path,
+            Some(PathBuf::from("/tmp/tirami-state/bank_state.json"))
+        );
+        assert_eq!(
+            config.marketplace_state_path,
+            Some(PathBuf::from("/tmp/tirami-state/marketplace_state.json"))
+        );
+        assert_eq!(
+            config.mind_state_path,
+            Some(PathBuf::from("/tmp/tirami-state/mind_state.json"))
+        );
+        assert_eq!(
+            config.personal_agent_state_path,
+            Some(PathBuf::from("/tmp/tirami-state/personal_agent.json"))
+        );
+        assert_eq!(
+            config.archive_path,
+            Some(PathBuf::from("/tmp/tirami-state/trades.jsonl"))
+        );
     }
 }

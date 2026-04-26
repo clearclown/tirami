@@ -2,13 +2,14 @@ use crate::agent_loop::{AgentLoopStats, AgentTickInput, spawn_agent_tick_loop};
 use crate::pipeline::PipelineCoordinator;
 use crate::state_persist;
 use crate::topology::{TopologySnapshot, build_local_capability, build_topology_snapshot};
+use std::path::Path;
+use std::sync::Arc;
 use tirami_agora::Marketplace;
 use tirami_core::Config;
 use tirami_core::{ModelManifest, PipelineTopology};
 use tirami_infer::{CandleEngine, InferenceEngine, parse_gguf_metadata};
 use tirami_ledger::{ComputeLedger, SettlementStatement};
 use tirami_net::{ClusterManager, ForgeTransport, GossipState};
-use std::sync::Arc;
 use tokio::sync::Mutex;
 
 /// The main Forge node — protocol daemon.
@@ -49,6 +50,14 @@ pub struct TiramiNode {
     /// Exposed via `/v1/tirami/agent/status` as `loop.{ticks, last_action,
     /// last_tick_ms}`.
     pub agent_loop_stats: Arc<Mutex<AgentLoopStats>>,
+    heartbeat_started: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct BootstrapConnectSummary {
+    pub attempted: usize,
+    pub connected: usize,
+    pub failed: usize,
 }
 
 impl TiramiNode {
@@ -140,6 +149,7 @@ impl TiramiNode {
             chain_client: Arc::new(tirami_anchor::MockChainClient::new()),
             personal_agent: Arc::new(Mutex::new(None)),
             agent_loop_stats: Arc::new(Mutex::new(AgentLoopStats::new())),
+            heartbeat_started: false,
         }
     }
 
@@ -292,18 +302,48 @@ impl TiramiNode {
         if guard.is_some() {
             return;
         }
+        if let Some(path) = self.config.personal_agent_state_path.as_ref() {
+            match state_persist::load_personal_agent(path) {
+                Ok(Some(agent)) if agent.wallet == wallet => {
+                    tracing::info!("Loaded personal agent state from {}", path.display());
+                    *guard = Some(agent);
+                    return;
+                }
+                Ok(Some(agent)) => {
+                    tracing::warn!(
+                        saved_wallet = %agent.wallet.to_hex(),
+                        active_wallet = %wallet.to_hex(),
+                        path = %path.display(),
+                        "Ignoring personal agent state for a different node identity"
+                    );
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    tracing::warn!(
+                        "Failed to load personal agent state from {}: {}",
+                        path.display(),
+                        e
+                    );
+                }
+            }
+        }
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_millis() as u64)
             .unwrap_or(0);
-        let agent =
-            tirami_mind::PersonalAgent::new(wallet.clone(), tirami_mind::TrmBudget::default(), now_ms);
+        let agent = tirami_mind::PersonalAgent::new(
+            wallet.clone(),
+            tirami_mind::TrmBudget::default(),
+            now_ms,
+        );
         tracing::info!("personal agent configured for {}", wallet.to_hex());
         *guard = Some(agent);
     }
 
     /// Initialize P2P transport.
-    pub async fn init_transport(&mut self) -> Result<Arc<ForgeTransport>, tirami_core::TiramiError> {
+    pub async fn init_transport(
+        &mut self,
+    ) -> Result<Arc<ForgeTransport>, tirami_core::TiramiError> {
         if let Some(transport) = self.transport.as_ref() {
             return Ok(transport.clone());
         }
@@ -311,10 +351,52 @@ impl TiramiNode {
         // Phase 17 Wave 4.2 — pick up the operator's DDoS cap from
         // Config. `0` disables the cap entirely (dangerous on public
         // nodes; documented in docs/operator-guide.md).
-        let transport = ForgeTransport::new_with_max_connections(
-            self.config.max_concurrent_connections as usize,
-        )
-        .await
+        let max_connections = self.config.max_concurrent_connections as usize;
+        let p2p_bind_addr = self
+            .config
+            .p2p_bind_addr
+            .as_deref()
+            .map(|addr| {
+                addr.parse::<std::net::SocketAddr>().map_err(|err| {
+                    tirami_core::TiramiError::InvalidRequest(format!(
+                        "invalid p2p_bind_addr '{}': {}",
+                        addr, err
+                    ))
+                })
+            })
+            .transpose()?;
+
+        let transport = match (self.config.node_key_path.as_ref(), p2p_bind_addr) {
+            (Some(path), Some(bind_addr)) => {
+                let secret_key = load_node_secret_key(path)?;
+                tracing::info!("Loaded persistent node key from {}", path.display());
+                ForgeTransport::new_with_max_connections_secret_key_and_bind_addr(
+                    max_connections,
+                    secret_key,
+                    bind_addr,
+                )
+                .await
+            }
+            (Some(path), None) => {
+                let secret_key = load_node_secret_key(path)?;
+                tracing::info!("Loaded persistent node key from {}", path.display());
+                ForgeTransport::new_with_max_connections_and_secret_key(max_connections, secret_key)
+                    .await
+            }
+            (None, Some(bind_addr)) => {
+                tracing::warn!(
+                    "No node_key_path configured; using ephemeral P2P identity for this process"
+                );
+                ForgeTransport::new_with_max_connections_and_bind_addr(max_connections, bind_addr)
+                    .await
+            }
+            (None, None) => {
+                tracing::warn!(
+                    "No node_key_path configured; using ephemeral P2P identity for this process"
+                );
+                ForgeTransport::new_with_max_connections(max_connections).await
+            }
+        }
         .map_err(|e| tirami_core::TiramiError::NetworkError(format!("transport: {e}")))?;
         let transport = Arc::new(transport);
         let local_capability = build_local_capability(&self.config, transport.tirami_node_id());
@@ -340,6 +422,19 @@ impl TiramiNode {
 
         // Accept connections
         let _accept_handle = transport.start_accepting();
+
+        // Join configured public bootstrap peers. This is what lets a
+        // fresh node become part of a wider mesh instead of only waiting
+        // for one manually-directed worker connection.
+        let bootstrap_summary = self.connect_configured_bootstrap_peers().await;
+        if bootstrap_summary.attempted > 0 {
+            tracing::info!(
+                "Bootstrap join complete: {} connected, {} failed ({} attempted)",
+                bootstrap_summary.connected,
+                bootstrap_summary.failed,
+                bootstrap_summary.attempted
+            );
+        }
 
         // API server in background
         self.spawn_api();
@@ -413,7 +508,10 @@ impl TiramiNode {
     async fn build_price_signal(&self, node_id: tirami_core::NodeId) -> tirami_core::PriceSignal {
         let model_capabilities = {
             let manifest = self.model_manifest.lock().await;
-            manifest.as_ref().map(|m| vec![m.id.clone()]).unwrap_or_default()
+            manifest
+                .as_ref()
+                .map(|m| vec![m.id.clone()])
+                .unwrap_or_default()
         };
 
         let available_cu = {
@@ -430,13 +528,17 @@ impl TiramiNode {
         // only if the operator explicitly set the bind to a public
         // interface name. Callers can always override with a
         // `peer.url` override on the HTTP request.
-        let http_endpoint = derive_public_http_endpoint(
-            &self.config.api_bind_addr,
-            self.config.api_port,
+        let http_endpoint =
+            derive_public_http_endpoint(&self.config.api_bind_addr, self.config.api_port);
+        let features = tirami_core::advertised_protocol_features(
+            http_endpoint.is_some(),
+            &self.config.proof_policy,
         );
 
         tirami_core::PriceSignal {
             node_id,
+            protocol_version: tirami_core::TIRAMI_PROTOCOL_VERSION,
+            features,
             // Phase 14.1: static 1.0 multiplier. Dynamic pricing policy
             // (based on load, energy cost, market EMA) lands in Phase 14.5.
             price_multiplier: 1.0,
@@ -455,7 +557,9 @@ impl TiramiNode {
     /// Immediately register our own PriceSignal into the PeerRegistry so
     /// select_provider (Phase 14.2) can find us before the first gossip tick.
     async fn self_register_price_signal(&self) {
-        let Some(transport) = self.transport.as_ref() else { return };
+        let Some(transport) = self.transport.as_ref() else {
+            return;
+        };
         let node_id = transport.tirami_node_id();
         let signal = self.build_price_signal(node_id).await;
         let mut ledger = self.ledger.lock().await;
@@ -571,9 +675,10 @@ impl TiramiNode {
                     // Convert target NodeId → PeerId for transport send.
                     // tirami-net uses a stringified peer id; we match by hex.
                     let peers = transport.connected_peers().await;
-                    if let Some(peer_id) = peers.iter().find(|p| {
-                        p.to_string().contains(&hex::encode(&target.0[..8]))
-                    }) {
+                    if let Some(peer_id) = peers
+                        .iter()
+                        .find(|p| p.to_string().contains(&hex::encode(&target.0[..8])))
+                    {
                         if let Err(e) = transport.send_to(peer_id, &msg).await {
                             tracing::debug!(%e, "audit challenge send failed");
                         } else {
@@ -677,15 +782,11 @@ impl TiramiNode {
         let ledger = self.ledger.clone();
         let ledger_path = self.config.ledger_path.clone();
         let interval_secs = self.config.checkpoint_interval_secs.max(60);
-        let retain_ms: u64 = self
-            .config
-            .checkpoint_retain_secs
-            .saturating_mul(1_000);
+        let retain_ms: u64 = self.config.checkpoint_retain_secs.saturating_mul(1_000);
         let archive = tirami_ledger::ArchivePath(self.config.archive_path.clone());
 
         tokio::spawn(async move {
-            let mut ticker =
-                tokio::time::interval(std::time::Duration::from_secs(interval_secs));
+            let mut ticker = tokio::time::interval(std::time::Duration::from_secs(interval_secs));
             // Skip the immediate first fire; let the node bootstrap.
             ticker.tick().await;
 
@@ -717,10 +818,7 @@ impl TiramiNode {
                         if let Some(path) = ledger_path.as_ref() {
                             let l = ledger.lock().await;
                             if let Err(e) = l.save_to_path(path) {
-                                tracing::error!(
-                                    "failed to persist ledger after checkpoint: {}",
-                                    e
-                                );
+                                tracing::error!("failed to persist ledger after checkpoint: {}", e);
                             }
                         }
                     }
@@ -759,11 +857,7 @@ impl TiramiNode {
                 max_trades_per_batch: 10_000,
                 node_id,
             };
-            let anchorer = std::sync::Arc::new(tirami_anchor::Anchorer::new(
-                config,
-                ledger,
-                chain,
-            ));
+            let anchorer = std::sync::Arc::new(tirami_anchor::Anchorer::new(config, ledger, chain));
             anchorer.run().await;
         });
     }
@@ -776,9 +870,11 @@ impl TiramiNode {
         let node_id = transport.tirami_node_id();
         // Phase 19 / Tier C — advertise HTTP endpoint so peers can
         // auto-resolve NodeId → URL for forwarded chat requests.
-        let http_endpoint = derive_public_http_endpoint(
-            &self.config.api_bind_addr,
-            self.config.api_port,
+        let http_endpoint =
+            derive_public_http_endpoint(&self.config.api_bind_addr, self.config.api_port);
+        let features = tirami_core::advertised_protocol_features(
+            http_endpoint.is_some(),
+            &self.config.proof_policy,
         );
 
         tokio::spawn(async move {
@@ -803,6 +899,8 @@ impl TiramiNode {
                 };
                 let signal = tirami_core::PriceSignal {
                     node_id: node_id.clone(),
+                    protocol_version: tirami_core::TIRAMI_PROTOCOL_VERSION,
+                    features: features.clone(),
                     price_multiplier: 1.0,
                     available_cu,
                     model_capabilities,
@@ -842,7 +940,10 @@ impl TiramiNode {
                 .handshake(&peer)
                 .await
                 .map_err(|e| tirami_core::TiramiError::NetworkError(format!("handshake: {e}")))?;
-            cluster.start_heartbeat();
+            if !self.heartbeat_started {
+                cluster.start_heartbeat();
+                self.heartbeat_started = true;
+            }
 
             let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(500);
             loop {
@@ -876,6 +977,37 @@ impl TiramiNode {
 
         tracing::info!("Connected to seed: {}", peer.peer_id());
         Ok(transport)
+    }
+
+    /// Connect to all peers configured in `Config::bootstrap_peers`.
+    ///
+    /// Startup keeps going if an individual bootstrap peer is down or
+    /// malformed. Public meshes need multiple bootstrap entries and none
+    /// of them should become a single point of failure.
+    pub async fn connect_configured_bootstrap_peers(&mut self) -> BootstrapConnectSummary {
+        let mut summary = BootstrapConnectSummary::default();
+        for spec in self.config.bootstrap_peers.clone() {
+            summary.attempted += 1;
+            let addr = match parse_bootstrap_peer_spec(&spec) {
+                Ok(addr) => addr,
+                Err(err) => {
+                    summary.failed += 1;
+                    tracing::warn!("Ignoring invalid bootstrap peer '{}': {}", spec, err);
+                    continue;
+                }
+            };
+
+            match self.connect_to_seed(addr).await {
+                Ok(_) => {
+                    summary.connected += 1;
+                }
+                Err(err) => {
+                    summary.failed += 1;
+                    tracing::warn!("Failed to connect bootstrap peer '{}': {}", spec, err);
+                }
+            }
+        }
+        summary
     }
 
     /// Get network statistics from the ledger.
@@ -958,13 +1090,24 @@ impl TiramiNode {
             let mind = self.mind_agent.lock().await;
             if let Some(agent) = mind.as_ref() {
                 if let Err(e) = state_persist::save_mind(agent, path) {
+                    tracing::warn!("Failed to persist mind state to {}: {}", path.display(), e);
+                } else {
+                    tracing::info!("Mind agent state persisted to {}", path.display());
+                }
+            }
+        }
+
+        if let Some(path) = self.config.personal_agent_state_path.as_ref() {
+            let personal = self.personal_agent.lock().await;
+            if let Some(agent) = personal.as_ref() {
+                if let Err(e) = state_persist::save_personal_agent(agent, path) {
                     tracing::warn!(
-                        "Failed to persist mind state to {}: {}",
+                        "Failed to persist personal agent state to {}: {}",
                         path.display(),
                         e
                     );
                 } else {
-                    tracing::info!("Mind agent state persisted to {}", path.display());
+                    tracing::info!("Personal agent state persisted to {}", path.display());
                 }
             }
         }
@@ -998,6 +1141,78 @@ impl TiramiNode {
 
         tracing::info!("Tirami node shut down");
     }
+}
+
+fn load_node_secret_key(path: &Path) -> Result<iroh::SecretKey, tirami_core::TiramiError> {
+    let bytes = std::fs::read(path)?;
+    let raw = parse_node_secret_key_bytes(&bytes).map_err(|reason| {
+        tirami_core::TiramiError::InvalidRequest(format!(
+            "invalid node key file {}: {reason}",
+            path.display()
+        ))
+    })?;
+    Ok(iroh::SecretKey::from_bytes(&raw))
+}
+
+fn parse_node_secret_key_bytes(bytes: &[u8]) -> Result<[u8; 32], &'static str> {
+    if bytes.len() == 32 {
+        let mut raw = [0u8; 32];
+        raw.copy_from_slice(bytes);
+        return Ok(raw);
+    }
+
+    let Ok(text) = std::str::from_utf8(bytes) else {
+        return Err("expected 32 raw bytes or 64 lowercase/uppercase hex characters");
+    };
+    let text = text.trim();
+    if text.len() != 64 || !text.as_bytes().iter().all(u8::is_ascii_hexdigit) {
+        return Err("expected 32 raw bytes or 64 lowercase/uppercase hex characters");
+    }
+
+    let decoded =
+        hex::decode(text).map_err(|_| "expected valid hex-encoded Ed25519 secret bytes")?;
+    let mut raw = [0u8; 32];
+    raw.copy_from_slice(&decoded);
+    Ok(raw)
+}
+
+pub(crate) fn parse_bootstrap_peer_spec(spec: &str) -> Result<iroh::EndpointAddr, String> {
+    let spec = spec.trim();
+    if spec.is_empty() {
+        return Err("expected PUBLIC_KEY or PUBLIC_KEY@RELAY_URL".to_string());
+    }
+
+    let (public_key, relay_url) = match spec.split_once('@') {
+        Some((key, relay)) => {
+            let key = key.trim();
+            let relay = relay.trim();
+            if relay.is_empty() {
+                return Err("relay URL after @ must not be empty".to_string());
+            }
+            (key, Some(relay))
+        }
+        None => (spec, None),
+    };
+
+    if public_key.is_empty() {
+        return Err("public key must not be empty".to_string());
+    }
+
+    let public_key: iroh::PublicKey = public_key
+        .parse()
+        .map_err(|err| format!("invalid public key: {err}"))?;
+    let mut addr = iroh::EndpointAddr::new(public_key);
+    if let Some(addr_suffix) = relay_url {
+        if let Ok(socket_addr) = addr_suffix.parse::<std::net::SocketAddr>() {
+            addr.addrs.insert(iroh::TransportAddr::Ip(socket_addr));
+        } else {
+            let relay_url: iroh::RelayUrl = addr_suffix.parse().map_err(|relay_err| {
+                format!("invalid relay URL or IP:PORT '{}': {}", addr_suffix, relay_err)
+            })?;
+            addr.addrs.insert(iroh::TransportAddr::Relay(relay_url));
+        }
+    }
+    Ok(addr)
 }
 
 #[cfg(test)]
@@ -1049,6 +1264,59 @@ mod tests {
         assert_eq!(guard.as_ref().unwrap().earned_today_trm, 999);
     }
 
+    #[tokio::test]
+    async fn ensure_personal_agent_restores_persisted_state_for_same_wallet() {
+        let path = std::env::temp_dir().join(format!(
+            "tirami_personal_agent_restore_{}.json",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        let mut persisted =
+            tirami_mind::PersonalAgent::new(wallet(), tirami_mind::TrmBudget::default(), 1);
+        persisted.record_earn(123);
+        state_persist::save_personal_agent(&persisted, &path).unwrap();
+
+        let config = Config {
+            personal_agent_state_path: Some(path.clone()),
+            ..Config::default()
+        };
+        let node = TiramiNode::new(config);
+        node.ensure_personal_agent(wallet()).await;
+
+        let guard = node.personal_agent.lock().await;
+        assert_eq!(guard.as_ref().unwrap().earned_today_trm, 123);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[tokio::test]
+    async fn ensure_personal_agent_ignores_persisted_state_for_other_wallet() {
+        let path = std::env::temp_dir().join(format!(
+            "tirami_personal_agent_mismatch_{}.json",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        let mut persisted = tirami_mind::PersonalAgent::new(
+            NodeId([0xBBu8; 32]),
+            tirami_mind::TrmBudget::default(),
+            1,
+        );
+        persisted.record_earn(123);
+        state_persist::save_personal_agent(&persisted, &path).unwrap();
+
+        let config = Config {
+            personal_agent_state_path: Some(path.clone()),
+            ..Config::default()
+        };
+        let node = TiramiNode::new(config);
+        node.ensure_personal_agent(wallet()).await;
+
+        let guard = node.personal_agent.lock().await;
+        let agent = guard.as_ref().unwrap();
+        assert_eq!(agent.wallet, wallet());
+        assert_eq!(agent.earned_today_trm, 0);
+        let _ = std::fs::remove_file(&path);
+    }
+
     // ---------------------------------------------------------------
     // Phase 19 / Tier C — derive_public_http_endpoint
     // ---------------------------------------------------------------
@@ -1080,6 +1348,69 @@ mod tests {
         let url = super::derive_public_http_endpoint("2001:db8::1", 3000)
             .expect("v6 public bind should advertise");
         assert_eq!(url, "http://[2001:db8::1]:3000");
+    }
+
+    #[test]
+    fn parse_node_secret_key_accepts_raw_32_bytes() {
+        let bytes = [7u8; 32];
+        assert_eq!(parse_node_secret_key_bytes(&bytes).unwrap(), bytes);
+    }
+
+    #[test]
+    fn parse_node_secret_key_accepts_hex_with_newline() {
+        let parsed = parse_node_secret_key_bytes(
+            b"0707070707070707070707070707070707070707070707070707070707070707\n",
+        )
+        .unwrap();
+        assert_eq!(parsed, [7u8; 32]);
+    }
+
+    #[test]
+    fn parse_node_secret_key_rejects_wrong_length() {
+        let err = parse_node_secret_key_bytes(b"too-short").unwrap_err();
+        assert!(err.contains("expected 32 raw bytes"));
+    }
+
+    #[test]
+    fn parse_bootstrap_peer_accepts_public_key_only() {
+        let secret_key = iroh::SecretKey::from_bytes(&[11u8; 32]);
+        let public_key = secret_key.public();
+        let addr = parse_bootstrap_peer_spec(&public_key.to_string()).unwrap();
+
+        assert_eq!(addr.id, public_key);
+        assert!(addr.addrs.is_empty());
+    }
+
+    #[test]
+    fn parse_bootstrap_peer_accepts_relay_suffix() {
+        let secret_key = iroh::SecretKey::from_bytes(&[12u8; 32]);
+        let public_key = secret_key.public();
+        let addr =
+            parse_bootstrap_peer_spec(&format!("{}@https://relay.example.com", public_key))
+                .unwrap();
+
+        assert_eq!(addr.id, public_key);
+        assert!(addr.addrs.iter().any(iroh::TransportAddr::is_relay));
+    }
+
+    #[test]
+    fn parse_bootstrap_peer_accepts_direct_ip_suffix() {
+        let secret_key = iroh::SecretKey::from_bytes(&[14u8; 32]);
+        let public_key = secret_key.public();
+        let socket_addr: std::net::SocketAddr = "100.83.54.6:7700".parse().unwrap();
+        let addr = parse_bootstrap_peer_spec(&format!("{}@{}", public_key, socket_addr)).unwrap();
+
+        assert_eq!(addr.id, public_key);
+        assert!(addr.addrs.contains(&iroh::TransportAddr::Ip(socket_addr)));
+    }
+
+    #[test]
+    fn parse_bootstrap_peer_rejects_empty_relay_suffix() {
+        let secret_key = iroh::SecretKey::from_bytes(&[13u8; 32]);
+        let public_key = secret_key.public();
+        let err = parse_bootstrap_peer_spec(&format!("{}@", public_key)).unwrap_err();
+
+        assert!(err.contains("relay URL"));
     }
 }
 

@@ -76,7 +76,7 @@ step "L0 inference: 3 real chat completions"
 for prompt in "What is 2+2?" "Name a color." "Say hi briefly."; do
   resp=$(curl -s "$BASE/v1/chat/completions" -H "$H" -H "Content-Type: application/json" \
     -d "{\"model\":\"$MODEL\",\"messages\":[{\"role\":\"user\",\"content\":\"$prompt\"}],\"max_tokens\":15}")
-  cu=$(echo "$resp" | python3 -c "import json,sys;print(json.load(sys.stdin)['x_forge']['cu_cost'])")
+  cu=$(echo "$resp" | python3 -c "import json,sys;print(json.load(sys.stdin)['x_tirami']['trm_cost'])")
   reply=$(echo "$resp" | python3 -c "import json,sys;print(json.load(sys.stdin)['choices'][0]['message']['content'][:40])")
   ok "prompt=\"$prompt\" → cu=$cu  reply=\"$reply...\""
 done

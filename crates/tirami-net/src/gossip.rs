@@ -450,7 +450,7 @@ pub async fn handle_reputation_gossip(
 /// Broadcast our own price signal to all connected peers.
 ///
 /// Called periodically by the node daemon (default 30s). Also marks the
-/// signal as seen locally so we don't re-flood it on receive.
+/// signal as seen locally so later inbound duplicates are ignored.
 pub async fn broadcast_price_signal(
     transport: &ForgeTransport,
     gossip: &Arc<Mutex<GossipState>>,
@@ -496,12 +496,14 @@ pub async fn broadcast_price_signal(
 /// Handle an incoming price signal gossip message.
 ///
 /// Validates the signal, checks dedup, merges into the ledger's PeerRegistry,
-/// and re-floods to peers that haven't seen it yet.
+/// and does not re-flood. PriceSignal is intentionally unsigned in this MVP,
+/// so forwarding another node's signal would either fail sender validation or
+/// let an intermediary advertise prices on behalf of someone else.
 pub async fn handle_price_signal_gossip(
     signal: tirami_core::PriceSignal,
     ledger: &Arc<Mutex<ComputeLedger>>,
     gossip: &Arc<Mutex<GossipState>>,
-    transport: Option<&ForgeTransport>,
+    _transport: Option<&ForgeTransport>,
 ) {
     // Backpressure.
     if !gossip.lock().await.can_ingest() {
@@ -543,28 +545,7 @@ pub async fn handle_price_signal_gossip(
         );
     }
 
-    // Re-flood to peers so the signal propagates across the mesh.
-    if let Some(transport) = transport {
-        let node_id = transport.tirami_node_id();
-        let peers = transport.connected_peers().await;
-        if !peers.is_empty() {
-            let msg = Envelope {
-                msg_id: rand::random(),
-                sender: node_id,
-                timestamp: now_millis(),
-                payload: Payload::PriceSignalGossip(signal),
-            };
-            for peer_id in &peers {
-                if let Err(e) = transport.send_to(peer_id, &msg).await {
-                    tracing::debug!(
-                        "Re-flood price signal to {} failed: {}",
-                        peer_id,
-                        e
-                    );
-                }
-            }
-        }
-    }
+    // Unsigned price signals are single-hop until origin signatures land.
 }
 
 /// Check for network partition by comparing local Merkle root with a peer's.

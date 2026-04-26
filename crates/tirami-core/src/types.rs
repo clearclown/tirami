@@ -1,6 +1,72 @@
 use ed25519_dalek::VerifyingKey;
 use serde::{Deserialize, Serialize};
 
+/// Current Tirami wire/runtime protocol version.
+///
+/// Structural wire changes must bump this and explicitly document
+/// downgrade behavior in `docs/protocol-spec.md`.
+pub const TIRAMI_PROTOCOL_VERSION: u16 = 1;
+
+/// Oldest protocol version this binary intentionally accepts.
+pub const TIRAMI_MIN_PROTOCOL_VERSION: u16 = 1;
+
+pub const FEATURE_PRICE_SIGNAL_HTTP_ENDPOINT: &str = "price-signal:http-endpoint";
+pub const FEATURE_AGENT_REMOTE_DISPATCH: &str = "agent:remote-dispatch";
+pub const FEATURE_LEDGER_MIRROR_SETTLEMENT: &str = "ledger:mirror-settlement";
+pub const FEATURE_API_BEARER_AUTH: &str = "api:bearer-auth";
+pub const FEATURE_ZK_PROOF_OPTIONAL: &str = "zk:proof-optional";
+pub const FEATURE_ZK_PROOF_RECOMMENDED: &str = "zk:proof-recommended";
+pub const FEATURE_ZK_PROOF_REQUIRED: &str = "zk:proof-required";
+
+pub fn default_protocol_version() -> u16 {
+    TIRAMI_PROTOCOL_VERSION
+}
+
+pub fn base_protocol_features() -> Vec<String> {
+    vec![
+        FEATURE_AGENT_REMOTE_DISPATCH.to_string(),
+        FEATURE_LEDGER_MIRROR_SETTLEMENT.to_string(),
+        FEATURE_API_BEARER_AUTH.to_string(),
+    ]
+}
+
+/// Build the feature vector a node should advertise over HTTP/gossip.
+///
+/// Keep entries small and stable: this vector is exposed to operators and
+/// lets older nodes make conservative routing decisions.
+pub fn advertised_protocol_features(
+    http_endpoint_advertised: bool,
+    proof_policy: &str,
+) -> Vec<String> {
+    let mut features = base_protocol_features();
+    if http_endpoint_advertised {
+        features.push(FEATURE_PRICE_SIGNAL_HTTP_ENDPOINT.to_string());
+    }
+    match proof_policy.trim().to_ascii_lowercase().as_str() {
+        "optional" => features.push(FEATURE_ZK_PROOF_OPTIONAL.to_string()),
+        "recommended" => features.push(FEATURE_ZK_PROOF_RECOMMENDED.to_string()),
+        "required" => features.push(FEATURE_ZK_PROOF_REQUIRED.to_string()),
+        _ => {}
+    }
+    features.sort();
+    features.dedup();
+    features
+}
+
+pub fn is_supported_protocol_version(version: u16) -> bool {
+    (TIRAMI_MIN_PROTOCOL_VERSION..=TIRAMI_PROTOCOL_VERSION).contains(&version)
+}
+
+fn feature_name_is_valid(feature: &str) -> bool {
+    !feature.is_empty()
+        && feature.len() <= 64
+        && feature.bytes().all(|b| {
+            b.is_ascii_lowercase()
+                || b.is_ascii_digit()
+                || matches!(b, b'-' | b'_' | b':' | b'.')
+        })
+}
+
 /// Unique identifier for a node, derived from its Ed25519 public key.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct NodeId(pub [u8; 32]);
@@ -154,6 +220,10 @@ pub struct InferenceTicket {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PeerCapability {
     pub node_id: NodeId,
+    #[serde(default = "default_protocol_version")]
+    pub protocol_version: u16,
+    #[serde(default)]
+    pub features: Vec<String>,
     pub cpu_cores: u16,
     pub memory_gb: f32,
     pub metal_available: bool,
@@ -161,6 +231,12 @@ pub struct PeerCapability {
     pub battery_pct: Option<u8>,
     pub available_memory_gb: f32,
     pub region: String,
+}
+
+impl PeerCapability {
+    pub fn supports_feature(&self, feature: &str) -> bool {
+        self.features.iter().any(|f| f == feature)
+    }
 }
 
 /// A single stage in the inference pipeline.
@@ -244,6 +320,17 @@ impl NodeBalance {
 pub struct PriceSignal {
     /// Provider node announcing the price.
     pub node_id: NodeId,
+    /// Runtime/wire protocol version the provider speaks.
+    ///
+    /// Defaults to v1 so pre-field Phase-19 signals remain readable.
+    #[serde(default = "default_protocol_version")]
+    pub protocol_version: u16,
+    /// Small feature flags for conservative future routing.
+    ///
+    /// Examples: `price-signal:http-endpoint`,
+    /// `agent:remote-dispatch`, `ledger:mirror-settlement`.
+    #[serde(default)]
+    pub features: Vec<String>,
     /// Multiplier applied to base tier price. Must be finite and > 0.
     pub price_multiplier: f64,
     /// Available compute capacity in TRM-equivalent units.
@@ -286,6 +373,14 @@ impl PriceSignal {
         self.price_multiplier.is_finite()
             && self.price_multiplier >= Self::MIN_MULTIPLIER
             && self.price_multiplier <= Self::MAX_MULTIPLIER
+            && is_supported_protocol_version(self.protocol_version)
+            && self.features.len() <= 32
+            && self.features.iter().all(|f| feature_name_is_valid(f))
+    }
+
+    pub fn supports_feature(&self, feature: &str) -> bool {
+        self.features.iter().any(|f| f == feature)
+            || (feature == FEATURE_PRICE_SIGNAL_HTTP_ENDPOINT && self.http_endpoint.is_some())
     }
 }
 
@@ -406,6 +501,8 @@ mod tests {
     fn price_signal_rejects_nan_multiplier() {
         let sig = super::PriceSignal {
             node_id: NodeId([0u8; 32]),
+            protocol_version: super::TIRAMI_PROTOCOL_VERSION,
+            features: vec![],
             price_multiplier: f64::NAN,
             available_cu: 100,
             model_capabilities: vec![],
@@ -420,6 +517,8 @@ mod tests {
     fn price_signal_rejects_zero_multiplier() {
         let sig = super::PriceSignal {
             node_id: NodeId([0u8; 32]),
+            protocol_version: super::TIRAMI_PROTOCOL_VERSION,
+            features: vec![],
             price_multiplier: 0.0,
             available_cu: 100,
             model_capabilities: vec![],
@@ -434,6 +533,8 @@ mod tests {
     fn price_signal_rejects_infinite_multiplier() {
         let sig = super::PriceSignal {
             node_id: NodeId([0u8; 32]),
+            protocol_version: super::TIRAMI_PROTOCOL_VERSION,
+            features: vec![],
             price_multiplier: f64::INFINITY,
             available_cu: 100,
             model_capabilities: vec![],
@@ -448,6 +549,8 @@ mod tests {
     fn price_signal_rejects_negative_multiplier() {
         let sig = super::PriceSignal {
             node_id: NodeId([0u8; 32]),
+            protocol_version: super::TIRAMI_PROTOCOL_VERSION,
+            features: vec![],
             price_multiplier: -1.0,
             available_cu: 100,
             model_capabilities: vec![],
@@ -462,6 +565,8 @@ mod tests {
     fn price_signal_rejects_absurd_multiplier() {
         let sig = super::PriceSignal {
             node_id: NodeId([0u8; 32]),
+            protocol_version: super::TIRAMI_PROTOCOL_VERSION,
+            features: vec![],
             price_multiplier: 1000.0,
             available_cu: 100,
             model_capabilities: vec![],
@@ -476,6 +581,8 @@ mod tests {
     fn price_signal_accepts_normal_multiplier() {
         let sig = super::PriceSignal {
             node_id: NodeId([0u8; 32]),
+            protocol_version: super::TIRAMI_PROTOCOL_VERSION,
+            features: vec![],
             price_multiplier: 1.0,
             available_cu: 100,
             model_capabilities: vec![],
@@ -490,6 +597,8 @@ mod tests {
     fn price_signal_accepts_discount() {
         let sig = super::PriceSignal {
             node_id: NodeId([0u8; 32]),
+            protocol_version: super::TIRAMI_PROTOCOL_VERSION,
+            features: vec![],
             price_multiplier: 0.5,
             available_cu: 100,
             model_capabilities: vec![],
@@ -498,6 +607,31 @@ mod tests {
             http_endpoint: None,
         };
         assert!(sig.is_valid());
+    }
+
+    #[test]
+    fn price_signal_rejects_unsupported_protocol_version() {
+        let sig = super::PriceSignal {
+            node_id: NodeId([0u8; 32]),
+            protocol_version: super::TIRAMI_PROTOCOL_VERSION + 1,
+            features: vec![],
+            price_multiplier: 1.0,
+            available_cu: 100,
+            model_capabilities: vec![],
+            latency_hint_ms: 50,
+            timestamp: 0,
+            http_endpoint: None,
+        };
+        assert!(!sig.is_valid());
+    }
+
+    #[test]
+    fn advertised_protocol_features_are_stable_and_include_http_when_public() {
+        let features = super::advertised_protocol_features(true, "optional");
+        assert!(features.contains(&super::FEATURE_AGENT_REMOTE_DISPATCH.to_string()));
+        assert!(features.contains(&super::FEATURE_LEDGER_MIRROR_SETTLEMENT.to_string()));
+        assert!(features.contains(&super::FEATURE_PRICE_SIGNAL_HTTP_ENDPOINT.to_string()));
+        assert!(features.contains(&super::FEATURE_ZK_PROOF_OPTIONAL.to_string()));
     }
 
     // ------------------------------------------------------------------

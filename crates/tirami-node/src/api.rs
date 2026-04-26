@@ -6,14 +6,14 @@ use axum::{
     response::{Response, Sse, sse::Event},
     routing::{get, post},
 };
+use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 use tirami_agora::Marketplace;
 use tirami_core::{Config, ModelManifest, NodeId, PeerCapability, PipelineTopology};
 use tirami_infer::{CandleEngine, InferenceEngine};
 use tirami_ledger::{AgentNet, ComputeLedger, SafetyController, SettlementStatement, TradeRecord};
 use tirami_net::gossip::broadcast_loan;
 use tirami_net::{ClusterManager, GossipState};
-use serde::{Deserialize, Serialize};
-use std::sync::Arc;
 use tokio::sync::Mutex;
 
 type EngineState = Arc<Mutex<CandleEngine>>;
@@ -246,6 +246,7 @@ pub fn create_router_with_services(
         .route("/v1/tirami/trades", get(forge_trades))
         .route("/v1/tirami/invoice", post(forge_invoice))
         .route("/v1/tirami/network", get(tirami_network))
+        .route("/v1/tirami/protocol", get(forge_protocol))
         .route("/v1/tirami/providers", get(forge_providers))
         .route("/v1/tirami/peers", get(forge_peers))
         .route("/v1/tirami/schedule", post(forge_schedule))
@@ -270,46 +271,142 @@ pub fn create_router_with_services(
         .route("/v1/agentnet/discover", get(agentnet_discover))
         .route("/v1/agentnet/leaderboard", get(agentnet_leaderboard))
         // forge-bank L2 routes (Phase 8 / Batch B1)
-        .route("/v1/tirami/bank/portfolio", get(crate::handlers::bank::bank_portfolio))
-        .route("/v1/tirami/bank/tick", post(crate::handlers::bank::bank_tick))
-        .route("/v1/tirami/bank/strategy", post(crate::handlers::bank::bank_set_strategy))
-        .route("/v1/tirami/bank/risk", post(crate::handlers::bank::bank_set_risk))
-        .route("/v1/tirami/bank/futures", get(crate::handlers::bank::bank_list_futures))
-        .route("/v1/tirami/bank/futures", post(crate::handlers::bank::bank_create_futures))
-        .route("/v1/tirami/bank/risk-assessment", get(crate::handlers::bank::bank_risk_assessment))
-        .route("/v1/tirami/bank/optimize", post(crate::handlers::bank::bank_optimize))
+        .route(
+            "/v1/tirami/bank/portfolio",
+            get(crate::handlers::bank::bank_portfolio),
+        )
+        .route(
+            "/v1/tirami/bank/tick",
+            post(crate::handlers::bank::bank_tick),
+        )
+        .route(
+            "/v1/tirami/bank/strategy",
+            post(crate::handlers::bank::bank_set_strategy),
+        )
+        .route(
+            "/v1/tirami/bank/risk",
+            post(crate::handlers::bank::bank_set_risk),
+        )
+        .route(
+            "/v1/tirami/bank/futures",
+            get(crate::handlers::bank::bank_list_futures),
+        )
+        .route(
+            "/v1/tirami/bank/futures",
+            post(crate::handlers::bank::bank_create_futures),
+        )
+        .route(
+            "/v1/tirami/bank/risk-assessment",
+            get(crate::handlers::bank::bank_risk_assessment),
+        )
+        .route(
+            "/v1/tirami/bank/optimize",
+            post(crate::handlers::bank::bank_optimize),
+        )
         // forge-agora L4 routes (Phase 8 / Batch B2)
-        .route("/v1/tirami/agora/register", post(crate::handlers::agora::agora_register))
-        .route("/v1/tirami/agora/agents", get(crate::handlers::agora::agora_list_agents))
-        .route("/v1/tirami/agora/reputation/{hex}", get(crate::handlers::agora::agora_reputation))
-        .route("/v1/tirami/agora/find", post(crate::handlers::agora::agora_find))
-        .route("/v1/tirami/agora/stats", get(crate::handlers::agora::agora_stats))
-        .route("/v1/tirami/agora/snapshot", get(crate::handlers::agora::agora_snapshot))
-        .route("/v1/tirami/agora/restore", post(crate::handlers::agora::agora_restore))
+        .route(
+            "/v1/tirami/agora/register",
+            post(crate::handlers::agora::agora_register),
+        )
+        .route(
+            "/v1/tirami/agora/agents",
+            get(crate::handlers::agora::agora_list_agents),
+        )
+        .route(
+            "/v1/tirami/agora/reputation/{hex}",
+            get(crate::handlers::agora::agora_reputation),
+        )
+        .route(
+            "/v1/tirami/agora/find",
+            post(crate::handlers::agora::agora_find),
+        )
+        .route(
+            "/v1/tirami/agora/stats",
+            get(crate::handlers::agora::agora_stats),
+        )
+        .route(
+            "/v1/tirami/agora/snapshot",
+            get(crate::handlers::agora::agora_snapshot),
+        )
+        .route(
+            "/v1/tirami/agora/restore",
+            post(crate::handlers::agora::agora_restore),
+        )
         // forge-mind L3 routes (Phase 8 / Batch B3)
-        .route("/v1/tirami/mind/init", post(crate::handlers::mind::mind_init))
-        .route("/v1/tirami/mind/state", get(crate::handlers::mind::mind_state))
-        .route("/v1/tirami/mind/improve", post(crate::handlers::mind::mind_improve))
-        .route("/v1/tirami/mind/budget", post(crate::handlers::mind::mind_budget))
-        .route("/v1/tirami/mind/stats", get(crate::handlers::mind::mind_stats))
+        .route(
+            "/v1/tirami/mind/init",
+            post(crate::handlers::mind::mind_init),
+        )
+        .route(
+            "/v1/tirami/mind/state",
+            get(crate::handlers::mind::mind_state),
+        )
+        .route(
+            "/v1/tirami/mind/improve",
+            post(crate::handlers::mind::mind_improve),
+        )
+        .route(
+            "/v1/tirami/mind/budget",
+            post(crate::handlers::mind::mind_budget),
+        )
+        .route(
+            "/v1/tirami/mind/stats",
+            get(crate::handlers::mind::mind_stats),
+        )
         // Phase 13 — tokenomics / staking / referral (su = "pull me up" namespace)
-        .route("/v1/tirami/su/supply", get(crate::handlers::tokenomics::su_supply))
-        .route("/v1/tirami/su/stake", get(crate::handlers::tokenomics::su_stake_info))
-        .route("/v1/tirami/su/stake", post(crate::handlers::tokenomics::su_stake))
-        .route("/v1/tirami/su/unstake", post(crate::handlers::tokenomics::su_unstake))
-        .route("/v1/tirami/su/refer", post(crate::handlers::tokenomics::su_refer))
-        .route("/v1/tirami/su/referrals", get(crate::handlers::tokenomics::su_referrals))
+        .route(
+            "/v1/tirami/su/supply",
+            get(crate::handlers::tokenomics::su_supply),
+        )
+        .route(
+            "/v1/tirami/su/stake",
+            get(crate::handlers::tokenomics::su_stake_info),
+        )
+        .route(
+            "/v1/tirami/su/stake",
+            post(crate::handlers::tokenomics::su_stake),
+        )
+        .route(
+            "/v1/tirami/su/unstake",
+            post(crate::handlers::tokenomics::su_unstake),
+        )
+        .route(
+            "/v1/tirami/su/refer",
+            post(crate::handlers::tokenomics::su_refer),
+        )
+        .route(
+            "/v1/tirami/su/referrals",
+            get(crate::handlers::tokenomics::su_referrals),
+        )
         // Phase 13 — governance (stake-weighted voting)
-        .route("/v1/tirami/governance/propose", post(crate::handlers::governance::governance_propose))
-        .route("/v1/tirami/governance/vote", post(crate::handlers::governance::governance_vote))
-        .route("/v1/tirami/governance/proposals", get(crate::handlers::governance::governance_proposals))
-        .route("/v1/tirami/governance/tally/{id}", get(crate::handlers::governance::governance_tally))
+        .route(
+            "/v1/tirami/governance/propose",
+            post(crate::handlers::governance::governance_propose),
+        )
+        .route(
+            "/v1/tirami/governance/vote",
+            post(crate::handlers::governance::governance_vote),
+        )
+        .route(
+            "/v1/tirami/governance/proposals",
+            get(crate::handlers::governance::governance_proposals),
+        )
+        .route(
+            "/v1/tirami/governance/tally/{id}",
+            get(crate::handlers::governance::governance_tally),
+        )
         // Phase 10 P6 — Bitcoin OP_RETURN anchoring
-        .route("/v1/tirami/anchor", get(crate::handlers::anchor::anchor_handler))
+        .route(
+            "/v1/tirami/anchor",
+            get(crate::handlers::anchor::anchor_handler),
+        )
         // Admin: manual state persistence trigger (Phase 9)
         .route("/v1/tirami/admin/save-state", post(admin_save_state))
         // Phase 9 A3 — Reputation gossip debug endpoints
-        .route("/v1/tirami/reputation-gossip-status", get(forge_reputation_gossip_status))
+        .route(
+            "/v1/tirami/reputation-gossip-status",
+            get(forge_reputation_gossip_status),
+        )
         // Phase 9 A5 — Collusion resistance debug endpoint
         .route("/v1/tirami/collusion/{hex}", get(forge_collusion_report))
         // Phase 17 Wave 1.3 — slashing audit trail
@@ -366,6 +463,9 @@ fn default_temperature() -> f32 {
 pub struct ChatResponse {
     pub text: String,
     pub tokens_generated: usize,
+    /// Tirami-specific compute accounting extension.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub x_tirami: Option<TiramiUsageExt>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -378,6 +478,8 @@ pub struct HealthResponse {
 pub struct StatusResponse {
     pub status: String,
     pub model_loaded: bool,
+    pub protocol_version: u16,
+    pub protocol_features: Vec<String>,
     pub market_price: tirami_ledger::MarketPrice,
     pub network: tirami_ledger::NetworkStats,
     pub recent_trades: Vec<tirami_ledger::TradeRecord>,
@@ -520,7 +622,7 @@ pub struct OpenAIUsage {
     pub total_tokens: u32,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct TiramiUsageExt {
     pub trm_cost: u64,
     pub effective_balance: i64,
@@ -602,10 +704,7 @@ pub struct TiramiPricingResponse {
 /// `{ "error": { "code": <u16>, "message": <body-as-string> } }`
 /// and flips the header to `application/json`. Success responses
 /// pass through untouched.
-async fn json_error_envelope(
-    request: Request<axum::body::Body>,
-    next: Next,
-) -> Response {
+async fn json_error_envelope(request: Request<axum::body::Body>, next: Next) -> Response {
     let response = next.run(request).await;
     let status = response.status();
     if !(status.is_client_error() || status.is_server_error()) {
@@ -634,18 +733,14 @@ async fn json_error_envelope(
                 }
             });
             let body_bytes = serde_json::to_vec(&payload).unwrap_or_default();
-            parts
-                .headers
-                .insert(
-                    axum::http::header::CONTENT_TYPE,
-                    axum::http::HeaderValue::from_static("application/json"),
-                );
-            parts
-                .headers
-                .insert(
-                    axum::http::header::CONTENT_LENGTH,
-                    axum::http::HeaderValue::from(body_bytes.len()),
-                );
+            parts.headers.insert(
+                axum::http::header::CONTENT_TYPE,
+                axum::http::HeaderValue::from_static("application/json"),
+            );
+            parts.headers.insert(
+                axum::http::header::CONTENT_LENGTH,
+                axum::http::HeaderValue::from(body_bytes.len()),
+            );
             return Response::from_parts(parts, axum::body::Body::from(body_bytes));
         }
     };
@@ -738,8 +833,7 @@ async fn require_bearer_auth(
         let store = state.api_tokens.lock().await;
         !matches!(
             store.verify(token, crate::api_tokens::ApiScope::ReadOnly, now_ms),
-            crate::api_tokens::TokenVerdict::Unknown
-                | crate::api_tokens::TokenVerdict::Expired
+            crate::api_tokens::TokenVerdict::Unknown | crate::api_tokens::TokenVerdict::Expired
         )
     };
     if scoped_ok {
@@ -780,10 +874,7 @@ async fn require_admin_scope(
         .get(AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix("Bearer "))
-        .ok_or((
-            StatusCode::UNAUTHORIZED,
-            "missing bearer token".to_string(),
-        ))?;
+        .ok_or((StatusCode::UNAUTHORIZED, "missing bearer token".to_string()))?;
 
     if let Some(expected) = legacy_expected {
         if constant_time_eq(value.as_bytes(), expected.as_bytes()) {
@@ -796,7 +887,11 @@ async fn require_admin_scope(
         crate::api_tokens::TokenVerdict::Ok(_) => Ok(()),
         crate::api_tokens::TokenVerdict::InsufficientScope { have, need } => Err((
             StatusCode::FORBIDDEN,
-            format!("insufficient scope: have {}, need {}", have.as_str(), need.as_str()),
+            format!(
+                "insufficient scope: have {}, need {}",
+                have.as_str(),
+                need.as_str()
+            ),
         )),
         crate::api_tokens::TokenVerdict::Expired => {
             Err((StatusCode::UNAUTHORIZED, "token expired".to_string()))
@@ -951,6 +1046,16 @@ fn parse_consumer_header(headers: &axum::http::HeaderMap) -> Option<NodeId> {
     }
 }
 
+fn parse_bearer_header(headers: &axum::http::HeaderMap) -> Option<String> {
+    headers
+        .get(AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "))
+        .map(str::trim)
+        .filter(|token| !token.is_empty())
+        .map(ToOwned::to_owned)
+}
+
 /// Record a trade in the ledger after inference.
 ///
 /// Phase 15 Step 3: now also populates `flops_estimated` from the model
@@ -963,8 +1068,32 @@ async fn record_api_trade(
     model_id: &str,
     flops_per_token: u64,
 ) -> u64 {
+    let trm_cost = {
+        let ledger = ledger.lock().await;
+        ledger.estimate_cost(tokens as u64, 1, 1)
+    };
+    record_api_trade_with_cost(
+        ledger,
+        provider,
+        consumer,
+        tokens,
+        model_id,
+        flops_per_token,
+        trm_cost,
+    )
+    .await
+}
+
+async fn record_api_trade_with_cost(
+    ledger: &LedgerState,
+    provider: &NodeId,
+    consumer: Option<NodeId>,
+    tokens: u32,
+    model_id: &str,
+    flops_per_token: u64,
+    trm_cost: u64,
+) -> u64 {
     let mut ledger = ledger.lock().await;
-    let trm_cost = ledger.estimate_cost(tokens as u64, 1, 1);
     let flops_estimated = flops_per_token.saturating_mul(tokens as u64);
     // Phase 17 Wave 4.5 — self-originated bookkeeping trade.
     //
@@ -1038,6 +1167,26 @@ async fn flops_per_token_from_manifest(state: &AppState) -> u64 {
         .unwrap_or(0)
 }
 
+async fn persist_economy_state(state: &AppState) {
+    if let Some(path) = state.config.ledger_path.as_ref() {
+        if let Err(err) = state.ledger.lock().await.save_to_path(path) {
+            tracing::warn!("Failed to persist ledger to {}: {}", path.display(), err);
+        }
+    }
+    if let Some(path) = state.config.personal_agent_state_path.as_ref() {
+        let personal = state.personal_agent.lock().await;
+        if let Some(agent) = personal.as_ref() {
+            if let Err(err) = crate::state_persist::save_personal_agent(agent, path) {
+                tracing::warn!(
+                    "Failed to persist personal agent to {}: {}",
+                    path.display(),
+                    err
+                );
+            }
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Legacy Forge endpoints
 // ---------------------------------------------------------------------------
@@ -1068,6 +1217,8 @@ async fn status(State(state): State<AppState>) -> Json<StatusResponse> {
     Json(StatusResponse {
         status: "ok".to_string(),
         model_loaded,
+        protocol_version: tirami_core::TIRAMI_PROTOCOL_VERSION,
+        protocol_features: local_protocol_features(&state),
         market_price,
         network,
         recent_trades,
@@ -1135,6 +1286,7 @@ async fn topology(
 
 async fn chat(
     State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
     Json(req): Json<ChatRequest>,
 ) -> Result<Json<ChatResponse>, (StatusCode, String)> {
     use tirami_infer::InferenceEngine;
@@ -1155,15 +1307,46 @@ async fn chat(
 
     let text = tokens.join("");
     let count = tokens.len();
+    let model = model_name(&state.model_manifest).await;
+    let flops_per_token = flops_per_token_from_manifest(&state).await;
+    let consumer_id = parse_consumer_header(&headers);
+    let consumer_for_agent = consumer_id.clone();
+    let trm_cost = record_api_trade(
+        &state.ledger,
+        &state.local_node_id,
+        consumer_id,
+        count as u32,
+        &model,
+        flops_per_token,
+    )
+    .await;
+    maybe_record_agent_earn(
+        &state.personal_agent,
+        &state.local_node_id,
+        &consumer_for_agent,
+        trm_cost,
+    )
+    .await;
+    persist_economy_state(&state).await;
+    let effective_balance = state
+        .ledger
+        .lock()
+        .await
+        .effective_balance(&state.local_node_id);
 
     Ok(Json(ChatResponse {
         text,
         tokens_generated: count,
+        x_tirami: Some(TiramiUsageExt {
+            trm_cost,
+            effective_balance,
+        }),
     }))
 }
 
 async fn chat_stream(
     State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
     Json(req): Json<ChatRequest>,
 ) -> Result<
     Sse<impl tokio_stream::Stream<Item = Result<Event, std::convert::Infallible>>>,
@@ -1187,6 +1370,27 @@ async fn chat_stream(
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     drop(engine_guard);
+    let model = model_name(&state.model_manifest).await;
+    let flops_per_token = flops_per_token_from_manifest(&state).await;
+    let consumer_id = parse_consumer_header(&headers);
+    let consumer_for_agent = consumer_id.clone();
+    let trm_cost = record_api_trade(
+        &state.ledger,
+        &state.local_node_id,
+        consumer_id,
+        tokens.len() as u32,
+        &model,
+        flops_per_token,
+    )
+    .await;
+    maybe_record_agent_earn(
+        &state.personal_agent,
+        &state.local_node_id,
+        &consumer_for_agent,
+        trm_cost,
+    )
+    .await;
+    persist_economy_state(&state).await;
 
     let stream = tokio_stream::iter(
         tokens
@@ -1248,11 +1452,7 @@ async fn openai_chat_completions(
     let temperature = req.temperature.unwrap_or(default_temperature());
     let top_p = req.top_p.map(|v| v as f32);
     let top_k = req.top_k;
-    let has_tools = req
-        .tools
-        .as_ref()
-        .map(|t| !t.is_empty())
-        .unwrap_or(false)
+    let has_tools = req.tools.as_ref().map(|t| !t.is_empty()).unwrap_or(false)
         && !matches!(&req.tool_choice, Some(ToolChoice::Mode(m)) if m == "none");
 
     // Validate request parameters
@@ -1274,11 +1474,32 @@ async fn openai_chat_completions(
     let consumer_id = parse_consumer_header(&headers);
 
     if stream {
-        openai_stream_response(state, prompt, max_tokens, temperature, top_p, top_k, model, has_tools, consumer_id).await
+        openai_stream_response(
+            state,
+            prompt,
+            max_tokens,
+            temperature,
+            top_p,
+            top_k,
+            model,
+            has_tools,
+            consumer_id,
+        )
+        .await
     } else {
-        openai_sync_response(state, prompt, max_tokens, temperature, top_p, top_k, model, has_tools, consumer_id)
-            .await
-            .map(|json| json.into_response())
+        openai_sync_response(
+            state,
+            prompt,
+            max_tokens,
+            temperature,
+            top_p,
+            top_k,
+            model,
+            has_tools,
+            consumer_id,
+        )
+        .await
+        .map(|json| json.into_response())
     }
 }
 
@@ -1301,15 +1522,8 @@ async fn openai_sync_response(
         // over P2P. This is the only path that triggers a real
         // dual-signed TRM negotiation from an HTTP client.
         drop(engine);
-        return forward_chat_to_peer(
-            &state,
-            &prompt,
-            max_tokens,
-            temperature,
-            model,
-            has_tools,
-        )
-        .await;
+        return forward_chat_to_peer(&state, &prompt, max_tokens, temperature, model, has_tools)
+            .await;
     }
 
     // Use the engine's tokenizer for accurate prompt token count (#P11-prompt-tokens).
@@ -1361,7 +1575,12 @@ async fn openai_sync_response(
         trm_cost,
     )
     .await;
-    let effective_balance = state.ledger.lock().await.effective_balance(&state.local_node_id);
+    persist_economy_state(&state).await;
+    let effective_balance = state
+        .ledger
+        .lock()
+        .await
+        .effective_balance(&state.local_node_id);
 
     // If tools were injected, try to extract a tool call from the model output.
     let (message, finish_reason) = if has_tools {
@@ -1378,7 +1597,11 @@ async fn openai_sync_response(
             (
                 OpenAIChatMessage {
                     role: "assistant".to_string(),
-                    content: if content_before.is_empty() { None } else { Some(content_before) },
+                    content: if content_before.is_empty() {
+                        None
+                    } else {
+                        Some(content_before)
+                    },
                     tool_calls: Some(vec![tool_call]),
                 },
                 "tool_calls".to_string(),
@@ -1478,22 +1701,23 @@ pub(crate) async fn forward_chat_to_peer(
         temperature,
     )
     .await
-    .map_err(|e| (StatusCode::BAD_GATEWAY, format!("peer inference failed: {e}")))?;
+    .map_err(|e| {
+        (
+            StatusCode::BAD_GATEWAY,
+            format!("peer inference failed: {e}"),
+        )
+    })?;
 
     // Count completion tokens using the local tokenizer if loaded
     // (best effort — most workers won't have it). Fall back to a
     // whitespace-split estimate so usage.completion_tokens is never 0.
     let completion_tokens = {
-        let mut engine = state.engine.lock().await;
+        let engine = state.engine.lock().await;
         engine.tokenize(&text).ok().map(|t| t.len() as u32)
     }
     .unwrap_or_else(|| text.split_whitespace().count().max(1) as u32);
 
-    let effective_balance = state
-        .ledger
-        .lock()
-        .await
-        .effective_balance(&local_node_id);
+    let effective_balance = state.ledger.lock().await.effective_balance(&local_node_id);
 
     let (message, finish_reason) = if has_tools {
         let (content_before, maybe_tc) = extract_tool_call(&text);
@@ -1509,7 +1733,11 @@ pub(crate) async fn forward_chat_to_peer(
             (
                 OpenAIChatMessage {
                     role: "assistant".to_string(),
-                    content: if content_before.is_empty() { None } else { Some(content_before) },
+                    content: if content_before.is_empty() {
+                        None
+                    } else {
+                        Some(content_before)
+                    },
                     tool_calls: Some(vec![tool_call]),
                 },
                 "tool_calls".to_string(),
@@ -1568,9 +1796,8 @@ pub(crate) async fn forward_chat_to_peer(
 fn forwarded_to_sse_stream(
     resp: OpenAIChatResponse,
     model: &str,
-) -> Sse<
-    impl tokio_stream::Stream<Item = Result<Event, std::convert::Infallible>> + Send + 'static,
-> {
+) -> Sse<impl tokio_stream::Stream<Item = Result<Event, std::convert::Infallible>> + Send + 'static>
+{
     let id = resp.id.clone();
     let created = resp.created;
     let choice = resp.choices.into_iter().next();
@@ -1694,7 +1921,8 @@ async fn openai_stream_response(
     let model_for_stream = model.clone();
     let model_for_trade = model.clone();
 
-    let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Result<Event, std::convert::Infallible>>();
+    let (tx, rx) =
+        tokio::sync::mpsc::unbounded_channel::<Result<Event, std::convert::Infallible>>();
 
     // Send the role chunk immediately (no inference needed for this).
     let role_chunk = serde_json::to_string(&OpenAIStreamChunk {
@@ -1719,6 +1947,8 @@ async fn openai_stream_response(
     let engine_arc = state.engine.clone();
     let ledger_arc = state.ledger.clone();
     let personal_agent_arc = state.personal_agent.clone();
+    let ledger_path_for_trade = state.config.ledger_path.clone();
+    let personal_agent_path_for_trade = state.config.personal_agent_state_path.clone();
     let provider_id = state.local_node_id.clone();
     let tx_content = tx.clone();
     let req_id_clone = request_id.clone();
@@ -1785,7 +2015,10 @@ async fn openai_stream_response(
         // If tools were enabled, check accumulated text for a tool call.
         // The tool_calls chunk replaces the stop chunk when a call is found.
         let (finish_reason, tool_calls_for_chunk) = if has_tools {
-            let full_text = accumulated_text.lock().map(|g| g.clone()).unwrap_or_default();
+            let full_text = accumulated_text
+                .lock()
+                .map(|g| g.clone())
+                .unwrap_or_default();
             let (_, maybe_tc) = extract_tool_call(&full_text);
             if let Some(tc) = maybe_tc {
                 let tool_call = OpenAIToolCall {
@@ -1845,6 +2078,23 @@ async fn openai_stream_response(
                 trm_cost,
             )
             .await;
+            if let Some(path) = ledger_path_for_trade.as_ref() {
+                if let Err(err) = ledger_arc.lock().await.save_to_path(path) {
+                    tracing::warn!("Failed to persist ledger to {}: {}", path.display(), err);
+                }
+            }
+            if let Some(path) = personal_agent_path_for_trade.as_ref() {
+                let personal = personal_agent_arc.lock().await;
+                if let Some(agent) = personal.as_ref() {
+                    if let Err(err) = crate::state_persist::save_personal_agent(agent, path) {
+                        tracing::warn!(
+                            "Failed to persist personal agent to {}: {}",
+                            path.display(),
+                            err
+                        );
+                    }
+                }
+            }
         });
     });
 
@@ -2037,6 +2287,41 @@ pub struct TiramiNetworkResponse {
     pub merkle_root: String,
 }
 
+fn local_protocol_features(state: &AppState) -> Vec<String> {
+    let advertised_http_endpoint =
+        crate::node::derive_public_http_endpoint(&state.config.api_bind_addr, state.config.api_port)
+            .is_some();
+    tirami_core::advertised_protocol_features(
+        advertised_http_endpoint,
+        &state.config.proof_policy,
+    )
+}
+
+async fn forge_protocol(
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    check_forge_rate_limit(&state).await?;
+    let advertised_http_endpoint =
+        crate::node::derive_public_http_endpoint(&state.config.api_bind_addr, state.config.api_port);
+    Ok(Json(serde_json::json!({
+        "protocol_version": tirami_core::TIRAMI_PROTOCOL_VERSION,
+        "min_protocol_version": tirami_core::TIRAMI_MIN_PROTOCOL_VERSION,
+        "features": local_protocol_features(&state),
+        "proof_policy": state.config.proof_policy,
+        "transport": "iroh-quic-noise",
+        "wire_codec": "bincode",
+        "price_signal": {
+            "schema": "v1+feature-flags",
+            "http_endpoint_advertised": advertised_http_endpoint.is_some(),
+            "http_endpoint": advertised_http_endpoint,
+        },
+        "compatibility": {
+            "rejects_future_protocol_versions": true,
+            "backward_serde_defaults": true,
+        }
+    })))
+}
+
 /// GET /v1/tirami/providers — list known providers with reputation and pricing (Issue #16).
 /// Enables agents to compare providers and choose based on cost/quality.
 async fn forge_providers(
@@ -2083,14 +2368,25 @@ async fn forge_peers(
     check_forge_rate_limit(&state).await?;
     let ledger = state.ledger.lock().await;
 
-    let peers: Vec<serde_json::Value> = ledger
-        .peer_registry
-        .peers()
-        .iter()
-        .map(|(node_id, state)| {
-            let (price_multiplier, available_cu, models, latency_hint_ms, timestamp, http_endpoint) =
-                match &state.price_signal {
+    let peers: Vec<serde_json::Value> =
+        ledger
+            .peer_registry
+            .peers()
+            .iter()
+            .map(|(node_id, state)| {
+                let (
+                    protocol_version,
+                    features,
+                    price_multiplier,
+                    available_cu,
+                    models,
+                    latency_hint_ms,
+                    timestamp,
+                    http_endpoint,
+                ) = match &state.price_signal {
                     Some(sig) => (
+                        sig.protocol_version,
+                        sig.features.clone(),
                         sig.price_multiplier,
                         sig.available_cu,
                         sig.model_capabilities
@@ -2101,24 +2397,35 @@ async fn forge_peers(
                         sig.timestamp,
                         sig.http_endpoint.clone(),
                     ),
-                    None => (1.0, 0, vec![], 0, 0, None),
+                    None => (
+                        tirami_core::TIRAMI_PROTOCOL_VERSION,
+                        vec![],
+                        1.0,
+                        0,
+                        vec![],
+                        0,
+                        0,
+                        None,
+                    ),
                 };
-            serde_json::json!({
-                "node_id": node_id.to_hex(),
-                "price_multiplier": price_multiplier,
-                "available_cu": available_cu,
-                "models": models,
-                "latency_hint_ms": latency_hint_ms,
-                "latency_ema_ms": state.latency_ema_ms,
-                "last_seen": timestamp,
-                "audit_tier": format!("{:?}", state.audit_tier),
-                "verified_trades": state.verified_trade_count,
-                // Phase 19 / Tier C — peer's self-advertised HTTP
-                // endpoint (None if iroh-P2P only).
-                "http_endpoint": http_endpoint,
+                serde_json::json!({
+                    "node_id": node_id.to_hex(),
+                    "protocol_version": protocol_version,
+                    "features": features,
+                    "price_multiplier": price_multiplier,
+                    "available_cu": available_cu,
+                    "models": models,
+                    "latency_hint_ms": latency_hint_ms,
+                    "latency_ema_ms": state.latency_ema_ms,
+                    "last_seen": timestamp,
+                    "audit_tier": format!("{:?}", state.audit_tier),
+                    "verified_trades": state.verified_trade_count,
+                    // Phase 19 / Tier C — peer's self-advertised HTTP
+                    // endpoint (None if iroh-P2P only).
+                    "http_endpoint": http_endpoint,
+                })
             })
-        })
-        .collect();
+            .collect();
 
     Ok(Json(serde_json::json!({
         "count": peers.len(),
@@ -2208,16 +2515,19 @@ async fn forge_kill_switch(
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     let mut safety = state.safety.lock().await;
     if req.activate {
-        safety
-            .kill_switch
-            .activate(&req.reason.unwrap_or_default(), &req.operator.unwrap_or_default());
+        safety.kill_switch.activate(
+            &req.reason.unwrap_or_default(),
+            &req.operator.unwrap_or_default(),
+        );
         Ok(Json(serde_json::json!({
             "status": "KILL SWITCH ACTIVATED",
             "reason": safety.kill_switch.reason,
         })))
     } else {
         safety.kill_switch.deactivate();
-        Ok(Json(serde_json::json!({"status": "kill switch deactivated"})))
+        Ok(Json(
+            serde_json::json!({"status": "kill switch deactivated"}),
+        ))
     }
 }
 
@@ -2242,7 +2552,11 @@ async fn forge_set_policy(
         human_approval_threshold: req.human_approval_threshold,
     };
 
-    state.safety.lock().await.set_policy(&node_id, policy.clone());
+    state
+        .safety
+        .lock()
+        .await
+        .set_policy(&node_id, policy.clone());
 
     Ok(Json(serde_json::json!({
         "status": "policy set",
@@ -2479,8 +2793,8 @@ async fn forge_lend_to(
     check_forge_rate_limit(&state).await?;
 
     use ed25519_dalek::{Signer, SigningKey};
-    use tirami_ledger::lending::{LoanRecord, LoanStatus, SignedLoanRecord, offered_interest_rate};
     use rand::rngs::OsRng;
+    use tirami_ledger::lending::{LoanRecord, LoanStatus, SignedLoanRecord, offered_interest_rate};
 
     if req.amount == 0 {
         return Err((StatusCode::BAD_REQUEST, "amount must be > 0".into()));
@@ -2491,7 +2805,10 @@ async fn forge_lend_to(
         .map_err(|_| (StatusCode::BAD_REQUEST, "invalid borrower hex".to_string()))?
         .try_into()
         .map_err(|_: Vec<u8>| {
-            (StatusCode::BAD_REQUEST, "borrower must be 32 bytes".to_string())
+            (
+                StatusCode::BAD_REQUEST,
+                "borrower must be 32 bytes".to_string(),
+            )
         })?;
     let borrower = NodeId(borrower_bytes);
 
@@ -2606,8 +2923,8 @@ async fn forge_borrow(
 ) -> Result<Json<BorrowResponse>, (StatusCode, String)> {
     check_forge_rate_limit(&state).await?;
     use ed25519_dalek::{Signer, SigningKey};
-    use tirami_ledger::lending::{LoanRecord, LoanStatus, SignedLoanRecord, offered_interest_rate};
     use rand::rngs::OsRng;
+    use tirami_ledger::lending::{LoanRecord, LoanStatus, SignedLoanRecord, offered_interest_rate};
 
     if req.amount == 0 {
         return Err((StatusCode::BAD_REQUEST, "amount must be > 0".into()));
@@ -2691,7 +3008,12 @@ async fn forge_repay(
     let loan_id_bytes: [u8; 32] = hex::decode(&req.loan_id)
         .map_err(|_| (StatusCode::BAD_REQUEST, "invalid loan_id hex".to_string()))?
         .try_into()
-        .map_err(|_: Vec<u8>| (StatusCode::BAD_REQUEST, "loan_id must be 32 bytes".to_string()))?;
+        .map_err(|_: Vec<u8>| {
+            (
+                StatusCode::BAD_REQUEST,
+                "loan_id must be 32 bytes".to_string(),
+            )
+        })?;
 
     let mut ledger = state.ledger.lock().await;
 
@@ -2843,8 +3165,8 @@ async fn forge_route(
         })
         .max_by(|a, b| a.3.partial_cmp(&b.3).unwrap_or(std::cmp::Ordering::Equal));
 
-    let (node_id, reputation, price, score) = best
-        .ok_or((StatusCode::NOT_FOUND, "no eligible provider found".into()))?;
+    let (node_id, reputation, price, score) =
+        best.ok_or((StatusCode::NOT_FOUND, "no eligible provider found".into()))?;
 
     Ok(Json(RouteResponse {
         provider: hex::encode(node_id.0),
@@ -2909,7 +3231,10 @@ async fn agentnet_post(
     check_forge_rate_limit(&state).await?;
 
     if req.content.is_empty() || req.content.len() > 1024 {
-        return Err((StatusCode::BAD_REQUEST, "content must be 1-1024 chars".to_string()));
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "content must be 1-1024 chars".to_string(),
+        ));
     }
 
     let mut net = state.agentnet.lock().await;
@@ -3042,7 +3367,10 @@ async fn forge_invoice(
     let effective = ledger.effective_balance(&state.local_node_id);
 
     if req.trm_amount == 0 {
-        return Err((StatusCode::BAD_REQUEST, "trm_amount must be > 0".to_string()));
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "trm_amount must be > 0".to_string(),
+        ));
     }
 
     if (req.trm_amount as i64) > effective {
@@ -3428,6 +3756,16 @@ struct AgentPeerHint {
     node_id: String,
     /// Base URL of the provider's HTTP API (e.g. `http://192.0.2.7:3000`).
     url: String,
+    /// Optional bearer token for the provider's protected HTTP API.
+    #[serde(default)]
+    api_token: Option<String>,
+}
+
+#[derive(Clone)]
+struct PeerDispatchTarget {
+    node_id: NodeId,
+    url: String,
+    api_token: Option<String>,
 }
 
 fn default_agent_task_max_tokens() -> u32 {
@@ -3442,9 +3780,11 @@ const AGENT_TASK_LOCAL_MAX_TOKENS: u32 = 256;
 
 async fn forge_agent_task(
     State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
     Json(req): Json<AgentTaskRequest>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     check_forge_rate_limit(&state).await?;
+    let inherited_api_token = parse_bearer_header(&headers);
 
     if req.prompt.trim().is_empty() {
         return Err((StatusCode::BAD_REQUEST, "prompt must not be empty".into()));
@@ -3484,9 +3824,18 @@ async fn forge_agent_task(
         .unwrap_or_else(|| ((req.max_tokens as u64).saturating_add(99) / 100).max(1));
 
     // Phase 18.5-part-3c — parse the explicit peer hint (if any).
-    let explicit_peer: Option<(NodeId, String)> = match &req.peer {
+    let explicit_peer: Option<PeerDispatchTarget> = match &req.peer {
         Some(hint) => match NodeId::from_hex(&hint.node_id) {
-            Ok(id) => Some((id, hint.url.trim_end_matches('/').to_string())),
+            Ok(id) => Some(PeerDispatchTarget {
+                node_id: id,
+                url: hint.url.trim_end_matches('/').to_string(),
+                api_token: hint
+                    .api_token
+                    .as_ref()
+                    .map(|token| token.trim().to_string())
+                    .filter(|token| !token.is_empty())
+                    .or_else(|| inherited_api_token.clone()),
+            }),
             Err(_) => {
                 return Err((
                     StatusCode::BAD_REQUEST,
@@ -3498,31 +3847,41 @@ async fn forge_agent_task(
     };
 
     // Phase 19 / Tier C — when no explicit peer is supplied, try to
-    // auto-resolve via select_provider + peer_http_endpoint. This
-    // closes the "RunRemote always bails to ask_user" scaffold from
-    // #80 so remote routing works without the caller needing to
-    // know peer URLs.
-    let auto_peer: Option<(NodeId, String)> = if explicit_peer.is_none()
-        && size == tirami_mind::TaskSize::Remote
-    {
-        let ledger = state.ledger.lock().await;
-        let model_id = tirami_core::ModelId(
-            req.model.as_deref().unwrap_or("").to_string(),
-        );
-        match ledger.select_provider(
-            &model_id,
-            req.max_tokens as u64,
-            &state.local_node_id,
-        ) {
-            Some((provider_id, _cost)) => match ledger.peer_http_endpoint(&provider_id) {
-                Some(url) => Some((provider_id, url.trim_end_matches('/').to_string())),
+    // auto-resolve via select_provider + peer_http_endpoint. If the
+    // caller omitted `model`, use this node's active model ID instead
+    // of the empty string so default agent calls can match peer
+    // PriceSignals. On a shared-token private testnet, reuse the
+    // caller's bearer token for the peer request.
+    let auto_peer: Option<PeerDispatchTarget> =
+        if explicit_peer.is_none() && size == tirami_mind::TaskSize::Remote {
+            let selected_model_id = match req
+                .model
+                .as_deref()
+                .map(str::trim)
+                .filter(|m| !m.is_empty())
+            {
+                Some(model) => tirami_core::ModelId(model.to_string()),
+                None => tirami_core::ModelId(model_name(&state.model_manifest).await),
+            };
+            let ledger = state.ledger.lock().await;
+            match ledger.select_provider(
+                &selected_model_id,
+                req.max_tokens as u64,
+                &state.local_node_id,
+            ) {
+                Some((provider_id, _cost)) => match ledger.peer_http_endpoint(&provider_id) {
+                    Some(url) => Some(PeerDispatchTarget {
+                        node_id: provider_id,
+                        url: url.trim_end_matches('/').to_string(),
+                        api_token: inherited_api_token.clone(),
+                    }),
+                    None => None,
+                },
                 None => None,
-            },
-            None => None,
-        }
-    } else {
-        None
-    };
+            }
+        } else {
+            None
+        };
 
     let peer_hint_parsed = explicit_peer.clone().or(auto_peer);
 
@@ -3530,7 +3889,7 @@ async fn forge_agent_task(
         size,
         estimated_trm,
         estimated_seconds: (req.max_tokens as u64 / 20).max(1),
-        preferred_provider: peer_hint_parsed.as_ref().map(|(id, _)| id.clone()),
+        preferred_provider: peer_hint_parsed.as_ref().map(|peer| peer.node_id.clone()),
     };
 
     // 3. Build task_id. The agent ignores it; the response echoes it.
@@ -3600,6 +3959,7 @@ async fn forge_agent_task(
             // put. `maybe_record_agent_earn` already has the mirror
             // invariant: earn only fires when the consumer is a
             // peer, never when it's the anonymous-local sentinel.
+            persist_economy_state(&state).await;
             Ok(Json(serde_json::json!({
                 "task_id": task_id,
                 "status": "run_local",
@@ -3618,7 +3978,7 @@ async fn forge_agent_task(
             // omitted it, we can't reach the selected provider
             // (PriceSignal has no HTTP address field), so surface
             // the situation as `ask_user`.
-            let Some((_, peer_url)) = peer_hint_parsed.clone() else {
+            let Some(peer) = peer_hint_parsed.clone() else {
                 return Ok(Json(serde_json::json!({
                     "task_id": task_id,
                     "status": "ask_user",
@@ -3629,27 +3989,41 @@ async fn forge_agent_task(
             };
 
             let dispatch = dispatch_remote_task(
-                &peer_url,
+                &peer.url,
                 &req.prompt,
                 req.max_tokens,
                 req.model.as_deref(),
+                peer.api_token.as_deref(),
+                Some(&wallet),
             )
             .await;
 
             match dispatch {
-                Ok((output, tokens, remote_cost)) => {
+                Ok((output, tokens, remote_cost, remote_model)) => {
                     let trm_spent = remote_cost.unwrap_or(cost_trm);
+                    let flops_per_token = flops_per_token_from_manifest(&state).await;
+                    record_api_trade_with_cost(
+                        &state.ledger,
+                        &provider,
+                        Some(wallet.clone()),
+                        tokens,
+                        &remote_model,
+                        flops_per_token,
+                        trm_spent,
+                    )
+                    .await;
                     {
                         let mut guard = state.personal_agent.lock().await;
                         if let Some(agent) = guard.as_mut() {
                             agent.record_spend(trm_spent);
                         }
                     }
+                    persist_economy_state(&state).await;
                     Ok(Json(serde_json::json!({
                         "task_id": task_id,
                         "status": "run_remote",
                         "provider": provider.to_hex(),
-                        "peer_url": peer_url,
+                        "peer_url": peer.url,
                         "output": output,
                         "tokens": tokens,
                         "cost_trm": trm_spent,
@@ -3681,11 +4055,11 @@ async fn forge_agent_task(
 /// Phase 18.5-part-3c — dispatch a RunRemote task to the given
 /// peer's OpenAI-compatible chat endpoint.
 ///
-/// Returns `(content_text, tokens_generated, remote_cost_trm)` on
-/// success. `remote_cost_trm` is pulled from the peer's `x_forge`
-/// extension when present (Tirami nodes attach the TRM cost to
-/// every reply). If the peer is a plain OpenAI server it's `None`
-/// and the caller should fall back to its local estimate.
+/// Returns `(content_text, tokens_generated, remote_cost_trm, remote_model)`
+/// on success. `remote_cost_trm` is pulled from the peer's `x_tirami`
+/// extension when present (Tirami nodes attach the TRM cost to every
+/// reply). If the peer is a plain OpenAI server it's `None` and the
+/// caller should fall back to its local estimate.
 ///
 /// Kept out of [`forge_agent_task`] so it can be unit-tested in
 /// isolation (fn async_fn_trait mockery is heavier than just
@@ -3695,7 +4069,9 @@ pub(crate) async fn dispatch_remote_task(
     prompt: &str,
     max_tokens: u32,
     model: Option<&str>,
-) -> Result<(String, u32, Option<u64>), String> {
+    api_token: Option<&str>,
+    consumer_id: Option<&NodeId>,
+) -> Result<(String, u32, Option<u64>, String), String> {
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(60))
         .build()
@@ -3710,9 +4086,14 @@ pub(crate) async fn dispatch_remote_task(
         "temperature": 0.7,
         "stream": false,
     });
-    let resp = client
-        .post(&url)
-        .json(&body)
+    let mut request = client.post(&url).json(&body);
+    if let Some(token) = api_token.filter(|token| !token.is_empty()) {
+        request = request.bearer_auth(token);
+    }
+    if let Some(consumer_id) = consumer_id {
+        request = request.header("X-Tirami-Node-Id", consumer_id.to_hex());
+    }
+    let resp = request
         .send()
         .await
         .map_err(|e| format!("peer POST failed: {e}"))?;
@@ -3739,13 +4120,18 @@ pub(crate) async fn dispatch_remote_task(
         .and_then(|u| u.get("completion_tokens"))
         .and_then(|t| t.as_u64())
         .unwrap_or(0) as u32;
+    let response_model = json
+        .get("model")
+        .and_then(|m| m.as_str())
+        .unwrap_or_else(|| model.unwrap_or("active"))
+        .to_string();
     // Tirami's OpenAI-compatible handler attaches the TRM cost via
-    // an `x_forge.trm_cost` extension; plain OpenAI servers omit it.
+    // an `x_tirami.trm_cost` extension; plain OpenAI servers omit it.
     let remote_cost = json
-        .get("x_forge")
+        .get("x_tirami")
         .and_then(|x| x.get("trm_cost"))
         .and_then(|c| c.as_u64());
-    Ok((content, tokens, remote_cost))
+    Ok((content, tokens, remote_cost, response_model))
 }
 
 async fn admin_save_state(
@@ -3755,6 +4141,14 @@ async fn admin_save_state(
 
     let mut saved: Vec<&str> = Vec::new();
     let mut errors: Vec<String> = Vec::new();
+
+    if let Some(ref path) = state.config.ledger_path {
+        let ledger = state.ledger.lock().await;
+        match ledger.save_to_path(path) {
+            Ok(()) => saved.push("ledger"),
+            Err(e) => errors.push(format!("ledger: {e}")),
+        }
+    }
 
     if let Some(ref path) = state.config.bank_state_path {
         let bank = state.bank.lock().await;
@@ -3778,6 +4172,16 @@ async fn admin_save_state(
             match crate::state_persist::save_mind(agent, path) {
                 Ok(()) => saved.push("mind"),
                 Err(e) => errors.push(format!("mind: {e}")),
+            }
+        }
+    }
+
+    if let Some(ref path) = state.config.personal_agent_state_path {
+        let personal = state.personal_agent.lock().await;
+        if let Some(agent) = personal.as_ref() {
+            match crate::state_persist::save_personal_agent(agent, path) {
+                Ok(()) => saved.push("personal_agent"),
+                Err(e) => errors.push(format!("personal_agent: {e}")),
             }
         }
     }
@@ -4070,6 +4474,39 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn protocol_endpoint_exposes_version_and_features() {
+        let mut config = Config::default();
+        config.api_bind_addr = "100.64.1.10".to_string();
+        config.proof_policy = "optional".to_string();
+        let app = test_router(config);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/tirami/protocol")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), 10_000)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["protocol_version"], tirami_core::TIRAMI_PROTOCOL_VERSION);
+        assert_eq!(
+            json["min_protocol_version"],
+            tirami_core::TIRAMI_MIN_PROTOCOL_VERSION
+        );
+        let features = json["features"].as_array().expect("features array");
+        assert!(features.iter().any(|f| f == tirami_core::FEATURE_AGENT_REMOTE_DISPATCH));
+        assert!(features.iter().any(|f| f == tirami_core::FEATURE_PRICE_SIGNAL_HTTP_ENDPOINT));
+        assert_eq!(json["price_signal"]["http_endpoint_advertised"], true);
+    }
+
+    #[tokio::test]
     async fn forge_trades_returns_empty_initially() {
         let config = Config::default();
         let app = test_router(config);
@@ -4221,9 +4658,9 @@ mod tests {
 
     #[test]
     fn test_generate_streaming_default_impl_collects_tokens() {
-        use tirami_infer::InferenceEngine;
-        use tirami_core::{TiramiError, LayerRange};
         use std::path::Path;
+        use tirami_core::{LayerRange, TiramiError};
+        use tirami_infer::InferenceEngine;
 
         /// Minimal mock engine that returns a fixed set of tokens from generate().
         struct MockEngine {
@@ -4231,10 +4668,17 @@ mod tests {
         }
 
         impl InferenceEngine for MockEngine {
-            fn load(&mut self, _: &Path, _: &Path, _: Option<LayerRange>) -> Result<(), TiramiError> {
+            fn load(
+                &mut self,
+                _: &Path,
+                _: &Path,
+                _: Option<LayerRange>,
+            ) -> Result<(), TiramiError> {
                 Ok(())
             }
-            fn is_loaded(&self) -> bool { true }
+            fn is_loaded(&self) -> bool {
+                true
+            }
             fn generate(
                 &mut self,
                 _prompt: &str,
@@ -4254,7 +4698,12 @@ mod tests {
             fn forward_tokens(&mut self, _: &[u32], _: usize) -> Result<Vec<f32>, TiramiError> {
                 Err(TiramiError::InferenceError("not impl".to_string()))
             }
-            fn sample_token(&mut self, _: &[f32], _: f32, _: Option<f64>) -> Result<u32, TiramiError> {
+            fn sample_token(
+                &mut self,
+                _: &[f32],
+                _: f32,
+                _: Option<f64>,
+            ) -> Result<u32, TiramiError> {
                 Err(TiramiError::InferenceError("not impl".to_string()))
             }
         }
@@ -4272,7 +4721,10 @@ mod tests {
                 0.7,
                 None,
                 None,
-                Box::new(move |chunk: &str| { let _ = collect_tx.send(chunk.to_string()); true }),
+                Box::new(move |chunk: &str| {
+                    let _ = collect_tx.send(chunk.to_string());
+                    true
+                }),
             )
             .expect("generate_streaming");
 
@@ -4300,9 +4752,18 @@ mod tests {
             },
         }];
         let prompt = render_tools_prompt(&tools, None);
-        assert!(prompt.contains("get_weather"), "prompt must mention tool name");
-        assert!(prompt.contains("Get current weather"), "prompt must include description");
-        assert!(prompt.contains("<tool_call>"), "prompt must include tool_call marker");
+        assert!(
+            prompt.contains("get_weather"),
+            "prompt must mention tool name"
+        );
+        assert!(
+            prompt.contains("Get current weather"),
+            "prompt must include description"
+        );
+        assert!(
+            prompt.contains("<tool_call>"),
+            "prompt must include tool_call marker"
+        );
     }
 
     #[test]
@@ -4316,7 +4777,10 @@ mod tests {
             },
         }];
         let prompt = render_tools_prompt(&tools, Some(&ToolChoice::Mode("required".to_string())));
-        assert!(prompt.contains("MUST"), "required mode should include MUST instruction");
+        assert!(
+            prompt.contains("MUST"),
+            "required mode should include MUST instruction"
+        );
     }
 
     #[test]
@@ -4326,15 +4790,24 @@ mod tests {
         assert!(tc.is_some(), "should find a tool call");
         let tc = tc.unwrap();
         assert_eq!(tc.name, "get_weather");
-        assert!(tc.arguments.contains("Tokyo"), "arguments should include Tokyo");
-        assert!(content.contains("Let me check"), "content before tool call should be returned");
+        assert!(
+            tc.arguments.contains("Tokyo"),
+            "arguments should include Tokyo"
+        );
+        assert!(
+            content.contains("Let me check"),
+            "content before tool call should be returned"
+        );
         assert!(tc.id.starts_with("call_"), "id should start with call_");
     }
 
     #[test]
     fn test_extract_tool_call_none_when_no_marker() {
         let (text, tc) = extract_tool_call("Just a normal response without any tool calls.");
-        assert!(tc.is_none(), "should return None when no tool call marker present");
+        assert!(
+            tc.is_none(),
+            "should return None when no tool call marker present"
+        );
         assert_eq!(text, "Just a normal response without any tool calls.");
     }
 
@@ -4371,8 +4844,14 @@ mod tests {
     fn test_openai_chat_request_tools_optional() {
         let json = r#"{"messages":[{"role":"user","content":"hi"}]}"#;
         let req: OpenAIChatRequest = serde_json::from_str(json).expect("deserialize");
-        assert!(req.tools.is_none(), "tools should be None when not provided");
-        assert!(req.tool_choice.is_none(), "tool_choice should be None when not provided");
+        assert!(
+            req.tools.is_none(),
+            "tools should be None when not provided"
+        );
+        assert!(
+            req.tool_choice.is_none(),
+            "tool_choice should be None when not provided"
+        );
     }
 
     #[tokio::test]
@@ -4420,7 +4899,15 @@ mod tests {
 
         // With an explicit consumer
         let consumer = NodeId([42u8; 32]);
-        record_api_trade(&ledger, &provider, Some(consumer.clone()), 100, "test-model", 0).await;
+        record_api_trade(
+            &ledger,
+            &provider,
+            Some(consumer.clone()),
+            100,
+            "test-model",
+            0,
+        )
+        .await;
 
         let trades = ledger.lock().await.recent_trades(1);
         assert_eq!(trades.len(), 1);
@@ -4507,16 +4994,22 @@ mod tests {
     // ------------------------------------------------------------------
 
     /// Test-helper: build a router with a pre-populated PersonalAgent.
-    fn test_router_with_agent(
+    fn test_router_with_agent(config: Config, agent: Option<tirami_mind::PersonalAgent>) -> Router {
+        test_router_with_agent_and_ledger(config, agent, ComputeLedger::new(), None)
+    }
+
+    fn test_router_with_agent_and_ledger(
         config: Config,
         agent: Option<tirami_mind::PersonalAgent>,
+        ledger: ComputeLedger,
+        manifest: Option<tirami_core::ModelManifest>,
     ) -> Router {
         use crate::bank_adapter::BankServices;
         create_router_with_services(
             config,
             Arc::new(Mutex::new(CandleEngine::new())),
-            Arc::new(Mutex::new(ComputeLedger::new())),
-            Arc::new(Mutex::new(None)),
+            Arc::new(Mutex::new(ledger)),
+            Arc::new(Mutex::new(manifest)),
             Arc::new(Mutex::new(None)),
             None,
             Arc::new(Mutex::new(GossipState::new())),
@@ -4577,10 +5070,7 @@ mod tests {
 
     #[tokio::test]
     async fn malformed_json_body_returns_json_error_envelope() {
-        let app = test_router_with_agent(
-            Config::default(),
-            Some(agent_at(NodeId([0xAAu8; 32]))),
-        );
+        let app = test_router_with_agent(Config::default(), Some(agent_at(NodeId([0xAAu8; 32]))));
         let response = app
             .oneshot(
                 Request::builder()
@@ -4636,10 +5126,7 @@ mod tests {
 
     #[tokio::test]
     async fn agent_task_400_on_empty_prompt() {
-        let app = test_router_with_agent(
-            Config::default(),
-            Some(agent_at(NodeId([0xAAu8; 32]))),
-        );
+        let app = test_router_with_agent(Config::default(), Some(agent_at(NodeId([0xAAu8; 32]))));
         let (status, _body) = post_agent_task(
             app,
             serde_json::json!({ "prompt": "   ", "max_tokens": 10 }),
@@ -4650,15 +5137,9 @@ mod tests {
 
     #[tokio::test]
     async fn agent_task_400_on_zero_max_tokens() {
-        let app = test_router_with_agent(
-            Config::default(),
-            Some(agent_at(NodeId([0xAAu8; 32]))),
-        );
-        let (status, _body) = post_agent_task(
-            app,
-            serde_json::json!({ "prompt": "hi", "max_tokens": 0 }),
-        )
-        .await;
+        let app = test_router_with_agent(Config::default(), Some(agent_at(NodeId([0xAAu8; 32]))));
+        let (status, _body) =
+            post_agent_task(app, serde_json::json!({ "prompt": "hi", "max_tokens": 0 })).await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
     }
 
@@ -4668,10 +5149,7 @@ mod tests {
         // `size=remote` to force the TRM-spending path where
         // `needs_user_approval` kicks in. Default per-task budget is
         // 15 TRM; 999 TRM estimate exceeds.
-        let app = test_router_with_agent(
-            Config::default(),
-            Some(agent_at(NodeId([0xAAu8; 32]))),
-        );
+        let app = test_router_with_agent(Config::default(), Some(agent_at(NodeId([0xAAu8; 32]))));
         let (status, body) = post_agent_task(
             app,
             serde_json::json!({
@@ -4684,20 +5162,14 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["status"], "ask_user");
-        assert!(body["reason"]
-            .as_str()
-            .unwrap_or("")
-            .contains("per-task"));
+        assert!(body["reason"].as_str().unwrap_or("").contains("per-task"));
     }
 
     #[tokio::test]
     async fn agent_task_remote_without_provider_routes_to_ask_user() {
         // size=remote with no preferred_provider → tick returns AskUser
         // ("no preferred provider resolved yet").
-        let app = test_router_with_agent(
-            Config::default(),
-            Some(agent_at(NodeId([0xAAu8; 32]))),
-        );
+        let app = test_router_with_agent(Config::default(), Some(agent_at(NodeId([0xAAu8; 32]))));
         let (status, body) = post_agent_task(
             app,
             serde_json::json!({
@@ -4713,11 +5185,227 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn agent_task_bad_size_override() {
-        let app = test_router_with_agent(
-            Config::default(),
-            Some(agent_at(NodeId([0xAAu8; 32]))),
+    async fn agent_task_remote_records_consumer_side_ledger_and_spend() {
+        use axum::Router as AxumRouter;
+        use axum::routing::post;
+
+        let provider = NodeId([0xBBu8; 32]);
+        let consumer = NodeId([0xAAu8; 32]);
+        let peer_app = AxumRouter::new().route(
+            "/v1/chat/completions",
+            post(|Json(_req): Json<serde_json::Value>| async move {
+                Json(serde_json::json!({
+                    "id": "remote-test",
+                    "object": "chat.completion",
+                    "created": 0,
+                    "model": "mock",
+                    "choices": [{
+                        "index": 0,
+                        "message": { "role": "assistant", "content": "remote ok" },
+                        "finish_reason": "stop",
+                    }],
+                    "usage": {
+                        "prompt_tokens": 3,
+                        "completion_tokens": 6,
+                        "total_tokens": 9
+                    },
+                    "x_tirami": { "trm_cost": 6 }
+                }))
+            }),
         );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = tokio::spawn(async move {
+            let _ = axum::serve(listener, peer_app).await;
+        });
+
+        let app = test_router_with_agent(Config::default(), Some(agent_at(consumer.clone())));
+        let (status, body) = post_agent_task(
+            app.clone(),
+            serde_json::json!({
+                "prompt": "remote work",
+                "max_tokens": 6,
+                "size": "remote",
+                "estimated_trm": 6,
+                "peer": {
+                    "node_id": provider.to_hex(),
+                    "url": format!("http://{addr}")
+                },
+            }),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["status"], "run_remote");
+        assert_eq!(body["cost_trm"], 6);
+
+        let status_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/status")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        let status_bytes = axum::body::to_bytes(status_response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let status_json: serde_json::Value =
+            serde_json::from_slice(&status_bytes).expect("status json");
+        assert_eq!(status_json["network"]["total_trades"], 1);
+        assert_eq!(status_json["recent_trades"][0]["trm_amount"], 6);
+        assert_eq!(status_json["recent_trades"][0]["tokens_processed"], 6);
+        assert_eq!(status_json["recent_trades"][0]["model_id"], "mock");
+
+        let agent_response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/tirami/agent/status")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        let agent_bytes = axum::body::to_bytes(agent_response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let agent_json: serde_json::Value =
+            serde_json::from_slice(&agent_bytes).expect("agent json");
+        assert_eq!(agent_json["spent_today_trm"], 6);
+        assert_eq!(agent_json["net_today_trm"], -6);
+
+        handle.abort();
+    }
+
+    #[tokio::test]
+    async fn agent_task_remote_auto_selects_provider_and_inherits_bearer() {
+        use axum::Router as AxumRouter;
+        use axum::routing::post;
+
+        let provider = NodeId([0xBBu8; 32]);
+        let consumer = NodeId([0xAAu8; 32]);
+        let expected_consumer = consumer.to_hex();
+        let peer_app = AxumRouter::new().route(
+            "/v1/chat/completions",
+            post(
+                move |headers: axum::http::HeaderMap, Json(_req): Json<serde_json::Value>| {
+                    let expected_consumer = expected_consumer.clone();
+                    async move {
+                        let auth = headers
+                            .get(AUTHORIZATION)
+                            .and_then(|value| value.to_str().ok());
+                        let consumer_header = headers
+                            .get("X-Tirami-Node-Id")
+                            .and_then(|value| value.to_str().ok());
+                        if auth != Some("Bearer shared-testnet-token") {
+                            return (
+                                StatusCode::UNAUTHORIZED,
+                                Json(serde_json::json!({"error": "missing auth"})),
+                            );
+                        }
+                        if consumer_header != Some(expected_consumer.as_str()) {
+                            return (
+                                StatusCode::BAD_REQUEST,
+                                Json(serde_json::json!({"error": "missing consumer"})),
+                            );
+                        }
+                        (
+                            StatusCode::OK,
+                            Json(serde_json::json!({
+                                "id": "auto-provider-test",
+                                "object": "chat.completion",
+                                "created": 0,
+                                "model": "qwen-test",
+                                "choices": [{
+                                    "index": 0,
+                                    "message": { "role": "assistant", "content": "auto ok" },
+                                    "finish_reason": "stop",
+                                }],
+                                "usage": {
+                                    "prompt_tokens": 3,
+                                    "completion_tokens": 5,
+                                    "total_tokens": 8
+                                },
+                                "x_tirami": { "trm_cost": 5 }
+                            })),
+                        )
+                    }
+                },
+            ),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = tokio::spawn(async move {
+            let _ = axum::serve(listener, peer_app).await;
+        });
+
+        let mut ledger = ComputeLedger::new();
+        ledger.ingest_price_signal(&tirami_core::PriceSignal {
+            node_id: provider.clone(),
+            protocol_version: tirami_core::TIRAMI_PROTOCOL_VERSION,
+            features: tirami_core::advertised_protocol_features(true, "optional"),
+            price_multiplier: 1.0,
+            available_cu: 1_000,
+            model_capabilities: vec![tirami_core::ModelId("qwen-test".to_string())],
+            latency_hint_ms: 50,
+            timestamp: now_millis(),
+            http_endpoint: Some(format!("http://{addr}")),
+        });
+        let manifest = tirami_core::ModelManifest {
+            id: tirami_core::ModelId("qwen-test".to_string()),
+            total_layers: 24,
+            hidden_dim: 896,
+            vocab_size: 151_936,
+            head_count: 14,
+            kv_head_count: 2,
+            context_length: 32_768,
+            file_size_bytes: 500_000_000,
+            quantization: "Q4_K_M".to_string(),
+        };
+        let mut config = Config::default();
+        config.api_bearer_token = Some("shared-testnet-token".to_string());
+        let app = test_router_with_agent_and_ledger(
+            config,
+            Some(agent_at(consumer)),
+            ledger,
+            Some(manifest),
+        );
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/tirami/agent/task")
+                    .header("content-type", "application/json")
+                    .header(AUTHORIZATION, "Bearer shared-testnet-token")
+                    .body(Body::from(
+                        serde_json::json!({
+                            "prompt": "remote work",
+                            "max_tokens": 5,
+                            "size": "remote",
+                            "estimated_trm": 5
+                        })
+                        .to_string(),
+                    ))
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = body_json(response).await;
+        assert_eq!(body["status"], "run_remote");
+        assert_eq!(body["provider"], provider.to_hex());
+        assert_eq!(body["cost_trm"], 5);
+
+        handle.abort();
+    }
+
+    #[tokio::test]
+    async fn agent_task_bad_size_override() {
+        let app = test_router_with_agent(Config::default(), Some(agent_at(NodeId([0xAAu8; 32]))));
         let (status, _body) = post_agent_task(
             app,
             serde_json::json!({
@@ -4732,10 +5420,10 @@ mod tests {
 
     #[tokio::test]
     async fn dispatch_remote_task_parses_openai_style_response() {
-        use axum::routing::post;
         use axum::Router as AxumRouter;
+        use axum::routing::post;
         // Mini local server that returns an OpenAI-shaped reply
-        // with Tirami's `x_forge.trm_cost` extension.
+        // with Tirami's `x_tirami.trm_cost` extension.
         let app = AxumRouter::new().route(
             "/v1/chat/completions",
             post(|Json(req): Json<serde_json::Value>| async move {
@@ -4764,7 +5452,7 @@ mod tests {
                         "completion_tokens": 7,
                         "total_tokens": 12
                     },
-                    "x_forge": { "trm_cost": 42 }
+                    "x_tirami": { "trm_cost": 42 }
                 }))
             }),
         );
@@ -4775,18 +5463,100 @@ mod tests {
         });
         let url = format!("http://{}", addr);
 
-        let (content, tokens, cost) =
-            dispatch_remote_task(&url, "hi peer", 10, Some("mock")).await.unwrap();
+        let (content, tokens, cost, response_model) =
+            dispatch_remote_task(&url, "hi peer", 10, Some("mock"), None, None)
+                .await
+                .unwrap();
         assert_eq!(content, "echo: hi peer");
         assert_eq!(tokens, 7);
         assert_eq!(cost, Some(42));
+        assert_eq!(response_model, "mock");
+        handle.abort();
+    }
+
+    #[tokio::test]
+    async fn dispatch_remote_task_sends_auth_and_consumer_header() {
+        use axum::Router as AxumRouter;
+        use axum::routing::post;
+        let consumer = NodeId([7u8; 32]);
+        let expected_consumer = consumer.to_hex();
+        let app = AxumRouter::new().route(
+            "/v1/chat/completions",
+            post(
+                move |headers: axum::http::HeaderMap, Json(_req): Json<serde_json::Value>| {
+                    let expected_consumer = expected_consumer.clone();
+                    async move {
+                        let auth = headers
+                            .get(AUTHORIZATION)
+                            .and_then(|value| value.to_str().ok());
+                        let consumer_header = headers
+                            .get("X-Tirami-Node-Id")
+                            .and_then(|value| value.to_str().ok());
+                        if auth != Some("Bearer peer-secret") {
+                            return (
+                                StatusCode::UNAUTHORIZED,
+                                Json(serde_json::json!({"error": "missing auth"})),
+                            );
+                        }
+                        if consumer_header != Some(expected_consumer.as_str()) {
+                            return (
+                                StatusCode::BAD_REQUEST,
+                                Json(serde_json::json!({"error": "missing consumer"})),
+                            );
+                        }
+                        (
+                            StatusCode::OK,
+                            Json(serde_json::json!({
+                                "id": "t-1",
+                                "object": "chat.completion",
+                                "created": 0,
+                                "model": "mock",
+                                "choices": [{
+                                    "index": 0,
+                                    "message": { "role": "assistant", "content": "ok" },
+                                    "finish_reason": "stop",
+                                }],
+                                "usage": {
+                                    "prompt_tokens": 1,
+                                    "completion_tokens": 2,
+                                    "total_tokens": 3
+                                },
+                                "x_tirami": { "trm_cost": 3 }
+                            })),
+                        )
+                    }
+                },
+            ),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        let url = format!("http://{}", addr);
+
+        let (content, tokens, cost, response_model) = dispatch_remote_task(
+            &url,
+            "auth check",
+            3,
+            Some("mock"),
+            Some("peer-secret"),
+            Some(&consumer),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(content, "ok");
+        assert_eq!(tokens, 2);
+        assert_eq!(cost, Some(3));
+        assert_eq!(response_model, "mock");
         handle.abort();
     }
 
     #[tokio::test]
     async fn dispatch_remote_task_returns_error_on_non_200() {
-        use axum::routing::post;
         use axum::Router as AxumRouter;
+        use axum::routing::post;
         let app = AxumRouter::new().route(
             "/v1/chat/completions",
             post(|| async { (StatusCode::INTERNAL_SERVER_ERROR, "boom") }),
@@ -4798,17 +5568,16 @@ mod tests {
         });
         let url = format!("http://{}", addr);
 
-        let err = dispatch_remote_task(&url, "x", 5, None).await.unwrap_err();
+        let err = dispatch_remote_task(&url, "x", 5, None, None, None)
+            .await
+            .unwrap_err();
         assert!(err.contains("500"));
         handle.abort();
     }
 
     #[tokio::test]
     async fn agent_task_remote_with_bad_peer_node_id_is_400() {
-        let app = test_router_with_agent(
-            Config::default(),
-            Some(agent_at(NodeId([0xAAu8; 32]))),
-        );
+        let app = test_router_with_agent(Config::default(), Some(agent_at(NodeId([0xAAu8; 32]))));
         let (status, _body) = post_agent_task(
             app,
             serde_json::json!({
@@ -4825,10 +5594,7 @@ mod tests {
     #[tokio::test]
     async fn agent_task_run_local_503_when_no_model_loaded() {
         // Local task within budget but no model loaded → 503.
-        let app = test_router_with_agent(
-            Config::default(),
-            Some(agent_at(NodeId([0xAAu8; 32]))),
-        );
+        let app = test_router_with_agent(Config::default(), Some(agent_at(NodeId([0xAAu8; 32]))));
         let (status, _body) = post_agent_task(
             app,
             serde_json::json!({
@@ -4851,10 +5617,7 @@ mod tests {
         // PersonalAgent's spend / earn tallies must not change
         // because no TRM crosses wallet boundaries on a
         // self-served task (the node pays itself in compute).
-        let app = test_router_with_agent(
-            Config::default(),
-            Some(agent_at(NodeId([0xAAu8; 32]))),
-        );
+        let app = test_router_with_agent(Config::default(), Some(agent_at(NodeId([0xAAu8; 32]))));
 
         // Snapshot tallies via /v1/tirami/agent/status.
         let before = app
@@ -4974,6 +5737,20 @@ mod tests {
         let mut headers = axum::http::HeaderMap::new();
         headers.insert("X-Tirami-Node-Id", "abcdef".parse().unwrap());
         assert_eq!(parse_consumer_header(&headers), None);
+    }
+
+    #[test]
+    fn parse_bearer_header_extracts_token() {
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert(AUTHORIZATION, "Bearer shared".parse().unwrap());
+        assert_eq!(parse_bearer_header(&headers).as_deref(), Some("shared"));
+    }
+
+    #[test]
+    fn parse_bearer_header_rejects_non_bearer() {
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert(AUTHORIZATION, "Basic abc".parse().unwrap());
+        assert_eq!(parse_bearer_header(&headers), None);
     }
 
     // ----------------------------------------------------------------------

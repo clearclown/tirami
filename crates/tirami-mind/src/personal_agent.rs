@@ -204,7 +204,7 @@ pub enum AgentDecision {
 /// Network I/O is NOT in this struct — the agent calls out to
 /// `tirami-node` handlers via the `AgentEnv` trait. This keeps
 /// the agent logic unit-testable without spinning up a full node.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PersonalAgent {
     /// The Tirami node id this agent uses as its wallet.
     pub wallet: NodeId,

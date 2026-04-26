@@ -148,6 +148,12 @@ impl NonceCache {
         self.set.contains(nonce)
     }
 
+    /// Number of nonces currently retained in the bounded replay window.
+    #[allow(dead_code)] // Used by Kani proofs compiled only under cfg(kani).
+    pub(crate) fn len(&self) -> usize {
+        self.order.len()
+    }
+
     /// Record `nonce` as seen. Evicts the oldest entry when full.
     /// Returns `true` when the nonce was newly inserted, `false` if
     /// it was already present (caller should have rejected the trade).

@@ -93,7 +93,7 @@ fn proof_nonce_cache_bounded_by_capacity() {
         nonce[15] = 0xAA; // ensure non-zero
         let _ = cache.insert(nonce);
     }
-    assert!(cache.order.len() <= NonceCache::CAPACITY);
+    assert!(cache.len() <= NonceCache::CAPACITY);
 }
 
 // ---------------------------------------------------------------------------
@@ -242,8 +242,8 @@ fn proof_nonce_cache_insert_is_idempotent_on_same_nonce() {
     let nonce: [u8; 16] = kani::any();
     kani::assume(nonce != [0u8; 16]);
     assert!(cache.insert(nonce));
-    let len_before = cache.order.len();
+    let len_before = cache.len();
     assert!(!cache.insert(nonce));
-    let len_after = cache.order.len();
+    let len_after = cache.len();
     assert_eq!(len_before, len_after);
 }

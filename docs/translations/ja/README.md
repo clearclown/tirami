@@ -6,7 +6,7 @@
 
 [![Crates.io](https://img.shields.io/crates/v/tirami-core?label=crates.io&color=e6522c)](https://crates.io/crates/tirami-core)
 [![License: MIT](https://img.shields.io/badge/License-MIT-brightgreen.svg)](../../../LICENSE)
-[![Tests](https://img.shields.io/badge/tests-1192_passing-brightgreen)]()
+[![Tests](https://img.shields.io/badge/tests-targeted_pass-brightgreen)]()
 [![verify-impl](https://img.shields.io/badge/verify--impl-123%2F123_GREEN-brightgreen)]()
 [![foundry test](https://img.shields.io/badge/foundry_test-15%2F15_GREEN-brightgreen)]()
 [![Phase](https://img.shields.io/badge/phase-19_hardened-blue)]()
@@ -28,19 +28,23 @@
 
 ---
 
-## ⚠️ Status Honesty (2026-04-19 / Phase 19)
+## ⚠️ Status Honesty (2026-04-27 / Phase 19)
 
 他の何より先に、**動いているもの**と**動いていないもの**を明示します。Tirami は MIT ライセンスの OSS であり、**トークン販売ではありません**。ICO なし、プレマインなし、チームトレジャリーなし、エアドロップなし。TRM は計算の会計単位 (1 TRM = 10⁹ FLOP) であり、金融商品ではありません — [`SECURITY.md § Secondary Markets`](../../../SECURITY.md#secondary-markets--third-party-tokenization) 参照。
 
-### ✅ 現在稼働中 (Rust 1 192 テスト + Solidity 15 テスト、検証済み)
+### ✅ 現在稼働中 (対象テスト検証済み、public-testnet 準備中)
 
 - OpenAI 互換 HTTP チャット + 接続済ピアへの P2P 自動転送 (`forward_chat_to_peer`、Phase 19)
 - iroh-QUIC P2P 経由の dual-signed `SignedTradeRecord`、128-bit nonce リプレイ保護付き (`execute_signed_trade`)
 - `TradeAcceptDispatcher` による実行中推論タスクへの counter-sign ルーティング (Phase 18.5-pt3)
+- ローカル HTTP `/chat`、`/chat/stream`、`/v1/chat/completions` の TRM/FLOP 台帳記録
 - Collusion detector + slashing ループ、`slashing_interval_secs` で定期実行 (Phase 17 Wave 1.3)
 - Governance proposal — 21 エントリの可変ホワイトリスト + 18 エントリの憲法的不変リスト (Phase 18.1)
 - ウェルカムローン、ステーキングプール、紹介ボーナス、信用スコア、動的市場価格 (EMA 平滑化)
 - gossip 経由のピア自動発見 (`PriceSignal.http_endpoint`、Phase 19 Tier C)
+- `PriceSignal` gossip から PersonalAgent が provider を自動選択し、共有トークンの private testnet では caller bearer token を継承して remote dispatch できる
+- provider / consumer 双方の台帳が remote agent trade を mirror し、台帳と PersonalAgent state は経済イベント後に永続化される
+- `--bootstrap-peer` / `TIRAMI_BOOTSTRAP_PEERS` による public testnet bootstrap join。公開 HTTP bind には API token が必須
 - `tirami start` 起動時の PersonalAgent 自動構成 (Phase 18.5-pt3e)、tick-loop 観測
 - Prometheus `/metrics` エンドポイント (`tirami_*` プレフィックス)
 - Base Sepolia/mainnet デプロイ `Makefile` — Sepolia は無料で実行可、mainnet はゲート制 (後述)
@@ -50,13 +54,41 @@
 - zkML 推論証明: `tirami-zkml-bench` は `MockBackend` のみ。実 `ezkl` / `risc0` バックエンドは Phase 20+。現状デフォルトの `ProofPolicy = Optional` (Phase 19) は「証明があれば受理され reputation ボーナス、証明なしでも trade は valid」状態
 - ML-DSA (Dilithium) ポスト量子ハイブリッド署名: 構造体と verify パスは存在、`Config::pq_signatures = false` がデフォルト (iroh 0.97 依存衝突のため)
 - TEE attestation (Apple Secure Enclave / NVIDIA H100 CC): `tirami-attestation` スカフォールドのみ
-- daemon モード worker の gossip-recv ループ ([issue #88](https://github.com/clearclown/tirami/issues/88)): `POST /v1/tirami/agent/task` の `peer.url` 手動指定は引き続き有効
+- daemon モード worker の gossip-recv ループ ([issue #88](https://github.com/clearclown/tirami/issues/88)): full `tirami start` node は gossip を受信・反映できる。`worker --daemon` は recv loop が未完
 
 ### ❌ 未着手
 
 - 外部セキュリティ監査 (Phase 17 Wave 3.3 要件)。候補: Trail of Bits, Zellic, Open Zeppelin, Least Authority
 - 本番用 PGP 鍵を伴う bug bounty の稼働 ([`SECURITY.md`](../../../SECURITY.md) の現在の鍵は placeholder)
 - Base Sepolia 30 日以上安定稼働 + 10 ノード以上 testnet の 7 日 stress test
+- 公開 seed list / status page。現時点の検証は private Tailscale lab であり、open public network ではない
+
+### Live private-lab result (2026-04-26)
+
+Tailscale 上の実機 2台で検証した。
+
+| Node | Address | Role |
+|---|---:|---|
+| Mac Studio | `100.112.10.128` | provider / primary seed |
+| ASUS ROG X13 | `100.107.30.86` | consumer / cross-platform node |
+
+両ノードは `qwen2.5:0.5b`、P2P `0.0.0.0:7700`、HTTP は各 Tailscale `100.x` address に bind し、共有 `TIRAMI_API_TOKEN` を使用した。
+
+検証済み:
+
+- topology に両ノードが peer として表示された。
+- ASUS が `size=remote` かつ明示的な `peer` hint なしで `POST /v1/tirami/agent/task` を実行した。
+- ASUS が `PriceSignal.http_endpoint` から Mac Studio provider を自動選択した。
+- bearer token と `X-Tirami-Node-Id` が provider へ forward された。
+- Mac Studio が inference を返し、provider earning を記録した。
+- ASUS が同じ provider/consumer trade を local ledger に mirror し、agent spending を記録した。
+- restart 後も両 ledger が同じ trade を復元した。
+
+remote agent job 2回後の観測値:
+
+- both ledgers: `total_trades = 2`
+- Mac Studio agent: `earned_today_trm = 18`
+- ASUS agent: `spent_today_trm = 18`
 
 **mainnet について**: メンテナは TRM / TiramiBridge の Base L2 mainnet デプロイを計画・運用・追跡**しません**。`make deploy-base-mainnet` ターゲットは、デプロイを選ぶ運用者のための**自己防護チェック**であって、`AUDIT_CLEARANCE=yes` + `MULTISIG_OWNER=<addr>` + 対話プロンプトで `i-accept-responsibility` の 3 連鎖がないと実行を拒否する。MIT OSS なのでそれでも第三者がデプロイすることは技術的に可能だが、それは**完全に第三者の判断と責任**であり、メンテナは関与しない。[`SECURITY.md § Secondary Markets`](../../../SECURITY.md#secondary-markets--third-party-tokenization) 参照。
 

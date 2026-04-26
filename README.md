@@ -6,7 +6,7 @@
 
 [![Crates.io](https://img.shields.io/crates/v/tirami-core?label=crates.io&color=e6522c)](https://crates.io/crates/tirami-core)
 [![License: MIT](https://img.shields.io/badge/License-MIT-brightgreen.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-1192_passing-brightgreen)]()
+[![Tests](https://img.shields.io/badge/tests-targeted_pass-brightgreen)]()
 [![verify-impl](https://img.shields.io/badge/verify--impl-123%2F123_GREEN-brightgreen)]()
 [![foundry test](https://img.shields.io/badge/foundry_test-15%2F15_GREEN-brightgreen)]()
 [![Phase](https://img.shields.io/badge/phase-19_hardened-blue)]()
@@ -26,19 +26,28 @@ The distributed inference engine is built on [mesh-llm](https://github.com/micha
 
 ---
 
-## ⚠️ Status Honesty (2026-04-19 / Phase 19)
+## ⚠️ Status Honesty (2026-04-27 / Phase 19)
 
 Before anything else, here is exactly what works and what does not. Tirami is MIT-licensed open-source software, **not a token sale**. No ICO, no pre-mine, no team treasury, no airdrop. TRM is compute accounting (1 TRM = 10⁹ FLOP), not a financial product — see [`SECURITY.md § Secondary Markets`](SECURITY.md#secondary-markets--third-party-tokenization).
 
-### ✅ Functional today (1 192 Rust tests + 15 Solidity tests, verified)
+### ✅ Functional today (targeted tests verified; public-testnet prep)
 
 - HTTP OpenAI-compatible chat with automatic P2P forwarding to a connected peer (`forward_chat_to_peer`, Phase 19).
 - Dual-signed `SignedTradeRecord` via iroh-QUIC P2P with 128-bit nonce replay protection (`execute_signed_trade`).
 - `TradeAcceptDispatcher` routes counter-sign messages to the matching in-flight inference task (Phase 18.5-pt3).
+- Local HTTP `/chat`, `/chat/stream`, and `/v1/chat/completions`
+  record TRM/FLOP accounting into the ledger.
 - Collusion detector + stake-slashing loop running every `slashing_interval_secs` (Phase 17 Wave 1.3).
 - Governance proposals with a 21-entry mutable whitelist and an 18-entry constitutional-parameter immutable list (Phase 18.1).
 - Welcome loan, stake pool, referral bonuses, credit scoring, dynamic market pricing (EMA-smoothed).
 - Peer auto-discovery via `PriceSignal.http_endpoint` on the gossip wire (Phase 19 Tier C).
+- PersonalAgent remote dispatch can auto-select a provider from
+  `PriceSignal` gossip and inherit the caller bearer token for
+  shared-token private testnets.
+- Provider and consumer ledgers both mirror remote agent trades, and
+  ledger / PersonalAgent state is persisted after economic events.
+- Public testnet bootstrap joins via `--bootstrap-peer` /
+  `TIRAMI_BOOTSTRAP_PEERS`, with public HTTP binds requiring an API token.
 - PersonalAgent auto-configured on `tirami start` (Phase 18.5-pt3e), with tick-loop observability.
 - Prometheus `/metrics` endpoint using the `tirami_*` prefix.
 - Base Sepolia/mainnet deploy `Makefile` targets — sepolia is free to run, mainnet is gated (see below).
@@ -48,13 +57,51 @@ Before anything else, here is exactly what works and what does not. Tirami is MI
 - zkML proof-of-inference: `tirami-zkml-bench` has a `MockBackend` only. Real `ezkl` / `risc0` backends land in Phase 20+. Default `ProofPolicy = Optional` (Phase 19) — proofs are accepted and rewarded when supplied, but trades without proofs are still valid during the rollout.
 - ML-DSA (Dilithium) post-quantum hybrid signatures: struct + verify path exist, `Config::pq_signatures = false` by default (blocked on iroh 0.97 dep chain).
 - TEE attestation (Apple Secure Enclave / NVIDIA H100 CC): `tirami-attestation` scaffold only.
-- Daemon-mode worker gossip-recv loop ([issue #88](https://github.com/clearclown/tirami/issues/88)): manual `peer.url` override in `POST /v1/tirami/agent/task` still works.
+- Daemon-mode worker gossip-recv loop ([issue #88](https://github.com/clearclown/tirami/issues/88)): full `tirami start` nodes receive and ingest gossip today; `worker --daemon` still needs the recv loop.
 
 ### ❌ Not done
 
 - External security audit (Phase 17 Wave 3.3 requirement). Candidates: Trail of Bits, Zellic, Open Zeppelin, Least Authority.
 - Live bug bounty with a real PGP key (currently a documented placeholder in [`SECURITY.md`](SECURITY.md)).
 - ≥ 30-day stable operation on Base Sepolia + ≥ 7-day stress-test on a 10+ node testnet.
+- Open public seed list / status page. The current validation is a
+  private Tailscale lab, not a public network.
+
+### Live private-lab result (2026-04-26)
+
+Two real machines were used over Tailscale:
+
+| Node | Address | Role |
+|---|---:|---|
+| Mac Studio | `100.112.10.128` | provider / primary seed |
+| ASUS ROG X13 | `100.107.30.86` | consumer / cross-platform node |
+
+Both nodes ran `qwen2.5:0.5b`, P2P on `0.0.0.0:7700`, HTTP bound to
+their Tailscale `100.x` address, and a shared `TIRAMI_API_TOKEN`.
+
+Verified end-to-end:
+
+- topology showed both nodes as peers;
+- ASUS submitted `POST /v1/tirami/agent/task` with `size=remote` and no
+  explicit `peer` hint;
+- ASUS selected the Mac Studio provider from `PriceSignal.http_endpoint`;
+- the bearer token and `X-Tirami-Node-Id` were forwarded to the provider;
+- Mac Studio served the inference and recorded provider earnings;
+- ASUS mirrored the same provider/consumer trade locally and recorded
+  agent spending;
+- after restart, both ledgers restored the same trade.
+
+Observed counters after two remote agent jobs:
+
+```text
+Mac Studio agent: earned_today_trm = 18
+ASUS agent:       spent_today_trm  = 18
+Both ledgers:     total_trades = 2, total_contributed_cu = 18, total_consumed_cu = 18
+```
+
+This is enough for an invited private testnet. It is not yet enough to
+call the open public network healthy; the remaining gate is a 10+ node,
+7-day stability run with public bootstrap seeds.
 
 **On mainnet**: the maintainers do not plan, operate, or track any Base L2 mainnet deployment of TRM / TiramiBridge. The `make deploy-base-mainnet` target in `Makefile` is a *self-protective check* for any operator who chooses to deploy — it refuses to run without `AUDIT_CLEARANCE=yes` + `MULTISIG_OWNER=<addr>` + an interactive `i-accept-responsibility` prompt. Since this is MIT OSS, third parties can deploy regardless; they do so on their own account, entirely without maintainer involvement. See [`SECURITY.md § Secondary Markets`](SECURITY.md#secondary-markets--third-party-tokenization).
 
@@ -115,6 +162,25 @@ $ curl localhost:3000/v1/tirami/trades
 [{ "provider": "48b5c0f2...", "consumer": "06d91e56...",
    "trm_amount": 9, "tokens_processed": 9, "flops_estimated": 1040449536 }]
 ```
+
+**Run a remote agent task without hand-wiring a peer (Phase 19 private-lab path):**
+```
+$ tirami agent \
+    --url http://100.107.30.86:3000 \
+    --api-token "$TIRAMI_API_TOKEN" \
+    chat "Give one concise sentence about useful compute." \
+    --size remote \
+    --estimated-trm 8 \
+    -n 8
+
+1. Technologies such as cloud computing,,
+
+— remote (via d7fe50fecb07a13283fdbabbc15ec076cdd87b554e7d6ad0845faf326879ebb6) · 9 TRM
+```
+
+In the 2026-04-26 Tailscale lab, the consumer (`100.107.30.86`) discovered
+the provider (`100.112.10.128`) from `PriceSignal.http_endpoint`; both
+ledgers persisted the same provider/consumer trade after restart.
 
 Every response includes `x_tirami` — **the cost in TRM** + the remaining balance. The
 `flops_estimated` field anchors the principle "1 TRM = 10⁹ FLOP" with **measured data**.
@@ -551,6 +617,7 @@ tirami/  (this repo — all 5 layers, 16 Rust crates)
 - [Threat Model](docs/threat-model.md) — Security + economic attacks (T1-T17)
 - [Security Policy](SECURITY.md) — Reporting vulnerabilities, secondary-market disclaimer, mainnet deploy gate
 - [Operator Guide](docs/operator-guide.md) — How to run a node in production
+- [Public Testnet Launch](docs/public-testnet-launch.md) — Staged launch runbook for worldwide node joins
 - [Bootstrap](docs/bootstrap.md) — Startup, degradation, recovery
 - [Compatibility](docs/compatibility.md) — llama.cpp / mesh-llm / Ollama / Bittensor comparison
 - [Deployments Record](docs/deployments/README.md) — On-chain deploy history (empty until Sepolia ship)

@@ -1,7 +1,7 @@
 use clap::{Parser, Subcommand};
-use tirami_core::Config;
 use std::io::{self, BufRead, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use tirami_core::Config;
 
 #[derive(Parser)]
 #[command(name = "tirami")]
@@ -58,6 +58,20 @@ enum Commands {
         #[arg(long, default_value = "127.0.0.1")]
         bind: String,
 
+        /// Fixed P2P UDP bind socket for direct peers, e.g. 0.0.0.0:7700.
+        #[arg(long)]
+        p2p_bind: Option<String>,
+
+        /// Public bootstrap peer to join on startup. Repeatable.
+        /// Format: PUBLIC_KEY, PUBLIC_KEY@RELAY_URL, or PUBLIC_KEY@IP:PORT.
+        #[arg(long = "bootstrap-peer")]
+        bootstrap_peers: Vec<String>,
+
+        /// Optional bearer token protecting administrative HTTP API routes.
+        /// Can also be set with TIRAMI_API_TOKEN.
+        #[arg(long)]
+        api_token: Option<String>,
+
         /// Run in pure-server mode without auto-configuring a
         /// PersonalAgent. Default is OFF (agent auto-configured);
         /// pass --no-agent to opt out. Useful for hosting nodes
@@ -66,6 +80,9 @@ enum Commands {
         #[arg(long, default_value_t = false)]
         no_agent: bool,
     },
+
+    /// Print this node's stable P2P identity without starting a model.
+    Identity,
 
     /// Start as a seed node (holds model, serves inference)
     Seed {
@@ -85,6 +102,10 @@ enum Commands {
         #[arg(long, default_value = "127.0.0.1")]
         bind: String,
 
+        /// Fixed P2P UDP bind socket for direct peers, e.g. 0.0.0.0:7700.
+        #[arg(long)]
+        p2p_bind: Option<String>,
+
         /// Path to the persisted ledger snapshot
         #[arg(long, default_value = "forge-ledger.json")]
         ledger: String,
@@ -92,6 +113,11 @@ enum Commands {
         /// Optional bearer token protecting administrative HTTP API routes
         #[arg(long)]
         api_token: Option<String>,
+
+        /// Public bootstrap peer to join on startup. Repeatable.
+        /// Format: PUBLIC_KEY, PUBLIC_KEY@RELAY_URL, or PUBLIC_KEY@IP:PORT.
+        #[arg(long = "bootstrap-peer")]
+        bootstrap_peers: Vec<String>,
     },
 
     /// Start as a worker node (connects to seed for inference)
@@ -111,6 +137,10 @@ enum Commands {
         /// Bind address for the local HTTP API
         #[arg(long, default_value = "127.0.0.1")]
         bind: String,
+
+        /// Fixed P2P UDP bind socket for direct peers, e.g. 0.0.0.0:7700.
+        #[arg(long)]
+        p2p_bind: Option<String>,
 
         /// Optional bearer token protecting administrative HTTP API routes
         #[arg(long)]
@@ -256,6 +286,11 @@ enum Commands {
         /// Base URL of the Tirami node running locally.
         #[arg(short, long, default_value = "http://127.0.0.1:3000")]
         url: String,
+
+        /// Bearer token for the local Tirami HTTP API.
+        /// Can also be set with TIRAMI_API_TOKEN.
+        #[arg(long)]
+        api_token: Option<String>,
     },
 }
 
@@ -294,6 +329,10 @@ enum AgentCommands {
         /// --peer-node-id.
         #[arg(long)]
         peer_url: Option<String>,
+        /// Bearer token for the peer's protected HTTP API.
+        /// Must be combined with --peer-node-id and --peer-url.
+        #[arg(long)]
+        peer_api_token: Option<String>,
     },
 }
 
@@ -352,10 +391,10 @@ enum WalletAction {
 /// Default tracing filter when `RUST_LOG` is unset.
 ///
 /// `"info"` for Tirami internals, `error` for iroh's multicast / IPv6
-/// relay probes which spam WARN on Tailscale or IPv4-only hosts
-/// (fix #75). Operators who want the raw firehose: `RUST_LOG=info`.
-const DEFAULT_TRACING_FILTER: &str =
-    "info,swarm_discovery=error,iroh::socket::transports::relay=error,iroh_relay=error,noq_udp=error";
+/// relay probes and noisy address-set warnings that spam logs on
+/// Tailscale, Docker-heavy, or IPv4-only hosts (fix #75). Operators who
+/// want the raw firehose: `RUST_LOG=info`.
+const DEFAULT_TRACING_FILTER: &str = "info,swarm_discovery=error,iroh::socket::transports::relay=error,iroh::socket::remote_map::remote_state=error,iroh_relay=error,noq_udp=error";
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -369,8 +408,28 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Start { model, port, bind, no_agent } => {
-            run_start_command(model, port, bind, no_agent).await?;
+        Commands::Start {
+            model,
+            port,
+            bind,
+            p2p_bind,
+            bootstrap_peers,
+            api_token,
+            no_agent,
+        } => {
+            run_start_command(
+                model,
+                port,
+                bind,
+                no_agent,
+                bootstrap_peers,
+                api_token,
+                p2p_bind,
+            )
+            .await?;
+        }
+        Commands::Identity => {
+            run_identity_command()?;
         }
         Commands::Models => {
             tirami_infer::model_registry::list_models();
@@ -384,7 +443,10 @@ async fn main() -> anyhow::Result<()> {
                     println!("Lightning Node ID: {}", wallet.node_id());
                     println!("Network: {:?}", wallet.network());
                     println!("On-chain balance: {} sats", wallet.onchain_balance_sats());
-                    println!("Lightning balance: {} sats", wallet.lightning_balance_sats());
+                    println!(
+                        "Lightning balance: {} sats",
+                        wallet.lightning_balance_sats()
+                    );
                     println!("Funding address: {}", wallet.funding_address()?);
 
                     let rate = tirami_lightning::payment::ExchangeRate::default();
@@ -416,10 +478,14 @@ async fn main() -> anyhow::Result<()> {
 
             // Resolve model via the unified dispatcher (local path, HF URL, shorthand, catalog)
             let resolved = tirami_infer::model_registry::resolve(&model)?;
-            let tokenizer_path = resolved.tokenizer_path.or_else(|| tokenizer.map(PathBuf::from))
-                .ok_or_else(|| anyhow::anyhow!(
-                    "tokenizer path required for this model source — use --tokenizer"
-                ))?;
+            let tokenizer_path = resolved
+                .tokenizer_path
+                .or_else(|| tokenizer.map(PathBuf::from))
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "tokenizer path required for this model source — use --tokenizer"
+                    )
+                })?;
             let model_path = resolved.model_path;
 
             node.load_model(&model_path, &tokenizer_path).await?;
@@ -467,25 +533,34 @@ async fn main() -> anyhow::Result<()> {
             tokenizer,
             port,
             bind,
+            p2p_bind,
             ledger,
             api_token,
+            bootstrap_peers,
         } => {
-            let config = Config {
-                api_port: port,
-                api_bind_addr: bind,
-                api_bearer_token: resolve_api_token(api_token),
-                ledger_path: Some(PathBuf::from(&ledger)),
-                share_compute: true,
-                ..Config::default()
-            };
+            let node_key_path = ensure_default_node_key()?;
+            let api_bearer_token = resolve_api_token_for_bind(&bind, api_token)?;
+            let mut config = Config::for_data_dir(default_data_dir()?);
+            config.api_port = port;
+            config.api_bind_addr = bind;
+            config.api_bearer_token = api_bearer_token;
+            config.p2p_bind_addr = p2p_bind;
+            config.node_key_path = Some(node_key_path);
+            config.ledger_path = Some(PathBuf::from(&ledger));
+            config.bootstrap_peers = resolve_bootstrap_peers(bootstrap_peers);
+            config.share_compute = true;
             let mut node = tirami_node::TiramiNode::new(config);
 
             // Resolve model via the unified dispatcher (local path, HF URL, shorthand, catalog)
             let resolved = tirami_infer::model_registry::resolve(&model)?;
-            let tokenizer_path = resolved.tokenizer_path.or_else(|| tokenizer.map(PathBuf::from))
-                .ok_or_else(|| anyhow::anyhow!(
-                    "tokenizer path required for this model source — use --tokenizer"
-                ))?;
+            let tokenizer_path = resolved
+                .tokenizer_path
+                .or_else(|| tokenizer.map(PathBuf::from))
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "tokenizer path required for this model source — use --tokenizer"
+                    )
+                })?;
             let model_path = resolved.model_path;
 
             node.load_model(&model_path, &tokenizer_path).await?;
@@ -498,6 +573,7 @@ async fn main() -> anyhow::Result<()> {
             let shutdown_bank = node.bank.clone();
             let shutdown_marketplace = node.marketplace.clone();
             let shutdown_mind = node.mind_agent.clone();
+            let shutdown_personal_agent = node.personal_agent.clone();
             let shutdown_config = node.config.clone();
             tokio::spawn(async move {
                 if tokio::signal::ctrl_c().await.is_ok() {
@@ -533,20 +609,41 @@ async fn main() -> anyhow::Result<()> {
                             }
                         }
                     }
+                    if let Some(ref path) = shutdown_config.personal_agent_state_path {
+                        let personal = shutdown_personal_agent.lock().await;
+                        if let Some(agent) = personal.as_ref() {
+                            if let Err(e) =
+                                tirami_node::state_persist::save_personal_agent(agent, path)
+                            {
+                                tracing::warn!("Failed to persist personal agent state: {}", e);
+                            }
+                        }
+                    }
                     std::process::exit(0);
                 }
             });
 
             node.run_seed().await?;
         }
-        Commands::Worker { seed, relay, port, bind, api_token, ledger, daemon } => {
-            let config = Config {
-                api_port: port,
-                api_bind_addr: bind.clone(),
-                api_bearer_token: resolve_api_token(api_token),
-                ledger_path: Some(PathBuf::from(&ledger)),
-                ..Config::default()
-            };
+        Commands::Worker {
+            seed,
+            relay,
+            port,
+            bind,
+            p2p_bind,
+            api_token,
+            ledger,
+            daemon,
+        } => {
+            let node_key_path = ensure_default_node_key()?;
+            let api_bearer_token = resolve_api_token_for_bind(&bind, api_token)?;
+            let mut config = Config::for_data_dir(default_data_dir()?);
+            config.api_port = port;
+            config.api_bind_addr = bind.clone();
+            config.api_bearer_token = api_bearer_token;
+            config.p2p_bind_addr = p2p_bind;
+            config.node_key_path = Some(node_key_path);
+            config.ledger_path = Some(PathBuf::from(&ledger));
             let mut node = tirami_node::TiramiNode::new(config);
 
             let public_key: iroh::PublicKey = seed
@@ -583,6 +680,7 @@ async fn main() -> anyhow::Result<()> {
             let shutdown_bank = node.bank.clone();
             let shutdown_marketplace = node.marketplace.clone();
             let shutdown_mind = node.mind_agent.clone();
+            let shutdown_personal_agent = node.personal_agent.clone();
             let shutdown_config = node.config.clone();
             tokio::spawn(async move {
                 if tokio::signal::ctrl_c().await.is_ok() {
@@ -611,6 +709,16 @@ async fn main() -> anyhow::Result<()> {
                         if let Some(agent) = mind.as_ref() {
                             if let Err(e) = tirami_node::state_persist::save_mind(agent, path) {
                                 tracing::warn!("Failed to persist mind state: {}", e);
+                            }
+                        }
+                    }
+                    if let Some(ref path) = shutdown_config.personal_agent_state_path {
+                        let personal = shutdown_personal_agent.lock().await;
+                        if let Some(agent) = personal.as_ref() {
+                            if let Err(e) =
+                                tirami_node::state_persist::save_personal_agent(agent, path)
+                            {
+                                tracing::warn!("Failed to persist personal agent state: {}", e);
                             }
                         }
                     }
@@ -714,25 +822,28 @@ async fn main() -> anyhow::Result<()> {
             ledger,
             api_token,
         } => {
-            let config = Config {
-                api_port: port,
-                api_bind_addr: bind,
-                api_bearer_token: resolve_api_token(api_token),
-                ledger_path: Some(PathBuf::from(&ledger)),
-                ..Config::default()
-            };
+            let api_bearer_token = resolve_api_token_for_bind(&bind, api_token)?;
+            let mut config = Config::for_data_dir(ensure_default_data_dir()?);
+            config.api_port = port;
+            config.api_bind_addr = bind;
+            config.api_bearer_token = api_bearer_token;
+            config.ledger_path = Some(PathBuf::from(&ledger));
             let node = tirami_node::TiramiNode::new(config);
 
             // Resolve model spec via the unified dispatcher — handles local path,
             // HF URL, HF shorthand, catalog name, and ~/.models scan.
             if let Some(model) = model {
                 let resolved = tirami_infer::model_registry::resolve(&model)?;
-                let tokenizer_path = resolved.tokenizer_path
+                let tokenizer_path = resolved
+                    .tokenizer_path
                     .or_else(|| tokenizer.map(PathBuf::from))
-                    .ok_or_else(|| anyhow::anyhow!(
-                        "tokenizer path required for this model source — use --tokenizer"
-                    ))?;
-                node.load_model(&resolved.model_path, &tokenizer_path).await?;
+                    .ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "tokenizer path required for this model source — use --tokenizer"
+                        )
+                    })?;
+                node.load_model(&resolved.model_path, &tokenizer_path)
+                    .await?;
             }
 
             tracing::info!("Starting local API server on port {}", port);
@@ -743,6 +854,7 @@ async fn main() -> anyhow::Result<()> {
             let shutdown_bank = node.bank.clone();
             let shutdown_marketplace = node.marketplace.clone();
             let shutdown_mind = node.mind_agent.clone();
+            let shutdown_personal_agent = node.personal_agent.clone();
             let shutdown_config = node.config.clone();
             tokio::spawn(async move {
                 if tokio::signal::ctrl_c().await.is_ok() {
@@ -775,6 +887,16 @@ async fn main() -> anyhow::Result<()> {
                         if let Some(agent) = mind.as_ref() {
                             if let Err(e) = tirami_node::state_persist::save_mind(agent, path) {
                                 tracing::warn!("Failed to persist mind state: {}", e);
+                            }
+                        }
+                    }
+                    if let Some(ref path) = shutdown_config.personal_agent_state_path {
+                        let personal = shutdown_personal_agent.lock().await;
+                        if let Some(agent) = personal.as_ref() {
+                            if let Err(e) =
+                                tirami_node::state_persist::save_personal_agent(agent, path)
+                            {
+                                tracing::warn!("Failed to persist personal agent state: {}", e);
                             }
                         }
                     }
@@ -966,13 +1088,11 @@ async fn main() -> anyhow::Result<()> {
 
                 if let Some(provider) = best_provider {
                     let rate = tirami_lightning::payment::ExchangeRate::default();
-                    if let Some(invoice_info) =
-                        tirami_lightning::payment::create_settlement_invoice(
-                            provider.net_cu,
-                            &rate,
-                            hours,
-                        )
-                    {
+                    if let Some(invoice_info) = tirami_lightning::payment::create_settlement_invoice(
+                        provider.net_cu,
+                        &rate,
+                        hours,
+                    ) {
                         println!("\n--- Lightning Settlement ---");
                         println!("Provider: {}", provider.node_id);
                         println!("Net CU earned: {}", invoice_info.net_cu);
@@ -999,14 +1119,20 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
         }
-        Commands::Agent { action, url } => {
+        Commands::Agent {
+            action,
+            url,
+            api_token,
+        } => {
             let base = url.trim_end_matches('/');
             let client = reqwest::Client::new();
+            let resolved_api_token = resolve_api_token(api_token);
 
-            let resp = client
-                .get(format!("{base}/v1/tirami/agent/status"))
-                .send()
-                .await?;
+            let mut status_request = client.get(format!("{base}/v1/tirami/agent/status"));
+            if let Some(token) = resolved_api_token.as_deref() {
+                status_request = status_request.bearer_auth(token);
+            }
+            let resp = status_request.send().await?;
             if !resp.status().is_success() {
                 let status = resp.status();
                 let body = resp.text().await.unwrap_or_default();
@@ -1041,7 +1167,10 @@ async fn main() -> anyhow::Result<()> {
                         println!("    Auto-earn:      {}", prefs["auto_earn_enabled"]);
                         println!("    Auto-spend:     {}", prefs["auto_spend_enabled"]);
                         println!("    Auto-stake:     {}", prefs["auto_stake_fraction"]);
-                        println!("    Idle threshold: {}", prefs["idle_utilization_threshold"]);
+                        println!(
+                            "    Idle threshold: {}",
+                            prefs["idle_utilization_threshold"]
+                        );
                         println!("    Idle grace (s): {}", prefs["idle_grace_seconds"]);
                         println!("    Min peer rep:   {}", prefs["min_peer_reputation"]);
                         println!("    Content filter: {}", prefs["content_filter"]);
@@ -1064,6 +1193,7 @@ async fn main() -> anyhow::Result<()> {
                     estimated_trm,
                     peer_node_id,
                     peer_url,
+                    peer_api_token,
                 } => {
                     // Previous `resp` / `json` were bound for status;
                     // we just shadow them below.
@@ -1077,26 +1207,32 @@ async fn main() -> anyhow::Result<()> {
                     if let Some(t) = estimated_trm {
                         body["estimated_trm"] = serde_json::json!(t);
                     }
-                    match (peer_node_id, peer_url) {
-                        (Some(node_id), Some(url)) => {
-                            body["peer"] = serde_json::json!({
+                    match (peer_node_id, peer_url, peer_api_token) {
+                        (Some(node_id), Some(url), maybe_peer_token) => {
+                            let mut peer = serde_json::json!({
                                 "node_id": node_id,
                                 "url": url,
                             });
+                            if let Some(token) = maybe_peer_token {
+                                peer["api_token"] = serde_json::json!(token);
+                            }
+                            body["peer"] = peer;
                         }
-                        (Some(_), None) | (None, Some(_)) => {
+                        (Some(_), None, _) | (None, Some(_), _) | (None, None, Some(_)) => {
                             eprintln!(
-                                "Error: --peer-node-id and --peer-url must be supplied together"
+                                "Error: --peer-node-id and --peer-url must be supplied together; --peer-api-token requires both"
                             );
                             std::process::exit(2);
                         }
-                        (None, None) => {}
+                        (None, None, None) => {}
                     }
-                    let resp = client
+                    let mut request = client
                         .post(format!("{base}/v1/tirami/agent/task"))
-                        .json(&body)
-                        .send()
-                        .await?;
+                        .json(&body);
+                    if let Some(token) = resolved_api_token.as_deref() {
+                        request = request.bearer_auth(token);
+                    }
+                    let resp = request.send().await?;
                     let status = resp.status();
                     let json: serde_json::Value = resp.json().await.unwrap_or_default();
                     if !status.is_success() {
@@ -1125,14 +1261,20 @@ async fn main() -> anyhow::Result<()> {
                             eprintln!("\n— {} · {} TRM", where_, trm);
                         }
                         "ask_user" => {
-                            let reason = json["reason"].as_str().unwrap_or("agent wants confirmation");
+                            let reason = json["reason"]
+                                .as_str()
+                                .unwrap_or("agent wants confirmation");
                             let cost = json["estimated_cost_trm"].as_u64().unwrap_or(0);
                             println!("(agent paused — {})", reason);
                             println!("  estimated cost: {} TRM", cost);
-                            println!("  re-run with higher --estimated-trm or add --peer-node-id/--peer-url to proceed.");
+                            println!(
+                                "  re-run with higher --estimated-trm or add --peer-node-id/--peer-url to proceed."
+                            );
                         }
                         "pending" => {
-                            let reason = json["reason"].as_str().unwrap_or("remote dispatch scaffold");
+                            let reason = json["reason"]
+                                .as_str()
+                                .unwrap_or("remote dispatch scaffold");
                             println!("(pending — {})", reason);
                         }
                         "refused" => {
@@ -1271,11 +1413,167 @@ fn resolve_api_token(flag: Option<String>) -> Option<String> {
         .filter(|token| !token.is_empty())
 }
 
+fn resolve_api_token_for_bind(bind: &str, flag: Option<String>) -> anyhow::Result<Option<String>> {
+    let token = resolve_api_token(flag);
+    validate_public_bind_auth(bind, token.as_deref())?;
+    Ok(token)
+}
+
+fn validate_public_bind_auth(bind: &str, token: Option<&str>) -> anyhow::Result<()> {
+    if is_public_bind_addr(bind) && token.map(str::trim).filter(|t| !t.is_empty()).is_none() {
+        anyhow::bail!(
+            "refusing to bind unauthenticated API to {}; set --api-token or TIRAMI_API_TOKEN",
+            bind
+        );
+    }
+    Ok(())
+}
+
+fn is_public_bind_addr(bind: &str) -> bool {
+    let bind = bind.trim().trim_matches(['[', ']']).to_ascii_lowercase();
+    !matches!(bind.as_str(), "127.0.0.1" | "::1" | "localhost")
+}
+
+fn resolve_bootstrap_peers(cli_peers: Vec<String>) -> Vec<String> {
+    let mut peers = std::env::var("TIRAMI_BOOTSTRAP_PEERS")
+        .ok()
+        .into_iter()
+        .flat_map(|value| {
+            value
+                .split(',')
+                .map(str::trim)
+                .filter(|peer| !peer.is_empty())
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    peers.extend(
+        cli_peers
+            .into_iter()
+            .map(|peer| peer.trim().to_string())
+            .filter(|peer| !peer.is_empty()),
+    );
+    peers
+}
+
+fn default_data_dir() -> anyhow::Result<PathBuf> {
+    let home = std::env::var("HOME").map_err(|_| anyhow::anyhow!("HOME not set"))?;
+    Ok(PathBuf::from(home).join(".tirami"))
+}
+
+fn ensure_default_data_dir() -> anyhow::Result<PathBuf> {
+    let tirami_dir = default_data_dir()?;
+    if !tirami_dir.exists() {
+        std::fs::create_dir_all(&tirami_dir)?;
+    }
+    Ok(tirami_dir)
+}
+
+fn ensure_default_node_key() -> anyhow::Result<PathBuf> {
+    use std::fs;
+
+    let tirami_dir = ensure_default_data_dir()?;
+    let key_path = tirami_dir.join("node.key");
+    if !key_path.exists() {
+        use ed25519_dalek::SigningKey;
+        use rand::rngs::OsRng;
+        let signing_key = SigningKey::generate(&mut OsRng);
+        fs::write(&key_path, signing_key.to_bytes())?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = fs::metadata(&key_path)?.permissions();
+            perms.set_mode(0o600);
+            fs::set_permissions(&key_path, perms)?;
+        }
+        println!("🔑 Generated new node key at {}", key_path.display());
+    }
+
+    Ok(key_path)
+}
+
+fn load_node_secret_key(path: &Path) -> anyhow::Result<iroh::SecretKey> {
+    let bytes = std::fs::read(path)?;
+    let raw = parse_node_secret_key_bytes(&bytes)
+        .map_err(|reason| anyhow::anyhow!("invalid node key file {}: {reason}", path.display()))?;
+    Ok(iroh::SecretKey::from_bytes(&raw))
+}
+
+fn parse_node_secret_key_bytes(bytes: &[u8]) -> Result<[u8; 32], &'static str> {
+    if bytes.len() == 32 {
+        let mut raw = [0u8; 32];
+        raw.copy_from_slice(bytes);
+        return Ok(raw);
+    }
+
+    let Ok(text) = std::str::from_utf8(bytes) else {
+        return Err("expected 32 raw bytes or 64 lowercase/uppercase hex characters");
+    };
+    let text = text.trim();
+    if text.len() != 64 || !text.as_bytes().iter().all(u8::is_ascii_hexdigit) {
+        return Err("expected 32 raw bytes or 64 lowercase/uppercase hex characters");
+    }
+
+    let decoded =
+        hex::decode(text).map_err(|_| "expected valid hex-encoded Ed25519 secret bytes")?;
+    let mut raw = [0u8; 32];
+    raw.copy_from_slice(&decoded);
+    Ok(raw)
+}
+
+fn run_identity_command() -> anyhow::Result<()> {
+    let key_path = ensure_default_node_key()?;
+    let secret_key = load_node_secret_key(&key_path)?;
+    let public_key = secret_key.public();
+    let node_id = tirami_core::NodeId(*public_key.as_bytes());
+
+    println!("Node key: {}", key_path.display());
+    println!("Public key: {}", public_key);
+    println!("Node ID: {}", node_id.to_hex());
+    println!("Direct bootstrap peer: {}@IP:PORT", public_key);
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn loopback_bind_may_omit_api_token() {
+        validate_public_bind_auth("127.0.0.1", None).unwrap();
+        validate_public_bind_auth("localhost", None).unwrap();
+        validate_public_bind_auth("::1", None).unwrap();
+    }
+
+    #[test]
+    fn public_or_wildcard_bind_requires_api_token() {
+        assert!(validate_public_bind_auth("0.0.0.0", None).is_err());
+        assert!(validate_public_bind_auth("::", None).is_err());
+        assert!(validate_public_bind_auth("203.0.113.10", None).is_err());
+        validate_public_bind_auth("0.0.0.0", Some("token")).unwrap();
+    }
+
+    #[test]
+    fn node_secret_key_parser_accepts_raw_and_hex() {
+        let raw = [7u8; 32];
+        assert_eq!(parse_node_secret_key_bytes(&raw).unwrap(), raw);
+        assert_eq!(
+            parse_node_secret_key_bytes(hex::encode(raw).as_bytes()).unwrap(),
+            raw
+        );
+    }
+
+    #[test]
+    fn node_secret_key_parser_rejects_wrong_length() {
+        assert!(parse_node_secret_key_bytes(b"too-short").is_err());
+    }
+}
+
 /// One-command bootstrap: `tirami start`.
 ///
 /// Bitcoin-style zero-config participation:
 /// 1. Generate ~/.tirami/node.key if missing (Ed25519)
-/// 2. Create ~/.tirami/config.toml if missing
+/// 2. Wire durable ledger/bank/agora/mind/archive state under ~/.tirami
 /// 3. Resolve & download model from HuggingFace if missing
 /// 4. Start seed node (P2P + HTTP API + inference)
 /// 5. Print welcome banner with earning estimates
@@ -1284,6 +1582,9 @@ async fn run_start_command(
     port: u16,
     bind: String,
     no_agent: bool,
+    bootstrap_peers: Vec<String>,
+    api_token: Option<String>,
+    p2p_bind: Option<String>,
 ) -> anyhow::Result<()> {
     use std::fs;
 
@@ -1324,6 +1625,8 @@ async fn run_start_command(
     // Phase 3: Ledger path
     // ------------------------------------------------------------------
     let ledger_path = tirami_dir.join("ledger.json");
+    let bootstrap_peers = resolve_bootstrap_peers(bootstrap_peers);
+    let api_bearer_token = resolve_api_token_for_bind(&bind, api_token)?;
 
     // ------------------------------------------------------------------
     // Phase 4: Print startup banner before model download (can be slow)
@@ -1337,6 +1640,12 @@ async fn run_start_command(
     println!("   Model:     {}", model);
     println!("   Ledger:    {}", ledger_path.display());
     println!("   API:       http://{}:{}", bind, port);
+    if let Some(bind) = p2p_bind.as_ref() {
+        println!("   P2P bind:  {}", bind);
+    }
+    if !bootstrap_peers.is_empty() {
+        println!("   Bootstrap: {} peer(s)", bootstrap_peers.len());
+    }
     println!();
     println!("📦 Resolving model (will auto-download from HuggingFace if needed)...");
 
@@ -1355,22 +1664,22 @@ async fn run_start_command(
     // ------------------------------------------------------------------
     // Phase 6: Build config + seed node
     // ------------------------------------------------------------------
-    let config = Config {
-        api_port: port,
-        api_bind_addr: bind.clone(),
-        api_bearer_token: None, // localhost by default, no token needed
-        ledger_path: Some(ledger_path.clone()),
-        share_compute: true,
-        // Phase 18.5-part-3e — killer-app ergonomics: `tirami start`
-        // yields a configured PersonalAgent by default. --no-agent
-        // flips this off for operators running pure-server nodes.
-        personal_agent_enabled: !no_agent,
-        ..Config::default()
-    };
+    let mut config = Config::for_data_dir(&tirami_dir);
+    config.api_port = port;
+    config.api_bind_addr = bind.clone();
+    config.api_bearer_token = api_bearer_token;
+    config.p2p_bind_addr = p2p_bind;
+    config.bootstrap_peers = bootstrap_peers;
+    config.share_compute = true;
+    // Phase 18.5-part-3e — killer-app ergonomics: `tirami start`
+    // yields a configured PersonalAgent by default. --no-agent
+    // flips this off for operators running pure-server nodes.
+    config.personal_agent_enabled = !no_agent;
     let mut node = tirami_node::TiramiNode::new(config);
 
     println!("🧠 Loading model into memory (this may take 10-60 seconds)...");
-    node.load_model(&resolved.model_path, &tokenizer_path).await?;
+    node.load_model(&resolved.model_path, &tokenizer_path)
+        .await?;
     println!("✅ Model loaded");
 
     // ------------------------------------------------------------------
@@ -1378,11 +1687,36 @@ async fn run_start_command(
     // ------------------------------------------------------------------
     let shutdown_ledger = node.ledger.clone();
     let shutdown_ledger_path = node.config.ledger_path.clone();
+    let shutdown_bank = node.bank.clone();
+    let shutdown_marketplace = node.marketplace.clone();
+    let shutdown_mind = node.mind_agent.clone();
+    let shutdown_personal_agent = node.personal_agent.clone();
+    let shutdown_config = node.config.clone();
     tokio::spawn(async move {
         if tokio::signal::ctrl_c().await.is_ok() {
-            println!("\n💾 Persisting ledger and shutting down...");
+            println!("\n💾 Persisting state and shutting down...");
             if let Some(path) = shutdown_ledger_path {
                 let _ = shutdown_ledger.lock().await.save_to_path(&path);
+            }
+            if let Some(ref path) = shutdown_config.bank_state_path {
+                let bank = shutdown_bank.lock().await;
+                let _ = tirami_node::state_persist::save_bank(&*bank, path);
+            }
+            if let Some(ref path) = shutdown_config.marketplace_state_path {
+                let mp = shutdown_marketplace.lock().await;
+                let _ = tirami_node::state_persist::save_marketplace(&*mp, path);
+            }
+            if let Some(ref path) = shutdown_config.mind_state_path {
+                let mind = shutdown_mind.lock().await;
+                if let Some(agent) = mind.as_ref() {
+                    let _ = tirami_node::state_persist::save_mind(agent, path);
+                }
+            }
+            if let Some(ref path) = shutdown_config.personal_agent_state_path {
+                let personal = shutdown_personal_agent.lock().await;
+                if let Some(agent) = personal.as_ref() {
+                    let _ = tirami_node::state_persist::save_personal_agent(agent, path);
+                }
             }
             std::process::exit(0);
         }
@@ -1397,7 +1731,10 @@ async fn run_start_command(
         println!();
         println!("   💡 First-time setup complete.");
         println!("      Your node earns TRM by serving inference to AI agents.");
-        println!("      Run `tirami status --url http://{}:{}` in another terminal.", bind, port);
+        println!(
+            "      Run `tirami status --url http://{}:{}` in another terminal.",
+            bind, port
+        );
     }
     println!();
 

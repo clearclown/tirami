@@ -5175,6 +5175,7 @@ dependencies = [
  "anyhow",
  "clap",
  "ed25519-dalek 2.2.0",
+ "hex",
  "iroh",
  "rand 0.8.5",
  "reqwest 0.12.28",

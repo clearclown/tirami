@@ -1,0 +1,26 @@
+[Unit]
+Description=Tirami public testnet node
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=tirami
+Group=tirami
+Environment=HOME=/var/lib/tirami
+EnvironmentFile=/etc/tirami/public-testnet.env
+WorkingDirectory=/var/lib/tirami
+ExecStart=/usr/local/bin/tirami start --model ${TIRAMI_MODEL} --bind ${TIRAMI_BIND} --port ${TIRAMI_PORT} --p2p-bind ${TIRAMI_P2P_BIND}
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+LimitNOFILE=65536
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=false
+ReadWritePaths=/var/lib/tirami /var/log/tirami
+
+[Install]
+WantedBy=multi-user.target

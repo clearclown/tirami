@@ -6,6 +6,30 @@ numbers follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Phase 19 — Private-lab auto-dispatch + public-testnet docs (2026-04-27)
+
+Documents and hardens the 2026-04-26 Tailscale private lab before any
+broader public-testnet claim.
+
+- Verified a two-machine remote-agent run between Mac Studio
+  `100.112.10.128` and ASUS ROG X13 `100.107.30.86`: the consumer
+  submitted a remote task with no explicit peer hint, selected the
+  provider from `PriceSignal.http_endpoint`, forwarded the shared
+  bearer token, and received an inference result.
+- Provider and consumer ledgers both mirrored the same trades and
+  restored them after restart. After two remote jobs, both ledgers
+  reported `total_trades = 2`; Mac Studio earned 18 TRM and ASUS spent
+  18 TRM.
+- Updated `README.md`, `docs/public-testnet-launch.md`,
+  `docs/operator-guide.md`, `docs/release-readiness.md`, and
+  `docs/theory-audit-2026-04.md` to distinguish private-alpha success
+  from open public-testnet readiness.
+- Added `deploy/public-testnet.env.example` for bootstrap peers,
+  concrete Tailscale HTTP binds, API-token enforcement, and stable P2P
+  bind configuration.
+- Targeted verification: `cargo test -p tirami-node` passed 208 tests;
+  `cargo test -p tirami-cli` passed 6 tests.
+
 ### Phase 18.5-part-3 — E2E hardening for testnet-B (2026-04-19)
 
 Closes every open issue surfaced by the 2-node live E2E on

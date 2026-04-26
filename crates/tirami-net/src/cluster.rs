@@ -1,14 +1,14 @@
 use crate::connection::PeerConnection;
 use crate::discovery::DiscoveryService;
 use crate::transport::ForgeTransport;
-use tirami_core::PeerCapability;
+use tirami_core::{PeerCapability, TIRAMI_PROTOCOL_VERSION};
 use tirami_proto::{Envelope, Heartbeat, Hello, LeaveReason, Leaving, Payload};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 /// Current protocol version. Peers with different versions log a warning
 /// but still attempt to communicate.
-pub const PROTOCOL_VERSION: u16 = 1;
+pub const PROTOCOL_VERSION: u16 = TIRAMI_PROTOCOL_VERSION;
 
 /// Manages a cluster of Forge nodes — handles handshakes,
 /// heartbeats, node join/leave, and dynamic topology.

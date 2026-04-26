@@ -41,6 +41,9 @@ Before anything else, here is exactly what works and what does not. Tirami is MI
 - Governance proposals with a 21-entry mutable whitelist and an 18-entry constitutional-parameter immutable list (Phase 18.1).
 - Welcome loan, stake pool, referral bonuses, credit scoring, dynamic market pricing (EMA-smoothed).
 - Peer auto-discovery via `PriceSignal.http_endpoint` on the gossip wire (Phase 19 Tier C).
+- Protocol version + feature flags are advertised in `PeerCapability`,
+  `PriceSignal`, `/status`, `/topology`, `/v1/tirami/peers`, and
+  `/v1/tirami/protocol` so future upgrades can be gated explicitly.
 - PersonalAgent remote dispatch can auto-select a provider from
   `PriceSignal` gossip and inherit the caller bearer token for
   shared-token private testnets.
@@ -459,6 +462,7 @@ cargo build --release
 | `POST /v1/chat/completions` | Chat with streaming. Every response includes `x_tirami.trm_cost`. If the local engine has no model loaded, the request is forwarded to a connected peer over P2P (`forward_chat_to_peer`, Phase 19 Tier C) and a dual-signed trade is recorded on settlement. |
 | `POST /v1/tirami/agent/task` | Synchronous agent dispatch — classifies local vs. remote, picks a provider via `select_provider` + `peer_http_endpoint`, returns the decision (`run_local` / `run_remote` / `ask_user`). Phase 18.5-pt3. |
 | `GET /v1/tirami/agent/status` | Personal agent state (balance, today's tally, preferences, tick-loop counters). Phase 18.5-pt3. |
+| `GET /v1/tirami/protocol` | Runtime protocol metadata: supported version range, feature flags, proof policy, transport, and PriceSignal HTTP-advertisement state. |
 | `GET /v1/models` | List loaded models |
 
 ### Economy
@@ -470,6 +474,7 @@ cargo build --release
 | `GET /v1/tirami/trades` | Recent trades with TRM amounts |
 | `GET /v1/tirami/network` | Total TRM flow + Merkle root |
 | `GET /v1/tirami/providers` | Ranked providers by reputation and cost |
+| `GET /v1/tirami/peers` | Peers with advertised prices, audit tier, protocol version, feature flags, and optional `http_endpoint` |
 | `POST /v1/tirami/invoice` | Create Lightning invoice from TRM balance |
 | `GET /v1/tirami/route` | Optimal provider selection (cost/quality/balanced) |
 | `GET /settlement` | Exportable settlement statement |
@@ -569,7 +574,7 @@ tirami/  (this repo — all 5 layers, 16 Rust crates)
 │   ├── tirami-net/          # P2P: iroh QUIC + Noise + gossip, ASN rate-limit
 │   ├── tirami-proto/        # Wire protocol: 30+ message types
 │   ├── tirami-infer/        # Inference: llama.cpp, GGUF, Metal/CPU
-│   ├── tirami-core/         # Types: NodeId, TRM, Config, PriceSignal (+ http_endpoint)
+│   ├── tirami-core/         # Types: NodeId, TRM, Config, PriceSignal (+ protocol/features/http_endpoint)
 │   ├── tirami-shard/        # Topology: layer assignment
 │   ├── tirami-zkml-bench/   # zkML benchmark harness (MockBackend + ezkl/risc0/halo2 stubs, Phase 18.3)
 │   └── tirami-attestation/  # TEE attestation scaffold (Apple SE / NVIDIA H100 CC, Phase 17 Wave 3.1)

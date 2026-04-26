@@ -78,6 +78,8 @@ mod tests {
 
         PeerCapability {
             node_id: NodeId(node_id),
+            protocol_version: tirami_core::TIRAMI_PROTOCOL_VERSION,
+            features: tirami_core::base_protocol_features(),
             cpu_cores: 8,
             memory_gb,
             metal_available: true,

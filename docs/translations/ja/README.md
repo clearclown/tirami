@@ -42,6 +42,7 @@
 - Governance proposal — 21 エントリの可変ホワイトリスト + 18 エントリの憲法的不変リスト (Phase 18.1)
 - ウェルカムローン、ステーキングプール、紹介ボーナス、信用スコア、動的市場価格 (EMA 平滑化)
 - gossip 経由のピア自動発見 (`PriceSignal.http_endpoint`、Phase 19 Tier C)
+- `PeerCapability`、`PriceSignal`、`/status`、`/topology`、`/v1/tirami/peers`、`/v1/tirami/protocol` に protocol version と feature flags を表示。将来の protocol upgrade を明示的に判定できる
 - `PriceSignal` gossip から PersonalAgent が provider を自動選択し、共有トークンの private testnet では caller bearer token を継承して remote dispatch できる
 - provider / consumer 双方の台帳が remote agent trade を mirror し、台帳と PersonalAgent state は経済イベント後に永続化される
 - `--bootstrap-peer` / `TIRAMI_BOOTSTRAP_PEERS` による public testnet bootstrap join。公開 HTTP bind には API token が必須
@@ -261,6 +262,7 @@ cargo build --release
 | `POST /v1/chat/completions` | ストリーミング対応チャット。応答には `x_tirami.trm_cost` が含まれる。ローカルエンジンにモデル未ロードの場合、接続済ピアへ P2P 転送され (`forward_chat_to_peer`、Phase 19)、dual-signed trade が記録される |
 | `POST /v1/tirami/agent/task` | エージェント同期ディスパッチ。local vs. remote 分類 → `select_provider` + `peer_http_endpoint` で provider を自動選択 → 決定 (`run_local` / `run_remote` / `ask_user`) を返す。Phase 18.5-pt3 |
 | `GET /v1/tirami/agent/status` | PersonalAgent 状態 (残高、今日の収支、preferences、tick-loop カウンタ) |
+| `GET /v1/tirami/protocol` | protocol version、feature flags、proof policy、transport、PriceSignal HTTP advertisement 状態 |
 | `GET /v1/models` | ロード済モデル一覧 |
 
 ### 経済
@@ -270,7 +272,7 @@ cargo build --release
 | `GET /v1/tirami/balance` | TRM 残高、評判、contribution 履歴 |
 | `GET /v1/tirami/pricing` | 市場価格 (EMA 平滑化)、供給/需要、コスト見積 |
 | `GET /v1/tirami/trades` | 最近の取引履歴 |
-| `GET /v1/tirami/peers` | gossip で観測したピア (price_signal、latency、audit_tier、http_endpoint) |
+| `GET /v1/tirami/peers` | gossip で観測したピア (price_signal、latency、audit_tier、protocol version、feature flags、http_endpoint) |
 | `GET /v1/tirami/providers` | reputation 調整済コストランキング (エージェントルーティング用) |
 | `POST /v1/tirami/schedule` | Ledger-as-Brain プローブ (読み取り専用)。`select_provider` の結果を返す |
 
@@ -367,7 +369,7 @@ tirami/  (このリポジトリ — 全 5 層、16 Rust crates)
 │   ├── tirami-net/          # P2P: iroh QUIC + Noise + gossip、ASN rate-limit
 │   ├── tirami-proto/        # Wire protocol: 30+ message types
 │   ├── tirami-infer/        # Inference: llama.cpp、GGUF、Metal/CPU
-│   ├── tirami-core/         # 型: NodeId、TRM、Config、PriceSignal (+ http_endpoint)
+│   ├── tirami-core/         # 型: NodeId、TRM、Config、PriceSignal (+ protocol/features/http_endpoint)
 │   ├── tirami-shard/        # Topology: layer assignment
 │   ├── tirami-zkml-bench/   # zkML ベンチハーネス (MockBackend + ezkl/risc0/halo2 stubs, Phase 18.3)
 │   └── tirami-attestation/  # TEE attestation scaffold (Apple SE / NVIDIA H100 CC, Phase 17 Wave 3.1)

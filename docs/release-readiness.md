@@ -118,7 +118,9 @@ ASUS agent `spent_today_trm=18`, and both ledgers reported
 ## Checklist for the Tier A / Tier B announcement
 
 - [x] Targeted Rust tests green for the touched surface:
-      `cargo test -p tirami-node` (208) and
+      `cargo test -p tirami-core` (59), `cargo test -p tirami-ledger` (524),
+      `cargo test -p tirami-proto` (38), `cargo test -p tirami-node` (209),
+      `cargo test -p tirami-net` (36), `cargo test -p tirami-shard` (2), and
       `cargo test -p tirami-cli` (6)
 - [x] All 6 E2E-surfaced issues (#80–#85) closed
 - [x] All 6 previously-surfaced issues (#73–#78) closed

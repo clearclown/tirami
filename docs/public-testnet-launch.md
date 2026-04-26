@@ -246,6 +246,8 @@ same trade records from disk.
 - [ ] Two bootstrap seeds restart with the same public key after reboot.
 - [ ] A third machine joins through `TIRAMI_BOOTSTRAP_PEERS`.
 - [ ] `curl http://127.0.0.1:3000/health` returns healthy on all seeds.
+- [ ] `/status` shows `model_loaded=true`, protocol metadata, and stable ledger counters.
+- [ ] `/v1/tirami/protocol` shows `protocol_version=1` and the expected feature flags.
 - [ ] `GET /v1/tirami/peers` shows at least two peers after gossip.
 - [ ] `POST /v1/tirami/admin/save-state` persists ledger, bank, agora,
   mind, personal agent, and trade archive state.

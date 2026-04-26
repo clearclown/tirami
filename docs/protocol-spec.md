@@ -67,8 +67,32 @@ pub struct PeerInfo {
 ```
 
 - `version` is the protocol version advertised by the sender.
-- `capability` describes CPU, memory, bandwidth, and region for scheduling decisions.
+- `capability` describes protocol version, feature flags, CPU,
+  memory, bandwidth, and region for scheduling decisions.
 - `known_peers` is an opportunistic peer list, not a globally authoritative registry.
+
+`PeerCapability` includes:
+
+```rust
+pub struct PeerCapability {
+    pub node_id: NodeId,
+    pub protocol_version: u16,
+    pub features: Vec<String>,
+    pub cpu_cores: u16,
+    pub memory_gb: f32,
+    pub metal_available: bool,
+    pub bandwidth_mbps: f32,
+    pub battery_pct: Option<u8>,
+    pub available_memory_gb: f32,
+    pub region: String,
+}
+```
+
+Feature strings are small lowercase tokens such as
+`agent:remote-dispatch`, `ledger:mirror-settlement`,
+`api:bearer-auth`, `price-signal:http-endpoint`, and
+`zk:proof-optional`. Older peers that omit the fields deserialize as
+protocol v1 with an empty feature vector.
 
 ## Shard Assignment
 
@@ -324,6 +348,30 @@ When a node receives a `TradeGossip` message:
 3. Record the trade in the local ledger
 4. The trade is NOT re-broadcast (single-hop gossip to prevent storms)
 
+### PriceSignal Capability Advertisement
+
+`PriceSignalGossip` carries the provider's market quote and protocol
+metadata:
+
+```rust
+pub struct PriceSignal {
+    pub node_id: NodeId,
+    pub protocol_version: u16,
+    pub features: Vec<String>,
+    pub price_multiplier: f64,
+    pub available_cu: u64,
+    pub model_capabilities: Vec<ModelId>,
+    pub latency_hint_ms: u32,
+    pub timestamp: u64,
+    pub http_endpoint: Option<String>,
+}
+```
+
+v1 nodes accept signals only within their supported protocol range.
+The feature vector is bounded and validated before the signal enters
+`PeerRegistry`; this keeps future routing decisions explicit while
+preserving backward serde defaults for older Phase-19 signals.
+
 ## Serialization Rules
 
 - Control messages use bincode.
@@ -373,5 +421,8 @@ Coordinator       Worker A        Worker B        Final Stage
 Current version: `1`
 
 - Peers advertise their version through `Hello` and `Welcome`.
-- The reference implementation currently assumes compatible peers and ignores unknown future payloads.
+- Nodes also expose protocol metadata through `/status`,
+  `/topology`, `/v1/tirami/peers`, and `/v1/tirami/protocol`.
+- The reference implementation rejects future protocol versions in
+  validated payloads rather than silently routing incompatible peers.
 - Breaking wire changes should increment `version` and define downgrade behavior explicitly.

@@ -186,7 +186,8 @@ tirami start \
 ```
 
 Once `GET /v1/tirami/peers` on the consumer shows the provider's
-`http_endpoint`, the agent can run remotely with no explicit peer hint:
+`http_endpoint` and `price-signal:http-endpoint` feature, the agent
+can run remotely with no explicit peer hint:
 
 ```bash
 tirami agent \
@@ -201,6 +202,17 @@ tirami agent \
 The consumer's bearer token is forwarded to the selected peer. This is
 appropriate for a shared-token private testnet. For open public
 testnets, prefer P2P-only or a gateway-specific token policy.
+
+Check the local node's protocol surface before inviting outside peers:
+
+```bash
+curl -H "Authorization: Bearer $TIRAMI_API_TOKEN" \
+  http://127.0.0.1:3000/v1/tirami/protocol | jq
+```
+
+The response includes the supported protocol range, feature flags,
+proof policy, transport, and whether this node is advertising an HTTP
+endpoint in `PriceSignal`.
 
 ### P2P worker node (`tirami worker`)
 

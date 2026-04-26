@@ -5894,6 +5894,8 @@ mod tests {
     fn price_signal_for(node: NodeId, model: &str, multiplier: f64, available: u64) -> tirami_core::PriceSignal {
         tirami_core::PriceSignal {
             node_id: node,
+            protocol_version: tirami_core::TIRAMI_PROTOCOL_VERSION,
+            features: vec![],
             price_multiplier: multiplier,
             available_cu: available,
             model_capabilities: vec![ModelId(model.to_string())],

@@ -20,6 +20,10 @@ broader public-testnet claim.
   restored them after restart. After two remote jobs, both ledgers
   reported `total_trades = 2`; Mac Studio earned 18 TRM and ASUS spent
   18 TRM.
+- Added protocol metadata for future upgrades: `PeerCapability` and
+  `PriceSignal` now advertise protocol version + feature flags, with
+  `/v1/tirami/protocol`, `/status`, `/topology`, and
+  `/v1/tirami/peers` surfacing the same compatibility data.
 - Updated `README.md`, `docs/public-testnet-launch.md`,
   `docs/operator-guide.md`, `docs/release-readiness.md`, and
   `docs/theory-audit-2026-04.md` to distinguish private-alpha success
@@ -30,7 +34,12 @@ broader public-testnet claim.
 - Added `deploy/public-testnet.env.example` for bootstrap peers,
   concrete Tailscale HTTP binds, API-token enforcement, and stable P2P
   bind configuration.
-- Targeted verification: `cargo test -p tirami-node` passed 208 tests;
+- Targeted verification: `cargo test -p tirami-core` passed 59 tests;
+  `cargo test -p tirami-ledger` passed 524 tests;
+  `cargo test -p tirami-proto` passed 38 tests;
+  `cargo test -p tirami-node` passed 209 tests;
+  `cargo test -p tirami-net` passed 36 tests;
+  `cargo test -p tirami-shard` passed 2 tests;
   `cargo test -p tirami-cli` passed 6 tests.
 
 ### Phase 18.5-part-3 — E2E hardening for testnet-B (2026-04-19)

@@ -530,9 +530,15 @@ impl TiramiNode {
         // `peer.url` override on the HTTP request.
         let http_endpoint =
             derive_public_http_endpoint(&self.config.api_bind_addr, self.config.api_port);
+        let features = tirami_core::advertised_protocol_features(
+            http_endpoint.is_some(),
+            &self.config.proof_policy,
+        );
 
         tirami_core::PriceSignal {
             node_id,
+            protocol_version: tirami_core::TIRAMI_PROTOCOL_VERSION,
+            features,
             // Phase 14.1: static 1.0 multiplier. Dynamic pricing policy
             // (based on load, energy cost, market EMA) lands in Phase 14.5.
             price_multiplier: 1.0,
@@ -866,6 +872,10 @@ impl TiramiNode {
         // auto-resolve NodeId → URL for forwarded chat requests.
         let http_endpoint =
             derive_public_http_endpoint(&self.config.api_bind_addr, self.config.api_port);
+        let features = tirami_core::advertised_protocol_features(
+            http_endpoint.is_some(),
+            &self.config.proof_policy,
+        );
 
         tokio::spawn(async move {
             let mut ticker = tokio::time::interval(std::time::Duration::from_secs(30));
@@ -889,6 +899,8 @@ impl TiramiNode {
                 };
                 let signal = tirami_core::PriceSignal {
                     node_id: node_id.clone(),
+                    protocol_version: tirami_core::TIRAMI_PROTOCOL_VERSION,
+                    features: features.clone(),
                     price_multiplier: 1.0,
                     available_cu,
                     model_capabilities,

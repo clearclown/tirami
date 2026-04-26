@@ -246,6 +246,7 @@ pub fn create_router_with_services(
         .route("/v1/tirami/trades", get(forge_trades))
         .route("/v1/tirami/invoice", post(forge_invoice))
         .route("/v1/tirami/network", get(tirami_network))
+        .route("/v1/tirami/protocol", get(forge_protocol))
         .route("/v1/tirami/providers", get(forge_providers))
         .route("/v1/tirami/peers", get(forge_peers))
         .route("/v1/tirami/schedule", post(forge_schedule))
@@ -477,6 +478,8 @@ pub struct HealthResponse {
 pub struct StatusResponse {
     pub status: String,
     pub model_loaded: bool,
+    pub protocol_version: u16,
+    pub protocol_features: Vec<String>,
     pub market_price: tirami_ledger::MarketPrice,
     pub network: tirami_ledger::NetworkStats,
     pub recent_trades: Vec<tirami_ledger::TradeRecord>,
@@ -1214,6 +1217,8 @@ async fn status(State(state): State<AppState>) -> Json<StatusResponse> {
     Json(StatusResponse {
         status: "ok".to_string(),
         model_loaded,
+        protocol_version: tirami_core::TIRAMI_PROTOCOL_VERSION,
+        protocol_features: local_protocol_features(&state),
         market_price,
         network,
         recent_trades,
@@ -2282,6 +2287,41 @@ pub struct TiramiNetworkResponse {
     pub merkle_root: String,
 }
 
+fn local_protocol_features(state: &AppState) -> Vec<String> {
+    let advertised_http_endpoint =
+        crate::node::derive_public_http_endpoint(&state.config.api_bind_addr, state.config.api_port)
+            .is_some();
+    tirami_core::advertised_protocol_features(
+        advertised_http_endpoint,
+        &state.config.proof_policy,
+    )
+}
+
+async fn forge_protocol(
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    check_forge_rate_limit(&state).await?;
+    let advertised_http_endpoint =
+        crate::node::derive_public_http_endpoint(&state.config.api_bind_addr, state.config.api_port);
+    Ok(Json(serde_json::json!({
+        "protocol_version": tirami_core::TIRAMI_PROTOCOL_VERSION,
+        "min_protocol_version": tirami_core::TIRAMI_MIN_PROTOCOL_VERSION,
+        "features": local_protocol_features(&state),
+        "proof_policy": state.config.proof_policy,
+        "transport": "iroh-quic-noise",
+        "wire_codec": "bincode",
+        "price_signal": {
+            "schema": "v1+feature-flags",
+            "http_endpoint_advertised": advertised_http_endpoint.is_some(),
+            "http_endpoint": advertised_http_endpoint,
+        },
+        "compatibility": {
+            "rejects_future_protocol_versions": true,
+            "backward_serde_defaults": true,
+        }
+    })))
+}
+
 /// GET /v1/tirami/providers — list known providers with reputation and pricing (Issue #16).
 /// Enables agents to compare providers and choose based on cost/quality.
 async fn forge_providers(
@@ -2335,6 +2375,8 @@ async fn forge_peers(
             .iter()
             .map(|(node_id, state)| {
                 let (
+                    protocol_version,
+                    features,
                     price_multiplier,
                     available_cu,
                     models,
@@ -2343,6 +2385,8 @@ async fn forge_peers(
                     http_endpoint,
                 ) = match &state.price_signal {
                     Some(sig) => (
+                        sig.protocol_version,
+                        sig.features.clone(),
                         sig.price_multiplier,
                         sig.available_cu,
                         sig.model_capabilities
@@ -2353,10 +2397,21 @@ async fn forge_peers(
                         sig.timestamp,
                         sig.http_endpoint.clone(),
                     ),
-                    None => (1.0, 0, vec![], 0, 0, None),
+                    None => (
+                        tirami_core::TIRAMI_PROTOCOL_VERSION,
+                        vec![],
+                        1.0,
+                        0,
+                        vec![],
+                        0,
+                        0,
+                        None,
+                    ),
                 };
                 serde_json::json!({
                     "node_id": node_id.to_hex(),
+                    "protocol_version": protocol_version,
+                    "features": features,
                     "price_multiplier": price_multiplier,
                     "available_cu": available_cu,
                     "models": models,
@@ -4419,6 +4474,39 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn protocol_endpoint_exposes_version_and_features() {
+        let mut config = Config::default();
+        config.api_bind_addr = "100.64.1.10".to_string();
+        config.proof_policy = "optional".to_string();
+        let app = test_router(config);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/tirami/protocol")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), 10_000)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["protocol_version"], tirami_core::TIRAMI_PROTOCOL_VERSION);
+        assert_eq!(
+            json["min_protocol_version"],
+            tirami_core::TIRAMI_MIN_PROTOCOL_VERSION
+        );
+        let features = json["features"].as_array().expect("features array");
+        assert!(features.iter().any(|f| f == tirami_core::FEATURE_AGENT_REMOTE_DISPATCH));
+        assert!(features.iter().any(|f| f == tirami_core::FEATURE_PRICE_SIGNAL_HTTP_ENDPOINT));
+        assert_eq!(json["price_signal"]["http_endpoint_advertised"], true);
+    }
+
+    #[tokio::test]
     async fn forge_trades_returns_empty_initially() {
         let config = Config::default();
         let app = test_router(config);
@@ -5256,6 +5344,8 @@ mod tests {
         let mut ledger = ComputeLedger::new();
         ledger.ingest_price_signal(&tirami_core::PriceSignal {
             node_id: provider.clone(),
+            protocol_version: tirami_core::TIRAMI_PROTOCOL_VERSION,
+            features: tirami_core::advertised_protocol_features(true, "optional"),
             price_multiplier: 1.0,
             available_cu: 1_000,
             model_capabilities: vec![tirami_core::ModelId("qwen-test".to_string())],

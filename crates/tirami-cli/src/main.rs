@@ -918,6 +918,10 @@ async fn main() -> anyhow::Result<()> {
 
             println!("Tirami status: {}", status.status);
             println!("Model loaded: {}", status.model_loaded);
+            println!("Protocol: v{}", status.protocol_version);
+            if !status.protocol_features.is_empty() {
+                println!("Features: {}", status.protocol_features.join(", "));
+            }
             println!(
                 "Market price: {:.2} CU/token (demand {:.2} / supply {:.2})",
                 status.market_price.effective_trm_per_token(),
@@ -987,14 +991,18 @@ async fn main() -> anyhow::Result<()> {
 
             if let Some(local) = topology.local_capability {
                 println!(
-                    "Local: node={} cpu={} mem={:.1}GB avail={:.1}GB metal={} region={}",
+                    "Local: node={} protocol=v{} cpu={} mem={:.1}GB avail={:.1}GB metal={} region={}",
                     local.node_id.to_hex(),
+                    local.protocol_version,
                     local.cpu_cores,
                     local.memory_gb,
                     local.available_memory_gb,
                     local.metal_available,
                     local.region
                 );
+                if !local.features.is_empty() {
+                    println!("Local features: {}", local.features.join(", "));
+                }
             } else {
                 println!("Local capability: unavailable");
             }
@@ -1005,8 +1013,9 @@ async fn main() -> anyhow::Result<()> {
                 println!("Connected peers:");
                 for peer in topology.connected_peers {
                     println!(
-                        "  node={} cpu={} avail={:.1}GB metal={} region={}",
+                        "  node={} protocol=v{} cpu={} avail={:.1}GB metal={} region={}",
                         peer.node_id.to_hex(),
+                        peer.protocol_version,
                         peer.cpu_cores,
                         peer.available_memory_gb,
                         peer.metal_available,

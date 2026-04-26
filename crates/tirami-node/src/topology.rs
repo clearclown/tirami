@@ -20,6 +20,8 @@ pub fn build_local_capability(config: &Config, node_id: NodeId) -> PeerCapabilit
 
     PeerCapability {
         node_id,
+        protocol_version: tirami_core::TIRAMI_PROTOCOL_VERSION,
+        features: tirami_core::advertised_protocol_features(false, &config.proof_policy),
         cpu_cores,
         memory_gb: config.max_memory_gb,
         metal_available: cfg!(target_os = "macos"),

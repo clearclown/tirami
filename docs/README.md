@@ -4,6 +4,8 @@
 > after the two-node Tailscale agent-dispatch experiment.
 
 New reader? Start with **concept** → **architecture** → **roadmap**.
+Japanese reader? Start with **tirami-note-ja** for the diagram-first
+public explanation.
 Operator? Start with **operator-guide** → **public-testnet-launch** → **security**.
 Security researcher? Start with **security/audit-scope** →
 **security/threat-model-v2** → **security/known-issues**.
@@ -14,6 +16,7 @@ Security researcher? Start with **security/audit-scope** →
 
 | Role | Start here |
 |------|------------|
+| First-time Japanese reader | [`tirami-note-ja.md`](tirami-note-ja.md) |
 | First-time reader | [`concept.md`](concept.md) |
 | Protocol developer | [`architecture.md`](architecture.md) → [`protocol-spec.md`](protocol-spec.md) |
 | Node operator | [`operator-guide.md`](operator-guide.md) → [`security/`](security/) |
@@ -27,6 +30,7 @@ Security researcher? Start with **security/audit-scope** →
 
 ## Concept & theory
 
+- [`tirami-note-ja.md`](tirami-note-ja.md) — Japanese note-style public explainer with diagrams, the 2026-04-26 experiment, and next measurement gates
 - [`concept.md`](concept.md) — why compute is money, the post-marketing economy
 - [`monetary-theory.md`](monetary-theory.md) — why TRM works: Soddy + Bitcoin + PoUW synthesis
 - [`economy.md`](economy.md) — CU-native economy, Proof of Useful Work, lending

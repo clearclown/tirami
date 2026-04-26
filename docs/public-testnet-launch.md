@@ -7,6 +7,10 @@ This runbook is the operational path for making Tirami easy for
 worldwide computers to join while keeping the first public network
 auditable and recoverable.
 
+For a diagram-first Japanese public explanation of what the 2026-04-26
+private lab did and did not prove, see
+[`tirami-note-ja.md`](tirami-note-ja.md).
+
 ## Launch shape
 
 The first public network should have three rings:

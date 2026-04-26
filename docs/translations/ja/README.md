@@ -94,6 +94,8 @@ remote agent job 2回後の観測値:
 
 ティア別ロードマップ (OSS プレビュー → 招待制 testnet → オープン testnet。mainnet は第三者に委ねる設計): [`docs/release-readiness.md`](../../../docs/release-readiness.md)。
 
+図解と note 向け説明: [`docs/tirami-note-ja.md`](../../tirami-note-ja.md)。
+
 ---
 
 ## ライブデモ

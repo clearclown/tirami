@@ -24,6 +24,9 @@ broader public-testnet claim.
   `docs/operator-guide.md`, `docs/release-readiness.md`, and
   `docs/theory-audit-2026-04.md` to distinguish private-alpha success
   from open public-testnet readiness.
+- Added `docs/tirami-note-ja.md`, a Japanese note-style public
+  explainer with Mermaid diagrams, private-lab results, and the next
+  measurement gates.
 - Added `deploy/public-testnet.env.example` for bootstrap peers,
   concrete Tailscale HTTP binds, API-token enforcement, and stable P2P
   bind configuration.

@@ -107,6 +107,9 @@ call the open public network healthy; the remaining gate is a 10+ node,
 
 Full tier roadmap (OSS preview → invited testnet → open testnet, with mainnet intentionally left to third parties): [`docs/release-readiness.md`](docs/release-readiness.md).
 
+Diagram-first Japanese public explainer / note draft:
+[`docs/tirami-note-ja.md`](docs/tirami-note-ja.md).
+
 ---
 
 ## Live Demo

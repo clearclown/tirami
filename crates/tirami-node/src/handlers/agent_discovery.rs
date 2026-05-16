@@ -83,6 +83,27 @@ pub(crate) async fn well_known_agent_manifest(
             auth_required: true,
         },
         ActionDescriptor {
+            name: "data_offer_publish",
+            endpoint: "/v1/tirami/data/offer",
+            method: "POST",
+            pricing: "seller-set TRM price, paid by buyer on /data/purchase",
+            auth_required: true,
+        },
+        ActionDescriptor {
+            name: "data_offer_list",
+            endpoint: "/v1/tirami/data/offers",
+            method: "GET",
+            pricing: "free (offers list; fetch_url hidden until purchase)",
+            auth_required: true,
+        },
+        ActionDescriptor {
+            name: "data_offer_purchase",
+            endpoint: "/v1/tirami/data/purchase",
+            method: "POST",
+            pricing: "offer.price_trm, buyer → seller",
+            auth_required: true,
+        },
+        ActionDescriptor {
             name: "agent_task",
             endpoint: "/v1/tirami/agent/task",
             method: "POST",

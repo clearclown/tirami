@@ -186,6 +186,68 @@ impl std::fmt::Display for LightningError {
 
 impl std::error::Error for LightningError {}
 
+// ---------------------------------------------------------------------------
+// Phase 20 Wave 3 — BOLT-11 invoice decoder.
+//
+// Thin wrapper around `ldk_node::lightning_invoice::Bolt11Invoice` so callers
+// in `tirami-node` can extract amount/payment_hash without taking a direct
+// dependency on ldk-node. The decoder verifies the signature (as the
+// underlying parser does); a malformed or unsigned string is rejected.
+// ---------------------------------------------------------------------------
+
+/// Decoded fields from a BOLT-11 invoice that the Tirami protocol layer
+/// actually cares about. The full invoice surface is intentionally not
+/// re-exported — we only carry forward the parts that matter for
+/// economic accounting.
+#[derive(Debug, Clone)]
+pub struct DecodedInvoice {
+    /// Invoice amount in millisatoshis. `None` for amount-less invoices.
+    pub amount_msat: Option<u64>,
+    /// 32-byte payment hash as lowercase hex.
+    pub payment_hash_hex: String,
+    /// Human-readable description if the invoice carries one inline.
+    pub description: Option<String>,
+    /// Expiry in seconds since UNIX epoch. Computed as
+    /// `timestamp + expiry_seconds`. May be `None` if either field is
+    /// unavailable.
+    pub expires_at_secs: Option<u64>,
+}
+
+/// Parse a BOLT-11 invoice string and extract Tirami-relevant fields.
+///
+/// Delegates to `ldk_node::lightning_invoice::Bolt11Invoice::from_str`
+/// for parsing and signature verification — a malformed, expired-format,
+/// or unsigned input returns `Err`. Caller is responsible for
+/// expiry-vs-wallclock checks; the decoder reports `expires_at_secs`
+/// but does not reject expired invoices on its own.
+pub fn decode_bolt11(invoice_str: &str) -> Result<DecodedInvoice, LightningError> {
+    use std::str::FromStr;
+    let inv = ldk_node::lightning_invoice::Bolt11Invoice::from_str(invoice_str)
+        .map_err(|e| LightningError::Backend(format!("bolt11 parse failed: {e}")))?;
+
+    let amount_msat = inv.amount_milli_satoshis();
+    let payment_hash_hex = hex::encode(inv.payment_hash().as_ref() as &[u8]);
+    let description = match inv.description() {
+        ldk_node::lightning_invoice::Bolt11InvoiceDescription::Direct(d) => {
+            Some(d.to_string())
+        }
+        ldk_node::lightning_invoice::Bolt11InvoiceDescription::Hash(_) => None,
+    };
+    let expires_at_secs = inv
+        .timestamp()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .map(|d| d.as_secs())
+        .map(|ts| ts + inv.expiry_time().as_secs());
+
+    Ok(DecodedInvoice {
+        amount_msat,
+        payment_hash_hex,
+        description,
+        expires_at_secs,
+    })
+}
+
 /// Record of a CU deposit created by paying a Lightning invoice.
 ///
 /// When a human or agent wants to credit CU to a Forge node, they request

@@ -104,6 +104,27 @@ pub(crate) async fn well_known_agent_manifest(
             auth_required: true,
         },
         ActionDescriptor {
+            name: "purchase_intent_create",
+            endpoint: "/v1/tirami/agent/purchase-intent",
+            method: "POST",
+            pricing: "sats→TRM via bridge rate; gated by PersonalAgent budget",
+            auth_required: true,
+        },
+        ActionDescriptor {
+            name: "purchase_intent_list",
+            endpoint: "/v1/tirami/agent/purchase-intents",
+            method: "GET",
+            pricing: "free",
+            auth_required: true,
+        },
+        ActionDescriptor {
+            name: "purchase_intent_confirm",
+            endpoint: "/v1/tirami/agent/purchase-intent/{id}/confirm",
+            method: "POST",
+            pricing: "free (operator declares external-rail outcome)",
+            auth_required: true,
+        },
+        ActionDescriptor {
             name: "agent_task",
             endpoint: "/v1/tirami/agent/task",
             method: "POST",

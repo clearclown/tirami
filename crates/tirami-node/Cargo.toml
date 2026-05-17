@@ -21,6 +21,7 @@ tirami-bank = { workspace = true }
 tirami-mind = { workspace = true }
 tirami-anchor = { workspace = true }
 tirami-agora = { workspace = true }
+tirami-zkml-bench = { workspace = true }
 iroh = { workspace = true }
 tokio = { workspace = true }
 tokio-stream = { workspace = true }

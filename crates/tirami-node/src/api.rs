@@ -195,6 +195,11 @@ pub fn create_router(
         Arc::new(tirami_anchor::MockChainClient::new()),
         Arc::new(Mutex::new(None::<tirami_mind::PersonalAgent>)),
         Arc::new(Mutex::new(crate::agent_loop::AgentLoopStats::new())),
+        // Phase 23 Wave 2.5 — `create_router` builds a fresh,
+        // unshared `agent_identity` slot. The TiramiNode entrypoint
+        // calls `create_router_with_services` directly with the
+        // node's own shared Arc.
+        Arc::new(Mutex::new(None)),
     )
 }
 
@@ -218,6 +223,12 @@ pub fn create_router_with_services(
     chain_client: Arc<tirami_anchor::MockChainClient>,
     personal_agent: Arc<Mutex<Option<tirami_mind::PersonalAgent>>>,
     agent_loop_stats: Arc<Mutex<crate::agent_loop::AgentLoopStats>>,
+    // Phase 23 Wave 2.5 — shared `agent_identity` handle. The same
+    // `Arc<Mutex<Option<AgentIdentity>>>` is held by both the HTTP
+    // layer (this `AppState`) and the pipeline coordinator's
+    // `run_seed` so an HTTP `agent/identity/init` immediately
+    // updates the signer the pipeline reads.
+    agent_identity: Arc<Mutex<Option<tirami_mind::AgentIdentity>>>,
 ) -> Router {
     // Derive local node ID from cluster or generate a deterministic one.
     let local_node_id = cluster
@@ -255,7 +266,7 @@ pub fn create_router_with_services(
         purchase_intents: Arc::new(Mutex::new(
             crate::handlers::purchase_intent::PurchaseIntentRegistry::new(),
         )),
-        agent_identity: Arc::new(Mutex::new(None)),
+        agent_identity,
         auth_challenges: Arc::new(Mutex::new(
             crate::handlers::auth_did::ChallengeStore::new(),
         )),
@@ -4420,6 +4431,8 @@ pub(crate) fn test_router_default(config: Config) -> Router {
         Arc::new(tirami_anchor::MockChainClient::new()),
         Arc::new(Mutex::new(None::<tirami_mind::PersonalAgent>)),
         Arc::new(Mutex::new(crate::agent_loop::AgentLoopStats::new())),
+        // Phase 23 Wave 2.5 — test helper builds an unshared slot.
+        Arc::new(Mutex::new(None)),
     )
 }
 
@@ -5193,6 +5206,7 @@ mod tests {
             Arc::new(tirami_anchor::MockChainClient::new()),
             Arc::new(Mutex::new(agent)),
             Arc::new(Mutex::new(crate::agent_loop::AgentLoopStats::new())),
+            Arc::new(Mutex::new(None)),
         )
     }
 
@@ -7465,6 +7479,130 @@ mod tests {
         let (_, _) = post_identity_init(app.clone(), None).await;
         let (_, post) = get_agent_status(app).await;
         assert_eq!(post["wallet_source"].as_str(), Some("agent_identity"));
+    }
+
+    // ------------------------------------------------------------------
+    // Phase 23 Wave 2.5 — shared agent_identity Arc
+    // ------------------------------------------------------------------
+
+    /// When a caller supplies a custom `agent_identity` Arc to
+    /// `create_router_with_services`, an HTTP `agent/identity/init`
+    /// populates THAT Arc — i.e. the same handle the pipeline reads.
+    /// Before Wave 2.5 the AppState built its own Arc internally, so
+    /// HTTP-side mutations stayed invisible to pipeline-side
+    /// consumers. This test pins the shared-handle property by
+    /// constructing the router with an explicit Arc, calling init
+    /// over HTTP, and then inspecting the external Arc to confirm
+    /// the new identity landed there.
+    #[tokio::test]
+    async fn shared_agent_identity_arc_receives_init() {
+        use crate::api::create_router_with_services;
+        use crate::bank_adapter::BankServices;
+        let shared: Arc<Mutex<Option<tirami_mind::AgentIdentity>>> =
+            Arc::new(Mutex::new(None));
+        let app = create_router_with_services(
+            Config::default(),
+            Arc::new(Mutex::new(CandleEngine::new())),
+            Arc::new(Mutex::new(ComputeLedger::new())),
+            Arc::new(Mutex::new(None)),
+            Arc::new(Mutex::new(None)),
+            None,
+            Arc::new(Mutex::new(GossipState::new())),
+            Arc::new(Mutex::new(BankServices::new_default())),
+            Arc::new(Mutex::new(Marketplace::new())),
+            Arc::new(Mutex::new(0usize)),
+            Arc::new(Mutex::new(None::<tirami_mind::TiramiMindAgent>)),
+            Arc::new(Mutex::new(tirami_ledger::StakingPool::new())),
+            Arc::new(Mutex::new(tirami_ledger::ReferralTracker::new())),
+            Arc::new(Mutex::new(tirami_ledger::GovernanceState::new(0))),
+            Arc::new(tirami_anchor::MockChainClient::new()),
+            Arc::new(Mutex::new(None::<tirami_mind::PersonalAgent>)),
+            Arc::new(Mutex::new(crate::agent_loop::AgentLoopStats::new())),
+            shared.clone(), // ← the Arc we will observe externally
+        );
+
+        // Externally observed slot is empty before init.
+        {
+            let guard = shared.lock().await;
+            assert!(guard.is_none(), "shared Arc must be empty pre-init");
+        }
+
+        // HTTP-side init.
+        let (status, body) = post_identity_init(app, Some("shared-test")).await;
+        assert_eq!(status, StatusCode::OK);
+        let http_did = body["did"].as_str().unwrap().to_string();
+
+        // The exact same Arc now carries an identity whose DID matches
+        // the HTTP response. This is the property pipeline-side code
+        // (which reads through this Arc) relies on.
+        let guard = shared.lock().await;
+        let id = guard.as_ref().expect("shared Arc populated post-init");
+        assert_eq!(id.did(), http_did);
+    }
+
+    /// Re-import on the shared Arc must replace the identity in
+    /// place — both the HTTP-visible state AND the externally-held
+    /// Arc see the new DID.
+    #[tokio::test]
+    async fn shared_agent_identity_arc_replaced_on_import() {
+        use crate::api::create_router_with_services;
+        use crate::bank_adapter::BankServices;
+        let shared: Arc<Mutex<Option<tirami_mind::AgentIdentity>>> =
+            Arc::new(Mutex::new(None));
+        let app_a = create_router_with_services(
+            Config::default(),
+            Arc::new(Mutex::new(CandleEngine::new())),
+            Arc::new(Mutex::new(ComputeLedger::new())),
+            Arc::new(Mutex::new(None)),
+            Arc::new(Mutex::new(None)),
+            None,
+            Arc::new(Mutex::new(GossipState::new())),
+            Arc::new(Mutex::new(BankServices::new_default())),
+            Arc::new(Mutex::new(Marketplace::new())),
+            Arc::new(Mutex::new(0usize)),
+            Arc::new(Mutex::new(None::<tirami_mind::TiramiMindAgent>)),
+            Arc::new(Mutex::new(tirami_ledger::StakingPool::new())),
+            Arc::new(Mutex::new(tirami_ledger::ReferralTracker::new())),
+            Arc::new(Mutex::new(tirami_ledger::GovernanceState::new(0))),
+            Arc::new(tirami_anchor::MockChainClient::new()),
+            Arc::new(Mutex::new(None::<tirami_mind::PersonalAgent>)),
+            Arc::new(Mutex::new(crate::agent_loop::AgentLoopStats::new())),
+            shared.clone(),
+        );
+        // First identity via init.
+        let (_, init_a) = post_identity_init(app_a.clone(), None).await;
+        let did_a = init_a["did"].as_str().unwrap().to_string();
+        // Export under a strong passphrase.
+        let (_, bundle) = post_identity_export(app_a, "passphrase-1234567").await;
+
+        // Fresh router with a NEW shared Arc, then import the bundle.
+        let shared_b: Arc<Mutex<Option<tirami_mind::AgentIdentity>>> =
+            Arc::new(Mutex::new(None));
+        let app_b = create_router_with_services(
+            Config::default(),
+            Arc::new(Mutex::new(CandleEngine::new())),
+            Arc::new(Mutex::new(ComputeLedger::new())),
+            Arc::new(Mutex::new(None)),
+            Arc::new(Mutex::new(None)),
+            None,
+            Arc::new(Mutex::new(GossipState::new())),
+            Arc::new(Mutex::new(BankServices::new_default())),
+            Arc::new(Mutex::new(Marketplace::new())),
+            Arc::new(Mutex::new(0usize)),
+            Arc::new(Mutex::new(None::<tirami_mind::TiramiMindAgent>)),
+            Arc::new(Mutex::new(tirami_ledger::StakingPool::new())),
+            Arc::new(Mutex::new(tirami_ledger::ReferralTracker::new())),
+            Arc::new(Mutex::new(tirami_ledger::GovernanceState::new(0))),
+            Arc::new(tirami_anchor::MockChainClient::new()),
+            Arc::new(Mutex::new(None::<tirami_mind::PersonalAgent>)),
+            Arc::new(Mutex::new(crate::agent_loop::AgentLoopStats::new())),
+            shared_b.clone(),
+        );
+        let (_status, _view) =
+            post_identity_import(app_b, "passphrase-1234567", bundle).await;
+        let guard = shared_b.lock().await;
+        let id = guard.as_ref().expect("imported");
+        assert_eq!(id.did(), did_a);
     }
 
     // ------------------------------------------------------------------

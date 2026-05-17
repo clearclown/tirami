@@ -419,6 +419,11 @@ pub fn create_router_with_services(
         .route("/v1/tirami/agent/status", get(forge_agent_status))
         // Phase 18.5-part-3b — synchronous agent task dispatch.
         .route("/v1/tirami/agent/task", post(forge_agent_task))
+        // Phase 20 Wave 1 — typed agent-to-agent message economy.
+        .route(
+            "/v1/tirami/agent/message",
+            post(crate::handlers::agent_message::agent_message),
+        )
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             require_bearer_auth,
@@ -428,6 +433,13 @@ pub fn create_router_with_services(
         .route("/health", get(health))
         // Phase 10 P5 — Prometheus /metrics endpoint (no auth — Prometheus scrapes without tokens)
         .route("/metrics", get(crate::handlers::metrics::metrics_handler))
+        // Phase 20 Wave 1 — public agent-discovery manifest (no auth).
+        // Allows AI agents that don't already have credentials to learn
+        // what protocol this is and how its currency is anchored.
+        .route(
+            "/.well-known/tirami-agent.json",
+            get(crate::handlers::agent_discovery::well_known_agent_manifest),
+        )
         .merge(protected)
         // Phase 18.5-part-3e (fix #74) — normalise every non-JSON
         // error body into a consistent `{ "error": { code, message } }`
@@ -5062,6 +5074,196 @@ mod tests {
         assert_eq!(body["error"]["code"], 412);
         let msg = body["error"]["message"].as_str().unwrap_or("");
         assert!(msg.contains("no personal agent"));
+    }
+
+    // ------------------------------------------------------------------
+    // Phase 20 Wave 1 — agent discovery + message economy
+    // ------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn well_known_agent_manifest_is_public_and_well_formed() {
+        // Unauthenticated GET should succeed (agent discovery surface).
+        let app = test_router_with_agent(Config::default(), None);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/.well-known/tirami-agent.json")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let json: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
+        // Schema essentials — the constitutional anchor must be visible.
+        assert_eq!(json["schema_version"], "1.0");
+        assert_eq!(json["protocol"], "tirami");
+        assert_eq!(json["currency"]["unit"], "TRM");
+        assert_eq!(json["currency"]["anchor_flops_per_unit"], 1_000_000_000u64);
+        assert_eq!(json["currency"]["anchor_constitutional"], true);
+        assert_eq!(json["currency"]["supply_cap"], 21_000_000_000u64);
+        assert_eq!(json["currency"]["exchange_listed"], false);
+        // Maintainer stance must be machine-readable so agents can
+        // surface the non-involvement disclaimer to their human owner.
+        assert_eq!(json["maintainer_stance"]["ico_or_presale"], false);
+        assert_eq!(
+            json["maintainer_stance"]["mainnet_operated_by_maintainers"],
+            false
+        );
+        // The action list must include both the new Phase 20 endpoints.
+        let actions = json["actions"].as_array().expect("actions array");
+        let names: Vec<&str> = actions
+            .iter()
+            .map(|a| a["name"].as_str().unwrap_or(""))
+            .collect();
+        assert!(names.contains(&"inference"), "missing inference action");
+        assert!(
+            names.contains(&"agent_message"),
+            "missing agent_message action"
+        );
+    }
+
+    fn agent_message_body(to_hex: &str, kind: &str, max_trm: u64) -> serde_json::Value {
+        serde_json::json!({
+            "to": to_hex,
+            "kind": kind,
+            "body": { "ping": true },
+            "max_trm": max_trm,
+        })
+    }
+
+    async fn post_agent_message(
+        app: Router,
+        from_hex: &str,
+        body: serde_json::Value,
+    ) -> (StatusCode, serde_json::Value) {
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/tirami/agent/message")
+                    .header("content-type", "application/json")
+                    .header("X-Tirami-Node-Id", from_hex)
+                    .body(Body::from(body.to_string()))
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap_or_default();
+        (status, json)
+    }
+
+    #[tokio::test]
+    async fn agent_message_records_a_ledger_trade() {
+        let app = test_router_with_agent(Config::default(), None);
+        let from_hex = "aa".repeat(32);
+        let to_hex = "bb".repeat(32);
+        let (status, body) =
+            post_agent_message(app, &from_hex, agent_message_body(&to_hex, "request_action", 1))
+                .await;
+        assert_eq!(status, StatusCode::OK, "got {body}");
+        assert_eq!(body["from"], from_hex);
+        assert_eq!(body["to"], to_hex);
+        assert_eq!(body["kind"], "request_action");
+        assert_eq!(body["trm_cost"], 1);
+        let mid = body["message_id"].as_str().unwrap_or("");
+        assert!(
+            mid.starts_with("msg:request_action:"),
+            "unexpected message_id: {mid}"
+        );
+    }
+
+    #[tokio::test]
+    async fn agent_message_rejects_unknown_kind() {
+        let app = test_router_with_agent(Config::default(), None);
+        let from_hex = "aa".repeat(32);
+        let to_hex = "bb".repeat(32);
+        let (status, body) =
+            post_agent_message(app, &from_hex, agent_message_body(&to_hex, "haha_invalid", 1))
+                .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let msg = body["error"]["message"].as_str().unwrap_or("");
+        assert!(msg.contains("kind must be one of"), "msg: {msg}");
+    }
+
+    #[tokio::test]
+    async fn agent_message_rejects_self_message() {
+        let app = test_router_with_agent(Config::default(), None);
+        let same_hex = "cc".repeat(32);
+        let (status, body) = post_agent_message(
+            app,
+            &same_hex,
+            agent_message_body(&same_hex, "request_action", 1),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let msg = body["error"]["message"].as_str().unwrap_or("");
+        assert!(msg.contains("self-message"), "msg: {msg}");
+    }
+
+    #[tokio::test]
+    async fn agent_message_rejects_when_fee_exceeds_max_trm() {
+        // Wave 1 flat fee is 1 TRM; sender's max_trm=0 should reject.
+        let app = test_router_with_agent(Config::default(), None);
+        let from_hex = "aa".repeat(32);
+        let to_hex = "bb".repeat(32);
+        let (status, body) =
+            post_agent_message(app, &from_hex, agent_message_body(&to_hex, "broadcast", 0)).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let msg = body["error"]["message"].as_str().unwrap_or("");
+        assert!(msg.contains("exceeds sender's max_trm"), "msg: {msg}");
+    }
+
+    #[tokio::test]
+    async fn agent_message_rejects_missing_sender_header() {
+        // No X-Tirami-Node-Id — must refuse to silently bill the local node.
+        let app = test_router_with_agent(Config::default(), None);
+        let to_hex = "bb".repeat(32);
+        let body = agent_message_body(&to_hex, "request_data", 1);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/tirami/agent/message")
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap_or_default();
+        let msg = json["error"]["message"].as_str().unwrap_or("");
+        assert!(msg.contains("X-Tirami-Node-Id"), "msg: {msg}");
+    }
+
+    #[tokio::test]
+    async fn agent_message_rejects_oversized_body() {
+        let app = test_router_with_agent(Config::default(), None);
+        let from_hex = "aa".repeat(32);
+        let to_hex = "bb".repeat(32);
+        let big_string = "x".repeat(5000);
+        let body = serde_json::json!({
+            "to": to_hex,
+            "kind": "broadcast",
+            "body": { "payload": big_string },
+            "max_trm": 1,
+        });
+        let (status, resp) = post_agent_message(app, &from_hex, body).await;
+        assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
+        let msg = resp["error"]["message"].as_str().unwrap_or("");
+        assert!(msg.contains("4096-byte cap"), "msg: {msg}");
     }
 
     // ------------------------------------------------------------------

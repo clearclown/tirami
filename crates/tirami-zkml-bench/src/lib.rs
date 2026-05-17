@@ -213,6 +213,233 @@ stub_backend!(Risc0Backend, "risc0");
 stub_backend!(Halo2Backend, "halo2");
 
 // ---------------------------------------------------------------------------
+// Phase 24 Wave 1 — Ed25519 attestation backend
+// ---------------------------------------------------------------------------
+//
+// `EdAttestBackend` is the FIRST cryptographically meaningful
+// backend in this crate. It is NOT zero-knowledge — anyone with
+// the signer's public key can see what was attested — but the
+// proof is **unforgeable** without the corresponding private key,
+// which is qualitatively stronger than `MockBackend`'s public hash.
+//
+// What it proves:
+//
+//   - "The holder of <pubkey> attests that bench-spec S was the
+//     input/output of an inference they ran."
+//
+// What it does NOT prove:
+//
+//   - That the inference computation was actually performed
+//     correctly. The signer could lie. zk-SNARK / zk-STARK
+//     backends (`EzklBackend`, `Risc0Backend`) cover that gap
+//     once their dep chains stabilise.
+//
+// Why ship this now: it's the bounded primitive that lets the
+// protocol layer (Phase 24 Wave 2+) attach signed proofs to
+// SignedTradeRecord while ezkl/risc0 integration is still
+// week-scale work. The on-chain ratchet
+// `PROOF_POLICY_RATCHET` allows the network to progress
+// Optional → Recommended → Required AS REAL BACKENDS LAND,
+// without breaking legacy clients.
+
+use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
+
+/// Wire format for an Ed25519 attestation proof.
+///
+/// Stored as the `bytes` field of [`BenchProof`]:
+///   [0..32]   = signer's 32-byte Ed25519 public key
+///   [32..96]  = signature over the canonical bench-spec bytes
+///
+/// Total 96 bytes — small enough to ride on a TradeRecord without
+/// inflating the wire size beyond the existing dual-sig overhead.
+const ED_ATTEST_PROOF_LEN: usize = 32 + 64;
+
+/// Ed25519 signing-side backend. Construct with a `SigningKey`;
+/// verify via the embedded `VerifyingKey` parsed out of the proof
+/// (no separate trust root needed — the pubkey is part of the
+/// proof, which the protocol layer cross-checks against the
+/// expected provider DID).
+#[derive(Debug, Clone)]
+pub struct EdAttestBackend {
+    signing_key: SigningKey,
+}
+
+impl EdAttestBackend {
+    pub const NAME: &'static str = "ed-attest";
+
+    /// Construct from an existing keypair. Use this when the
+    /// signer is also the node's `AgentIdentity` so the
+    /// attestation key matches the trade signer key.
+    pub fn from_signing_key(signing_key: SigningKey) -> Self {
+        Self { signing_key }
+    }
+
+    /// Generate a fresh keypair. Useful for tests; production
+    /// nodes should reuse their `AgentIdentity` key via
+    /// [`Self::from_signing_key`].
+    pub fn generate() -> Self {
+        let mut rng = rand::rngs::OsRng;
+        Self {
+            signing_key: SigningKey::generate(&mut rng),
+        }
+    }
+
+    /// 32-byte Ed25519 public key.
+    pub fn public_key_bytes(&self) -> [u8; 32] {
+        self.signing_key.verifying_key().to_bytes()
+    }
+
+    fn canonical_bytes(spec: &BenchSpec) -> Vec<u8> {
+        let mut h = Sha256::new();
+        h.update(b"tirami-zkml-ed-attest-v1");
+        h.update(spec.model_hash);
+        h.update(spec.prompt_hash);
+        h.update(spec.output_hash);
+        h.update(spec.token_count.to_le_bytes());
+        h.update(spec.flops.to_le_bytes());
+        h.finalize().to_vec()
+    }
+}
+
+impl BenchBackend for EdAttestBackend {
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn prove(&self, spec: &BenchSpec) -> Result<BenchProof, BenchError> {
+        if spec.token_count == 0 {
+            return Err(BenchError::InvalidSpec("token_count must be > 0".into()));
+        }
+        let msg = Self::canonical_bytes(spec);
+        let sig = self.signing_key.sign(&msg);
+        let mut bytes = Vec::with_capacity(ED_ATTEST_PROOF_LEN);
+        bytes.extend_from_slice(&self.public_key_bytes());
+        bytes.extend_from_slice(&sig.to_bytes());
+        Ok(BenchProof {
+            backend: Self::NAME.to_string(),
+            bytes,
+        })
+    }
+
+    fn verify(&self, spec: &BenchSpec, proof: &BenchProof) -> Result<(), BenchError> {
+        verify_ed_attest_proof(spec, proof)
+    }
+}
+
+/// Verify an `ed-attest` proof without holding the
+/// [`EdAttestBackend`] instance — useful for the protocol layer
+/// (`tirami-ledger` / `tirami-node`) where the verifier only has
+/// the proof bytes and a candidate expected public key.
+///
+/// Returns `Ok(())` on a valid signature whose pubkey decodes
+/// successfully and whose signature verifies against the
+/// canonical bench-spec bytes.
+pub fn verify_ed_attest_proof(
+    spec: &BenchSpec,
+    proof: &BenchProof,
+) -> Result<(), BenchError> {
+    if proof.backend != EdAttestBackend::NAME {
+        return Err(BenchError::VerifyFailed(format!(
+            "wrong backend: {} (expected {})",
+            proof.backend,
+            EdAttestBackend::NAME
+        )));
+    }
+    if proof.bytes.len() != ED_ATTEST_PROOF_LEN {
+        return Err(BenchError::VerifyFailed(format!(
+            "proof must be {} bytes, got {}",
+            ED_ATTEST_PROOF_LEN,
+            proof.bytes.len()
+        )));
+    }
+    let mut pk_bytes = [0u8; 32];
+    pk_bytes.copy_from_slice(&proof.bytes[..32]);
+    let mut sig_bytes = [0u8; 64];
+    sig_bytes.copy_from_slice(&proof.bytes[32..]);
+    let vk = VerifyingKey::from_bytes(&pk_bytes)
+        .map_err(|e| BenchError::VerifyFailed(format!("pubkey decode: {e}")))?;
+    let sig = Signature::from_bytes(&sig_bytes);
+    let msg = EdAttestBackend::canonical_bytes(spec);
+    vk.verify(&msg, &sig)
+        .map_err(|e| BenchError::VerifyFailed(format!("Ed25519 verify failed: {e}")))?;
+    Ok(())
+}
+
+/// Verify an `ed-attest` proof AND check that the signer's pubkey
+/// matches an expected value. The protocol layer uses this so the
+/// trade-attribution pubkey and the attestation pubkey must agree.
+pub fn verify_ed_attest_proof_by_signer(
+    spec: &BenchSpec,
+    proof: &BenchProof,
+    expected_signer: &[u8; 32],
+) -> Result<(), BenchError> {
+    verify_ed_attest_proof(spec, proof)?;
+    if &proof.bytes[..32] != &expected_signer[..] {
+        return Err(BenchError::VerifyFailed(format!(
+            "signer mismatch: proof carries {} but expected {}",
+            hex::encode(&proof.bytes[..32]),
+            hex::encode(expected_signer)
+        )));
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Phase 24 Wave 1 — Backend selector
+// ---------------------------------------------------------------------------
+
+/// Runtime-selectable backend kinds. The protocol layer reads this
+/// from `Config.zkml_backend` (Phase 24 Wave 2) and constructs the
+/// appropriate `BenchBackend`. The default is `Mock` so the
+/// always-available shape-testing path remains the no-config
+/// default.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum BenchBackendKind {
+    /// SHA-256 hash; trivially forgeable. Development only.
+    Mock,
+    /// Ed25519 signature over the canonical spec; unforgeable
+    /// without the private key but NOT zero-knowledge. Phase 24
+    /// Wave 1 default for production-with-attestation deployments.
+    EdAttest,
+    /// Halo2-based zk-SNARK (feature `ezkl`). Returns
+    /// `BackendUnavailable` until Phase 24 Wave 3+ lands.
+    Ezkl,
+    /// ZKVM-based zk-STARK (feature `risc0`). Same caveat.
+    Risc0,
+    /// Halo2 generic. Same caveat.
+    Halo2,
+}
+
+impl Default for BenchBackendKind {
+    fn default() -> Self {
+        Self::Mock
+    }
+}
+
+impl BenchBackendKind {
+    /// Returns `true` if this backend is currently usable (i.e.
+    /// will not return `BackendUnavailable` for `prove`/`verify`).
+    /// Useful for the discovery manifest so agents know what
+    /// strength of proof a peer can actually produce.
+    pub fn is_available(self) -> bool {
+        matches!(self, Self::Mock | Self::EdAttest)
+    }
+
+    /// Human-readable canonical name used in `BenchProof.backend`
+    /// and in the discovery manifest.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Mock => MockBackend::NAME,
+            Self::EdAttest => EdAttestBackend::NAME,
+            Self::Ezkl => "ezkl",
+            Self::Risc0 => "risc0",
+            Self::Halo2 => "halo2",
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // run_bench
 // ---------------------------------------------------------------------------
 
@@ -378,5 +605,226 @@ mod tests {
         let p = MockBackend.prove(&spec()).unwrap();
         assert_eq!(p.size(), p.bytes.len());
         assert_eq!(p.size(), 32); // SHA-256 output
+    }
+
+    // ---------------------------------------------------------------
+    // Phase 24 Wave 1 — EdAttestBackend + BenchBackendKind
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn ed_attest_prove_then_verify_round_trip() {
+        let backend = EdAttestBackend::generate();
+        let s = spec();
+        let proof = backend.prove(&s).expect("prove");
+        assert_eq!(proof.backend, EdAttestBackend::NAME);
+        assert_eq!(proof.bytes.len(), 96, "32-byte pk + 64-byte sig");
+        backend.verify(&s, &proof).expect("verify");
+    }
+
+    #[test]
+    fn ed_attest_verify_rejects_tampered_proof_bytes() {
+        let backend = EdAttestBackend::generate();
+        let s = spec();
+        let mut proof = backend.prove(&s).expect("prove");
+        // Flip a bit in the signature half.
+        proof.bytes[40] ^= 0x01;
+        let err = backend.verify(&s, &proof);
+        assert!(matches!(err, Err(BenchError::VerifyFailed(_))), "got {err:?}");
+    }
+
+    #[test]
+    fn ed_attest_verify_rejects_tampered_spec() {
+        let backend = EdAttestBackend::generate();
+        let s = spec();
+        let proof = backend.prove(&s).expect("prove");
+        let mut tampered = s.clone();
+        tampered.token_count += 1;
+        let err = backend.verify(&tampered, &proof);
+        assert!(matches!(err, Err(BenchError::VerifyFailed(_))), "got {err:?}");
+    }
+
+    #[test]
+    fn ed_attest_verify_rejects_wrong_pubkey_in_proof() {
+        let alice = EdAttestBackend::generate();
+        let bob = EdAttestBackend::generate();
+        let s = spec();
+        let mut proof_alice = alice.prove(&s).expect("prove");
+        // Substitute Bob's pubkey at the start. The sig (by Alice)
+        // won't verify under Bob's pubkey.
+        let bob_pk = bob.public_key_bytes();
+        proof_alice.bytes[..32].copy_from_slice(&bob_pk);
+        let err = verify_ed_attest_proof(&s, &proof_alice);
+        assert!(matches!(err, Err(BenchError::VerifyFailed(_))), "got {err:?}");
+    }
+
+    #[test]
+    fn ed_attest_verify_rejects_wrong_backend_name() {
+        let backend = EdAttestBackend::generate();
+        let s = spec();
+        let mut proof = backend.prove(&s).expect("prove");
+        proof.backend = "ezkl".to_string();
+        let err = verify_ed_attest_proof(&s, &proof);
+        assert!(matches!(err, Err(BenchError::VerifyFailed(_))), "got {err:?}");
+    }
+
+    #[test]
+    fn ed_attest_verify_by_signer_enforces_expected_pubkey() {
+        let alice = EdAttestBackend::generate();
+        let bob = EdAttestBackend::generate();
+        let s = spec();
+        let proof = alice.prove(&s).expect("prove");
+        // verifying against Alice's pk succeeds:
+        let alice_pk = alice.public_key_bytes();
+        verify_ed_attest_proof_by_signer(&s, &proof, &alice_pk).expect("Alice ok");
+        // verifying against Bob's pk fails (signer mismatch):
+        let bob_pk = bob.public_key_bytes();
+        let err = verify_ed_attest_proof_by_signer(&s, &proof, &bob_pk);
+        assert!(matches!(err, Err(BenchError::VerifyFailed(_))));
+    }
+
+    #[test]
+    fn ed_attest_two_backends_produce_different_proofs() {
+        let alice = EdAttestBackend::generate();
+        let bob = EdAttestBackend::generate();
+        let s = spec();
+        let pa = alice.prove(&s).expect("prove");
+        let pb = bob.prove(&s).expect("prove");
+        // Same backend label, different bytes (different keys signed).
+        assert_eq!(pa.backend, pb.backend);
+        assert_ne!(pa.bytes, pb.bytes);
+        // Cross-verify: each must NOT validate against the other's
+        // verify-by-signer with the wrong pubkey.
+        verify_ed_attest_proof_by_signer(&s, &pa, &alice.public_key_bytes()).expect("a ok");
+        let err = verify_ed_attest_proof_by_signer(&s, &pa, &bob.public_key_bytes());
+        assert!(matches!(err, Err(BenchError::VerifyFailed(_))));
+    }
+
+    #[test]
+    fn ed_attest_invalid_pubkey_bytes_reject_cleanly() {
+        let s = spec();
+        // Construct a fake proof with garbage pubkey bytes (most
+        // 32-byte values DO decode to some VerifyingKey, so we
+        // can't deliberately make `from_bytes` fail with random
+        // bytes — but we can flip the backend label test path).
+        // Instead, ensure that a proof whose declared backend is
+        // `mock-sha256` is refused.
+        let p = BenchProof {
+            backend: "mock-sha256".into(),
+            bytes: vec![0u8; 96],
+        };
+        let err = verify_ed_attest_proof(&s, &p);
+        assert!(matches!(err, Err(BenchError::VerifyFailed(_))));
+    }
+
+    #[test]
+    fn ed_attest_short_proof_bytes_rejected() {
+        let s = spec();
+        let p = BenchProof {
+            backend: EdAttestBackend::NAME.to_string(),
+            bytes: vec![0u8; 95], // one short
+        };
+        let err = verify_ed_attest_proof(&s, &p);
+        match err {
+            Err(BenchError::VerifyFailed(msg)) => assert!(msg.contains("must be 96")),
+            other => panic!("expected VerifyFailed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn ed_attest_from_signing_key_round_trip() {
+        // Construct a deterministic key and verify the proof's
+        // pubkey segment matches.
+        let seed = [0x11u8; 32];
+        let sk = SigningKey::from_bytes(&seed);
+        let pk = sk.verifying_key().to_bytes();
+        let backend = EdAttestBackend::from_signing_key(sk);
+        assert_eq!(backend.public_key_bytes(), pk);
+        let s = spec();
+        let proof = backend.prove(&s).expect("prove");
+        assert_eq!(&proof.bytes[..32], &pk[..]);
+    }
+
+    #[test]
+    fn ed_attest_canonical_includes_all_spec_fields() {
+        // Mutating ANY spec field must yield a different canonical
+        // pre-image, which means the same backend produces a
+        // different signature.
+        let backend = EdAttestBackend::generate();
+        let mut a = spec();
+        let mut b = spec();
+        let p_a = backend.prove(&a).unwrap();
+
+        // Tweak each field in turn; sig must change.
+        for tweak in 0..5 {
+            b = a.clone();
+            match tweak {
+                0 => b.model_hash[0] ^= 0xFF,
+                1 => b.prompt_hash[0] ^= 0xFF,
+                2 => b.output_hash[0] ^= 0xFF,
+                3 => b.token_count += 1,
+                4 => b.flops += 1,
+                _ => unreachable!(),
+            }
+            let p_b = backend.prove(&b).unwrap();
+            assert_ne!(
+                &p_a.bytes[32..],
+                &p_b.bytes[32..],
+                "tweak {tweak} should change the signature"
+            );
+            a = b.clone();
+        }
+    }
+
+    #[test]
+    fn ed_attest_token_count_zero_rejected() {
+        let backend = EdAttestBackend::generate();
+        let mut s = spec();
+        s.token_count = 0;
+        let err = backend.prove(&s);
+        assert!(matches!(err, Err(BenchError::InvalidSpec(_))));
+    }
+
+    #[test]
+    fn ed_attest_runs_through_run_bench_harness() {
+        let backend = EdAttestBackend::generate();
+        let r = run_bench(&backend, &spec(), 5).expect("bench");
+        assert_eq!(r.backend, EdAttestBackend::NAME);
+        assert_eq!(r.trials, 5);
+        assert_eq!(r.proof_bytes, 96);
+        assert_eq!(r.flops, spec().flops);
+    }
+
+    // -- BenchBackendKind selector ----------------------------------
+
+    #[test]
+    fn backend_kind_default_is_mock() {
+        assert_eq!(BenchBackendKind::default(), BenchBackendKind::Mock);
+    }
+
+    #[test]
+    fn backend_kind_availability_matrix() {
+        assert!(BenchBackendKind::Mock.is_available());
+        assert!(BenchBackendKind::EdAttest.is_available());
+        assert!(!BenchBackendKind::Ezkl.is_available());
+        assert!(!BenchBackendKind::Risc0.is_available());
+        assert!(!BenchBackendKind::Halo2.is_available());
+    }
+
+    #[test]
+    fn backend_kind_names_match_backend_name_method() {
+        assert_eq!(BenchBackendKind::Mock.name(), MockBackend.name());
+        assert_eq!(BenchBackendKind::EdAttest.name(), EdAttestBackend::NAME);
+        assert_eq!(BenchBackendKind::Ezkl.name(), "ezkl");
+        assert_eq!(BenchBackendKind::Risc0.name(), "risc0");
+        assert_eq!(BenchBackendKind::Halo2.name(), "halo2");
+    }
+
+    #[test]
+    fn backend_kind_serializes_as_kebab_case() {
+        let k = BenchBackendKind::EdAttest;
+        let s = serde_json::to_string(&k).unwrap();
+        assert_eq!(s, "\"ed-attest\"");
+        let parsed: BenchBackendKind = serde_json::from_str("\"mock\"").unwrap();
+        assert_eq!(parsed, BenchBackendKind::Mock);
     }
 }

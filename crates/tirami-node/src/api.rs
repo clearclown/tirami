@@ -76,6 +76,11 @@ pub(crate) struct AppState {
     /// agent tick loop. Exposed via `/v1/tirami/agent/status` so
     /// users can see the loop is alive without reading logs.
     pub agent_loop_stats: Arc<Mutex<crate::agent_loop::AgentLoopStats>>,
+    /// Phase 20 Wave 2 — per-node priced data offers
+    /// (`/v1/tirami/data/{offer,offers,purchase}`).
+    /// In-memory only; cross-mesh gossip + on-disk persistence
+    /// follow in Wave 2.5.
+    pub data_offers: crate::handlers::data_offer::DataOfferState,
 }
 
 /// Simple rate limiter for authentication failures.
@@ -228,6 +233,9 @@ pub fn create_router_with_services(
         api_tokens: Arc::new(Mutex::new(crate::api_tokens::TokenStore::new())),
         personal_agent,
         agent_loop_stats,
+        data_offers: Arc::new(Mutex::new(
+            crate::handlers::data_offer::DataOfferRegistry::new(),
+        )),
     };
     let api_max_request_body_bytes = state.config.api_max_request_body_bytes;
 
@@ -423,6 +431,19 @@ pub fn create_router_with_services(
         .route(
             "/v1/tirami/agent/message",
             post(crate::handlers::agent_message::agent_message),
+        )
+        // Phase 20 Wave 2 — priced data offers.
+        .route(
+            "/v1/tirami/data/offer",
+            post(crate::handlers::data_offer::publish_offer),
+        )
+        .route(
+            "/v1/tirami/data/offers",
+            get(crate::handlers::data_offer::list_offers),
+        )
+        .route(
+            "/v1/tirami/data/purchase",
+            post(crate::handlers::data_offer::purchase_offer),
         )
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
@@ -5264,6 +5285,248 @@ mod tests {
         assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
         let msg = resp["error"]["message"].as_str().unwrap_or("");
         assert!(msg.contains("4096-byte cap"), "msg: {msg}");
+    }
+
+    // ------------------------------------------------------------------
+    // Phase 20 Wave 2 — priced data offer marketplace
+    // ------------------------------------------------------------------
+
+    fn future_expiry_ms() -> u64 {
+        crate::api::now_millis_pub() + 60_000
+    }
+
+    fn past_expiry_ms() -> u64 {
+        // 60 seconds in the past — safely expired.
+        crate::api::now_millis_pub().saturating_sub(60_000)
+    }
+
+    fn data_offer_body(price_trm: u64, expiry_ms: u64) -> serde_json::Value {
+        serde_json::json!({
+            "description": "A small CSV of toy data.",
+            "sha256_digest": "a".repeat(64),
+            "price_trm": price_trm,
+            "expiry_ms": expiry_ms,
+            "fetch_url": "https://example.com/dataset.csv",
+        })
+    }
+
+    async fn post_publish_offer(
+        app: Router,
+        seller_hex: &str,
+        body: serde_json::Value,
+    ) -> (StatusCode, serde_json::Value) {
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/tirami/data/offer")
+                    .header("content-type", "application/json")
+                    .header("X-Tirami-Node-Id", seller_hex)
+                    .body(Body::from(body.to_string()))
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap_or_default();
+        (status, json)
+    }
+
+    async fn get_list_offers(app: Router) -> (StatusCode, serde_json::Value) {
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/v1/tirami/data/offers")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap_or_default();
+        (status, json)
+    }
+
+    async fn post_purchase(
+        app: Router,
+        buyer_hex: &str,
+        offer_id: &str,
+    ) -> (StatusCode, serde_json::Value) {
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/tirami/data/purchase")
+                    .header("content-type", "application/json")
+                    .header("X-Tirami-Node-Id", buyer_hex)
+                    .body(Body::from(
+                        serde_json::json!({ "offer_id": offer_id }).to_string(),
+                    ))
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap_or_default();
+        (status, json)
+    }
+
+    #[tokio::test]
+    async fn data_offer_publish_then_purchase_full_roundtrip() {
+        // Single app shared across requests so registry state persists.
+        let app = test_router_with_agent(Config::default(), None);
+        let seller = "aa".repeat(32);
+        let buyer = "bb".repeat(32);
+
+        // 1. Publish
+        let (status, pub_body) =
+            post_publish_offer(app.clone(), &seller, data_offer_body(5, future_expiry_ms())).await;
+        assert_eq!(status, StatusCode::OK, "publish failed: {pub_body}");
+        let offer_id = pub_body["offer_id"].as_str().expect("offer_id");
+        assert_eq!(pub_body["seller"], seller);
+
+        // 2. List — public should see the offer but NOT the fetch_url.
+        let (status, list_body) = get_list_offers(app.clone()).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(list_body["count"], 1);
+        let listed = &list_body["offers"][0];
+        assert_eq!(listed["seller"], seller);
+        assert_eq!(listed["price_trm"], 5);
+        assert!(
+            listed.get("fetch_url").is_none(),
+            "fetch_url leaked in list response: {list_body}"
+        );
+
+        // 3. Purchase — buyer should now see fetch_url.
+        let (status, p_body) = post_purchase(app, &buyer, offer_id).await;
+        assert_eq!(status, StatusCode::OK, "purchase failed: {p_body}");
+        assert_eq!(p_body["seller"], seller);
+        assert_eq!(p_body["buyer"], buyer);
+        assert_eq!(p_body["trm_paid"], 5);
+        assert_eq!(p_body["fetch_url"], "https://example.com/dataset.csv");
+    }
+
+    #[tokio::test]
+    async fn data_offer_publish_requires_future_expiry() {
+        let app = test_router_with_agent(Config::default(), None);
+        let seller = "aa".repeat(32);
+        let (status, body) =
+            post_publish_offer(app, &seller, data_offer_body(5, past_expiry_ms())).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let msg = body["error"]["message"].as_str().unwrap_or("");
+        assert!(msg.contains("expiry_ms must be in the future"), "msg: {msg}");
+    }
+
+    #[tokio::test]
+    async fn data_offer_publish_rejects_zero_price() {
+        let app = test_router_with_agent(Config::default(), None);
+        let seller = "aa".repeat(32);
+        let (status, body) =
+            post_publish_offer(app, &seller, data_offer_body(0, future_expiry_ms())).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let msg = body["error"]["message"].as_str().unwrap_or("");
+        assert!(msg.contains("price_trm must be > 0"), "msg: {msg}");
+    }
+
+    #[tokio::test]
+    async fn data_offer_purchase_rejects_self_purchase() {
+        let app = test_router_with_agent(Config::default(), None);
+        let same = "cc".repeat(32);
+        let (status, pub_body) =
+            post_publish_offer(app.clone(), &same, data_offer_body(5, future_expiry_ms())).await;
+        assert_eq!(status, StatusCode::OK);
+        let offer_id = pub_body["offer_id"].as_str().expect("offer_id");
+        let (status, body) = post_purchase(app, &same, offer_id).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let msg = body["error"]["message"].as_str().unwrap_or("");
+        assert!(msg.contains("cannot purchase your own offer"), "msg: {msg}");
+    }
+
+    #[tokio::test]
+    async fn data_offer_purchase_rejects_unknown_offer_id() {
+        let app = test_router_with_agent(Config::default(), None);
+        let buyer = "bb".repeat(32);
+        let (status, body) = post_purchase(app, &buyer, "no-such-offer").await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        let msg = body["error"]["message"].as_str().unwrap_or("");
+        assert!(msg.contains("offer_id not found"), "msg: {msg}");
+    }
+
+    #[tokio::test]
+    async fn data_offer_list_omits_expired() {
+        // An expired offer is excluded from the list response even
+        // though it remains in the underlying registry (gc is async).
+        let app = test_router_with_agent(Config::default(), None);
+        let seller = "aa".repeat(32);
+        // Just-in-future expiry so we can wait it out.
+        let near_future = crate::api::now_millis_pub() + 50;
+        let (status, _) =
+            post_publish_offer(app.clone(), &seller, data_offer_body(5, near_future)).await;
+        assert_eq!(status, StatusCode::OK);
+        // Wait past the expiry.
+        tokio::time::sleep(std::time::Duration::from_millis(120)).await;
+        let (status, list_body) = get_list_offers(app).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(list_body["count"], 0, "expected expired offer to be filtered out");
+    }
+
+    #[tokio::test]
+    async fn data_offer_publish_requires_64_hex_digest() {
+        let app = test_router_with_agent(Config::default(), None);
+        let seller = "aa".repeat(32);
+        let body = serde_json::json!({
+            "description": "x",
+            "sha256_digest": "short",
+            "price_trm": 5,
+            "expiry_ms": future_expiry_ms(),
+            "fetch_url": "https://example.com",
+        });
+        let (status, body) = post_publish_offer(app, &seller, body).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let msg = body["error"]["message"].as_str().unwrap_or("");
+        assert!(msg.contains("sha256_digest must be 64 hex"), "msg: {msg}");
+    }
+
+    #[tokio::test]
+    async fn well_known_manifest_lists_wave_2_data_actions() {
+        let app = test_router_with_agent(Config::default(), None);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/.well-known/tirami-agent.json")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let json: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
+        let names: Vec<String> = json["actions"]
+            .as_array()
+            .expect("array")
+            .iter()
+            .map(|a| a["name"].as_str().unwrap_or("").to_string())
+            .collect();
+        for expected in &["data_offer_publish", "data_offer_list", "data_offer_purchase"] {
+            assert!(
+                names.iter().any(|n| n == expected),
+                "manifest missing {expected}, actions={names:?}"
+            );
+        }
     }
 
     // ------------------------------------------------------------------

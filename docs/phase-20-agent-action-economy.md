@@ -163,20 +163,43 @@ agent action class.
   `tirami_agent_message`. Available to Claude Desktop / Cursor agents
   immediately.
 
-### Wave 2 — Priced data access
+### Wave 2 — Priced data access ✅ shipped
 
 - **`POST /v1/tirami/data/offer`** — owner publishes
   `{ description, sha256_digest, price_trm, expiry_ms, fetch_url }`.
-  Stored on local agora registry, gossiped via existing PriceSignal
-  channel.
-- **`POST /v1/tirami/data/purchase`** — buyer signs a purchase intent
-  for an offer hash. Settles TRM through the existing dual-signed trade
-  path with `category: "data"`. The fetch URL is returned only after
-  the trade settles. Seller's bandwidth is not metered (out of scope
-  for this Phase); only the access right is.
-- **NIP-90 publish bridge** — wire the existing `Nip90Publisher` so it
-  actually signs and ships kind-31990 advertisements to a configured
-  relay. Then data offers can be discovered cross-mesh via Nostr.
+  Stored in per-node in-memory `DataOfferRegistry`. The `offer_id` is
+  deterministic: `sha256(seller_hex || ":" || sha256_digest || ":" ||
+  price_trm_le_bytes)` — so re-publishing the same dataset at the same
+  price is idempotent.
+- **`GET /v1/tirami/data/offers`** — public list, `fetch_url` stripped
+  via `#[serde(skip)]` so it cannot accidentally leak. Expired offers
+  filtered out at response time (registry GC is async / deferred).
+- **`POST /v1/tirami/data/purchase`** — buyer settles TRM through the
+  existing dual-signed trade path with
+  `model_id = "data_offer:<offer_id_short>"`,
+  `tokens_processed = 0`, `flops_estimated = 0`. The fetch URL is
+  returned only after the trade settles. Self-purchase is rejected.
+  Expired offers return 410 Gone.
+- **Discovery manifest** — `/.well-known/tirami-agent.json` now lists
+  `data_offer_publish` / `data_offer_list` / `data_offer_purchase`
+  alongside the Wave 1 actions.
+
+**Wave 2 follow-ups** (intentional deferrals from this PR):
+
+- Cross-mesh gossip of offers (currently per-node). Reuses the
+  existing `PriceSignal` channel — slot a new variant.
+- On-disk persistence of the offer registry. Currently in-memory; a
+  restart drops all offers. Trivial follow-up using the same JSON
+  snapshot path the bank/marketplace/mind already use.
+- Dual-signed `PurchaseIntent`. Today the buyer's node records the
+  trade locally; gossip + countersign from the seller pin durability.
+- **NIP-90 publish bridge** — the WebSocket transport
+  (`agora_relay::publish_event`) and event builder
+  (`Nip90Publisher::build_advertisement_event`) are already wired.
+  What's missing is Schnorr / secp256k1 signing of the Nostr event
+  (NIP-01 requires a Bitcoin-style signature, not the Ed25519 we use
+  for internal trades). Adding `secp256k1` as a workspace dep is its
+  own scoping decision and lands as a follow-up.
 
 ### Wave 3 — Physical-world bridge
 

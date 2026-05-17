@@ -204,10 +204,30 @@ pub enum AgentDecision {
 /// Network I/O is NOT in this struct — the agent calls out to
 /// `tirami-node` handlers via the `AgentEnv` trait. This keeps
 /// the agent logic unit-testable without spinning up a full node.
+/// Phase 23 Wave 1 — provenance of the wallet `NodeId` held by a
+/// [`PersonalAgent`]. Lets clients tell from one glance whether
+/// trades are attributed to the machine's identity (default) or to a
+/// portable [`crate::AgentIdentity`] that survives node moves.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WalletSource {
+    /// Pre-Wave-23 default: wallet derives from the running node's
+    /// Ed25519 identity (the machine key in `~/.tirami/node.key`).
+    MachineNode,
+    /// Wave-23+: wallet rebound from a loaded `AgentIdentity` pubkey.
+    /// Earnings and budget state follow the DID across machines.
+    AgentIdentity,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PersonalAgent {
     /// The Tirami node id this agent uses as its wallet.
     pub wallet: NodeId,
+    /// Phase 23 Wave 1 — provenance of [`Self::wallet`]. `#[serde(default)]`
+    /// keeps pre-Wave-23 snapshots loadable (they default to
+    /// `MachineNode`).
+    #[serde(default = "default_wallet_source")]
+    pub wallet_source: WalletSource,
     /// Spend budget for the current session.
     pub budget: TrmBudget,
     /// User-tunable preferences.
@@ -221,17 +241,53 @@ pub struct PersonalAgent {
     pub day_started_at_ms: u64,
 }
 
+fn default_wallet_source() -> WalletSource {
+    WalletSource::MachineNode
+}
+
 impl PersonalAgent {
     /// Construct a fresh agent with default preferences.
     pub fn new(wallet: NodeId, budget: TrmBudget, now_ms: u64) -> Self {
         Self {
             wallet,
+            wallet_source: WalletSource::MachineNode,
             budget,
             preferences: AgentPreferences::default(),
             spent_today_trm: 0,
             earned_today_trm: 0,
             day_started_at_ms: now_ms,
         }
+    }
+
+    /// Phase 23 Wave 1 — rebind the wallet to an
+    /// [`crate::AgentIdentity`]'s pubkey.
+    ///
+    /// Called from the `AppState` plumbing when an `AgentIdentity` is
+    /// `init`-ed or `import`-ed. The wallet flips to the agent's
+    /// 32-byte Ed25519 public key (the same value behind
+    /// `did:tirami:<hex>`), and the source discriminator records
+    /// that the trade attribution now follows the DID rather than
+    /// the machine key.
+    ///
+    /// Idempotent: rebinding to the same pubkey is a no-op. Rebinding
+    /// to a different pubkey resets daily tallies — the previous
+    /// "today" was for a different economic actor.
+    pub fn rebind_wallet_from_agent_identity(
+        &mut self,
+        agent_public_key: [u8; 32],
+        now_ms: u64,
+    ) {
+        let new_wallet = NodeId(agent_public_key);
+        if self.wallet == new_wallet && self.wallet_source == WalletSource::AgentIdentity {
+            return;
+        }
+        self.wallet = new_wallet;
+        self.wallet_source = WalletSource::AgentIdentity;
+        // Today's tallies belong to whoever was holding the wallet
+        // until now. After a rebind they don't carry over.
+        self.spent_today_trm = 0;
+        self.earned_today_trm = 0;
+        self.day_started_at_ms = now_ms;
     }
 
     /// Construct with explicit preferences. Validates them first.
@@ -244,6 +300,7 @@ impl PersonalAgent {
         preferences.validate()?;
         Ok(Self {
             wallet,
+            wallet_source: WalletSource::MachineNode,
             budget,
             preferences,
             spent_today_trm: 0,

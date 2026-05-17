@@ -18,6 +18,20 @@ fn metrics_instance() -> &'static TiramiMetrics {
     INSTANCE.get_or_init(TiramiMetrics::new)
 }
 
+/// Phase 25 A6 — process start timestamp, captured once on the
+/// first /metrics scrape. We compute uptime_secs as
+/// (now - process_started_at_secs) so dashboards can plot
+/// node freshness and detect crash-loops.
+fn process_started_at_secs() -> u64 {
+    static STARTED_AT: OnceLock<u64> = OnceLock::new();
+    *STARTED_AT.get_or_init(|| {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0)
+    })
+}
+
 /// Phase 25 A3 — check whether the presented bearer satisfies the
 /// metrics-protection policy. Returns `Ok(())` when the caller is
 /// allowed to read /metrics, or `Err` with the status/body to send.
@@ -68,9 +82,31 @@ pub(crate) async fn metrics_handler(
     drop(referrals);
     drop(staking);
     drop(ledger);
-    let body = metrics
+    let mut body = metrics
         .encode()
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    // Phase 25 A6 — append process-level gauges so dashboards can
+    // plot node freshness without a sidecar exporter. Operators
+    // tracking node fleet health graph `tirami_process_uptime_secs`
+    // and alert on a regression toward 0 (crash-loop signature).
+    let started_at = process_started_at_secs();
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let uptime_secs = now_secs.saturating_sub(started_at);
+    body.push_str("# HELP tirami_process_started_at_secs Unix epoch when this process began serving /metrics\n");
+    body.push_str("# TYPE tirami_process_started_at_secs gauge\n");
+    body.push_str(&format!("tirami_process_started_at_secs {started_at}\n"));
+    body.push_str("# HELP tirami_process_uptime_secs Seconds since this process began serving /metrics\n");
+    body.push_str("# TYPE tirami_process_uptime_secs gauge\n");
+    body.push_str(&format!("tirami_process_uptime_secs {uptime_secs}\n"));
+    body.push_str("# HELP tirami_protocol_version Wire protocol version this binary advertises\n");
+    body.push_str("# TYPE tirami_protocol_version gauge\n");
+    body.push_str(&format!(
+        "tirami_protocol_version {}\n",
+        tirami_core::TIRAMI_PROTOCOL_VERSION,
+    ));
     Ok((
         [(header::CONTENT_TYPE, "text/plain; version=0.0.4")],
         body,
@@ -201,6 +237,39 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn metrics_carries_phase_25_a6_process_gauges() {
+        // Process gauges: uptime + started_at + protocol_version.
+        // Operators graph these to detect crash-loops and version
+        // skew across a fleet.
+        let app = test_router_default(Config::default());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/metrics")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let text = String::from_utf8_lossy(&body);
+        for expected in [
+            "tirami_process_started_at_secs",
+            "tirami_process_uptime_secs",
+            "tirami_protocol_version",
+        ] {
+            assert!(
+                text.contains(expected),
+                "missing {expected} in /metrics output",
+            );
+        }
     }
 
     #[tokio::test]

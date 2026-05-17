@@ -12,9 +12,12 @@ use std::collections::{HashSet, VecDeque};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
-/// Maximum number of trade hashes to remember for deduplication.
-/// Prevents unbounded memory growth under trade flooding (Issue #1).
-const MAX_GOSSIP_SEEN: usize = 100_000;
+/// Default maximum number of trade hashes to remember for
+/// deduplication. Prevents unbounded memory growth under trade
+/// flooding (Issue #1). Phase 25 C4 — the per-`GossipState`
+/// `max_seen` field overrides this when the operator wants a
+/// taller cap for global-scale deployments.
+pub const DEFAULT_MAX_GOSSIP_SEEN: usize = 100_000;
 
 /// Maximum pending gossip trades to process per second (Issue #14).
 const MAX_GOSSIP_TRADES_PER_SEC: u32 = 100;
@@ -38,10 +41,24 @@ pub struct GossipState {
     /// Rate limiting for incoming gossip (Issue #14).
     ingest_count: u32,
     ingest_window: std::time::Instant,
+    /// Phase 25 C4 — per-instance dedup capacity. Operators with
+    /// many gossip-active peers can raise this beyond
+    /// `DEFAULT_MAX_GOSSIP_SEEN` to keep the dedup horizon long
+    /// enough for sustained TPS. Bounded so the field still caps
+    /// worst-case memory.
+    max_seen: usize,
 }
 
 impl GossipState {
     pub fn new() -> Self {
+        Self::with_capacity(DEFAULT_MAX_GOSSIP_SEEN)
+    }
+
+    /// Phase 25 C4 — explicit per-instance dedup capacity. Use this
+    /// from a node startup path when the operator's Config carries
+    /// a higher `gossip_max_seen` (global-scale deployments) or a
+    /// smaller one (resource-constrained edge nodes).
+    pub fn with_capacity(max_seen: usize) -> Self {
         Self {
             seen: HashSet::new(),
             order: VecDeque::new(),
@@ -53,7 +70,13 @@ impl GossipState {
             order_price_signals: VecDeque::new(),
             ingest_count: 0,
             ingest_window: std::time::Instant::now(),
+            max_seen: max_seen.max(1),
         }
+    }
+
+    /// Effective dedup capacity for this `GossipState` instance.
+    pub fn max_seen(&self) -> usize {
+        self.max_seen
     }
 
     /// Phase 14.1 — check if a price signal is new. Returns true if new.
@@ -73,7 +96,7 @@ impl GossipState {
             return false;
         }
         self.order_price_signals.push_back(key);
-        while self.order_price_signals.len() > MAX_GOSSIP_SEEN {
+        while self.order_price_signals.len() > self.max_seen {
             if let Some(evicted) = self.order_price_signals.pop_front() {
                 self.seen_price_signals.remove(&evicted);
             }
@@ -99,7 +122,7 @@ impl GossipState {
         }
         self.order.push_back(hash);
         // Evict oldest when over limit
-        while self.order.len() > MAX_GOSSIP_SEEN {
+        while self.order.len() > self.max_seen {
             if let Some(evicted) = self.order.pop_front() {
                 self.seen.remove(&evicted);
             }
@@ -119,7 +142,7 @@ impl GossipState {
             return false;
         }
         self.order_loans.push_back(hash);
-        while self.order_loans.len() > MAX_GOSSIP_SEEN {
+        while self.order_loans.len() > self.max_seen {
             if let Some(evicted) = self.order_loans.pop_front() {
                 self.seen_loans.remove(&evicted);
             }
@@ -138,7 +161,7 @@ impl GossipState {
             return false;
         }
         self.order_reputation.push_back(*key);
-        while self.order_reputation.len() > MAX_GOSSIP_SEEN {
+        while self.order_reputation.len() > self.max_seen {
             if let Some(evicted) = self.order_reputation.pop_front() {
                 self.seen_reputation.remove(&evicted);
             }
@@ -1136,10 +1159,62 @@ mod tests {
         );
     }
 
+    // ----- Phase 25 C4 — per-instance dedup cap -----
+
+    #[test]
+    fn gossip_state_default_capacity_matches_default_const() {
+        let state = GossipState::new();
+        assert_eq!(state.max_seen(), DEFAULT_MAX_GOSSIP_SEEN);
+    }
+
+    #[test]
+    fn gossip_state_custom_capacity_is_honoured() {
+        let state = GossipState::with_capacity(42);
+        assert_eq!(state.max_seen(), 42);
+    }
+
+    #[test]
+    fn gossip_state_zero_capacity_clamped_to_one() {
+        // Operator misconfiguration must not produce a zero-cap
+        // ring that immediately discards everything.
+        let state = GossipState::with_capacity(0);
+        assert_eq!(state.max_seen(), 1);
+    }
+
+    #[test]
+    fn gossip_state_small_capacity_evicts_aggressively() {
+        let mut state = GossipState::with_capacity(3);
+        let mut rng = rand::thread_rng();
+        for i in 0..10 {
+            let pk = SigningKey::generate(&mut rng);
+            let ck = SigningKey::generate(&mut rng);
+            let trade = tirami_ledger::TradeRecord {
+                provider: NodeId(pk.verifying_key().to_bytes()),
+                consumer: NodeId(ck.verifying_key().to_bytes()),
+                trm_amount: i + 1,
+                tokens_processed: 1,
+                timestamp: now_millis(),
+                model_id: "c4-test".to_string(),
+                flops_estimated: 0,
+                nonce: [0u8; 16],
+            };
+            let canonical = trade.canonical_bytes();
+            let signed = SignedTradeRecord {
+                trade,
+                provider_sig: pk.sign(&canonical).to_bytes().to_vec(),
+                consumer_sig: ck.sign(&canonical).to_bytes().to_vec(),
+                attestation: None,
+            };
+            state.mark_seen(&signed);
+        }
+        // After 10 inserts on a 3-slot ring, seen_count is capped.
+        assert!(state.seen_count() <= 3, "got {}", state.seen_count());
+    }
+
     #[test]
     fn gossip_bounded_eviction() {
         let mut state = GossipState::new();
-        // Fill beyond MAX_GOSSIP_SEEN (use a smaller count for test speed)
+        // Fill beyond DEFAULT_MAX_GOSSIP_SEEN (use a smaller count for test speed)
         for i in 0..200 {
             let mut rng = rand::thread_rng();
             let provider_key = SigningKey::generate(&mut rng);

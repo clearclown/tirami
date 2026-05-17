@@ -248,6 +248,14 @@ pub struct Config {
     /// detection while bounding worst-case damage per tick.
     #[serde(default = "default_max_slashes_per_tick")]
     pub max_slashes_per_tick: u32,
+
+    /// Phase 25 C4 — per-node gossip dedup capacity. Operators
+    /// running global-scale nodes should raise this to keep the
+    /// dedup horizon long enough for sustained TPS; resource-
+    /// constrained edge nodes can lower it. Default 100,000
+    /// matches the historical hardcoded const.
+    #[serde(default = "default_gossip_max_seen")]
+    pub gossip_max_seen: usize,
 }
 
 /// Phase 21 Wave 2 — stake gate is **on by default** so that fresh
@@ -313,6 +321,10 @@ fn default_zkml_backend() -> String {
 
 fn default_max_slashes_per_tick() -> u32 {
     100
+}
+
+fn default_gossip_max_seen() -> usize {
+    100_000
 }
 
 fn default_personal_agent_enabled() -> bool {
@@ -436,6 +448,7 @@ impl Default for Config {
             zkml_backend: "mock".to_string(),
             metrics_require_bearer: false,
             max_slashes_per_tick: 100,
+            gossip_max_seen: 100_000,
         }
     }
 }

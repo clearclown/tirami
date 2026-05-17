@@ -256,6 +256,14 @@ pub struct Config {
     /// matches the historical hardcoded const.
     #[serde(default = "default_gossip_max_seen")]
     pub gossip_max_seen: usize,
+
+    /// Phase 25 C2 — global cap on concurrent in-flight
+    /// `/v1/chat/completions` requests. Excess requests get
+    /// HTTP 429 + `Retry-After`. 0 disables the cap (legacy
+    /// behaviour). Default 64 protects against client-side
+    /// runaway loops without bottlenecking honest agents.
+    #[serde(default = "default_chat_concurrency_cap")]
+    pub chat_concurrency_cap: u32,
 }
 
 /// Phase 21 Wave 2 — stake gate is **on by default** so that fresh
@@ -325,6 +333,10 @@ fn default_max_slashes_per_tick() -> u32 {
 
 fn default_gossip_max_seen() -> usize {
     100_000
+}
+
+fn default_chat_concurrency_cap() -> u32 {
+    64
 }
 
 fn default_personal_agent_enabled() -> bool {
@@ -449,6 +461,7 @@ impl Default for Config {
             metrics_require_bearer: false,
             max_slashes_per_tick: 100,
             gossip_max_seen: 100_000,
+            chat_concurrency_cap: 64,
         }
     }
 }

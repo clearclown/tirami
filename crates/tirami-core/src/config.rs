@@ -105,6 +105,15 @@ pub struct Config {
     #[serde(default = "default_slashing_interval_secs")]
     pub slashing_interval_secs: u64,
 
+    /// Phase 22 Wave 2 — interval between welcome-loan settlement
+    /// sweeps (seconds). The sweep flips expired grants to either
+    /// `repaid` (borrower had non-zero contributions during the
+    /// 72-hour window) or `defaulted` (zero contributions; treated
+    /// as a Sybil-like signal and appended to `slash_events`).
+    /// Default 300 (5 min). Clamped to ≥60 at spawn time.
+    #[serde(default = "default_welcome_settle_interval_secs")]
+    pub welcome_loan_settle_interval_secs: u64,
+
     /// Phase 17 Wave 1.6 — opt-in to post-quantum hybrid signatures
     /// (Ed25519 + ML-DSA). When `true`, the node signs outbound trades
     /// with both halves and rejects inbound trades whose PQ half fails.
@@ -208,6 +217,13 @@ fn default_stake_gate_enabled() -> bool {
 
 fn default_anchor_interval_secs() -> u64 {
     3600
+}
+
+/// Phase 22 Wave 2 — 5 min by default. Welcome-loan grants expire on
+/// a 72-hour boundary; a 5-minute sweep means defaulted grants get
+/// flagged within roughly 5 minutes of crossing the deadline.
+fn default_welcome_settle_interval_secs() -> u64 {
+    300
 }
 
 fn default_slashing_interval_secs() -> u64 {
@@ -347,6 +363,7 @@ impl Default for Config {
             settlement_window_hours: 24,
             anchor_interval_secs: 3600,
             slashing_interval_secs: 300,
+            welcome_loan_settle_interval_secs: 300,
             pq_signatures: false,
             asn_rate_limit_enabled: false,
             max_concurrent_connections: 1_000,

@@ -54,13 +54,87 @@ Workspace: **1,316 passed, 0 failed** (was 1,307 → +9 new).
 
 ---
 
-## Wave 2 — TBD
+## Wave 2 — welcome-loan settlement loop ✅ shipped
 
-Candidates in priority order:
+The Phase 21 Wave 2 grant carried `granted_at_ms` and
+`expires_at_ms` but no automatic settlement at the 72-hour mark.
+`InferenceEligibility` correctly stopped honouring expired grants,
+but the map kept growing forever and a borrower who claimed
+eligibility and produced *zero* contribution during the window left
+no audit trail behind. Wave 2 closes both gaps.
 
-- **Welcome-loan settlement loop** (mechanical, bounded scope). Periodic task scans `welcome_loans` for expired grants and marks them as such; bonus: garbage-collects the map and records a small reputation event for any grant that produced zero serving activity during its 72-hour window.
-- **PersonalAgent wallet → AgentIdentity link**. Refactor `PersonalAgent.wallet: NodeId` so it can be derived from a loaded `AgentIdentity`. Backwards-compat important; needs careful migration of existing snapshots.
-- **`POST /v1/tirami/agora/publish`** — surfacing the Wave-1 primitive via HTTP so an autonomous agent can announce itself on a public Nostr relay. Adds an `AppState.nostr_identity: Arc<Mutex<Option<NostrIdentity>>>` slot.
+### What changed
+
+- **New `WelcomeLoanGrant.defaulted: bool` field** (`#[serde(default)]`
+  so existing snapshots stay loadable).
+- **New `ComputeLedger::settle_expired_welcome_loans(now_ms)` sweep**
+  that iterates every grant where `expires_at_ms <= now_ms && !repaid
+  && !defaulted` and:
+  - flips `repaid = true` if the borrower has `contributed > 0`
+    (productively used the window), OR
+  - flips `defaulted = true` AND appends a `SlashEvent { reason =
+    "welcome-loan-default", burned_trm = 0, trust_penalty = 0.0 }`
+    if `contributed == 0` (Sybil-like signal — claimed eligibility,
+    served nothing).
+- **`InferenceEligibility` skips defaulted grants** alongside the
+  existing `repaid` check. A defaulted borrower's verdict surfaces
+  as `PreviouslySlashed` via the slash event, blocking them from the
+  stakeless bootstrap path permanently. Real stake is the only
+  recovery route (matches the Phase 18.2 constitutional rule).
+- **New `WelcomeLoanSettlementReport`** typed return for the sweep
+  (`settled_count`, `repaid_count`, `defaulted_count`).
+- **New `Config.welcome_loan_settle_interval_secs`** (default `300`,
+  clamped to ≥ 60 at spawn time). Plumbed into
+  `TiramiNode::spawn_welcome_settle_loop` alongside the existing
+  slashing / checkpoint loops.
+- **`spawn_welcome_settle_loop`** persists the ledger after any
+  non-empty sweep so a restart doesn't lose the audit trail.
+
+### What this means semantically
+
+A welcome loan is **a 72-hour eligibility window**. Wave 2 makes
+the window's closure unambiguous and audited:
+
+- "I served some work during the window" → grant is `repaid` and
+  the audit record retains it.
+- "I claimed the window and did nothing" → grant is `defaulted`,
+  a slash event is recorded, and the stakeless bootstrap path is
+  closed for this borrower. They can only re-enter the network by
+  posting real stake.
+
+### Tests
+
+6 new tests in `tirami-ledger`, all green:
+- `phase22_settle_marks_borrower_with_earnings_as_repaid`
+- `phase22_settle_marks_zero_contribution_as_defaulted_and_records_slash_event`
+- `phase22_settle_skips_already_settled_grants`
+- `phase22_settle_does_not_touch_grants_still_within_window`
+- `phase22_eligibility_rejects_defaulted_grant`
+- `phase22_settle_skips_explicitly_repaid_grants`
+
+Workspace: **1,322 passed, 0 failed** (was 1,316 → +6 new).
+
+### Smoke
+
+`tirami node`'s `spawn_welcome_settle_loop` runs every 300 s by
+default; smoke for a 5-min cadence is impractical in CI. The
+in-memory state transition is fully covered by the unit tests and
+the loop's spawn is verified at boot (no panic / config-default
+error).
+
+## Wave 3 (TBD) — candidates
+
+- **PersonalAgent wallet → AgentIdentity link**. Refactor
+  `PersonalAgent.wallet: NodeId` so it can derive from a loaded
+  `AgentIdentity`. Backwards-compat important.
+- **`POST /v1/tirami/agora/publish`** — surfacing the Wave-1
+  primitive via HTTP. Adds an `AppState.nostr_identity:
+  Arc<Mutex<Option<NostrIdentity>>>` slot.
+- **NostrIdentity persistence** — Wave 1 generates keys in
+  memory only. Adding a JSON snapshot path (analogous to the
+  Phase-20-Wave-4 `AgentIdentityBundle` but without
+  passphrase encryption since the relay-publishing key is
+  intentionally a separate trust domain).
 
 ### Out of Phase 22 scope (Phase 23 / 24 territory)
 

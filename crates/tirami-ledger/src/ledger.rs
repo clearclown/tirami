@@ -156,9 +156,15 @@ pub enum InferenceEligibility {
 /// Phase 21 Wave 2 — a single welcome-loan grant.
 ///
 /// Recorded by [`ComputeLedger::grant_welcome_loan`]. While `repaid =
-/// false` and `expires_at_ms > now`, the borrower passes the
-/// stake-gate via the `WelcomeLoan` variant of
+/// false`, `defaulted = false`, and `expires_at_ms > now`, the
+/// borrower passes the stake-gate via the `WelcomeLoan` variant of
 /// [`InferenceEligibility`].
+///
+/// Phase 22 Wave 2 added the `defaulted` field and the
+/// [`ComputeLedger::settle_expired_welcome_loans`] sweep that flips
+/// expired grants to either `repaid: true` (the borrower used the
+/// window productively by serving inference) or `defaulted: true`
+/// (the borrower claimed eligibility and produced zero contribution).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct WelcomeLoanGrant {
     pub node_id: NodeId,
@@ -166,6 +172,13 @@ pub struct WelcomeLoanGrant {
     pub granted_at_ms: u64,
     pub expires_at_ms: u64,
     pub repaid: bool,
+    /// Phase 22 Wave 2 — the borrower let the grant expire without
+    /// any provider-side activity (`contributed == 0` at expiry).
+    /// Treated as a Sybil-like signal and reflected in
+    /// [`SlashEvent`] form for auditability. `#[serde(default)]`
+    /// keeps pre-Wave-2 snapshots loadable.
+    #[serde(default)]
+    pub defaulted: bool,
 }
 
 /// Phase 21 Wave 2 — error variants from
@@ -180,6 +193,21 @@ pub enum WelcomeLoanError {
     /// Sybil ceiling (per-bucket or global) reached. Caller may
     /// retry later when the rolling window decays.
     SybilCeiling,
+}
+
+/// Phase 22 Wave 2 — summary of a
+/// [`ComputeLedger::settle_expired_welcome_loans`] sweep.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WelcomeLoanSettlementReport {
+    /// Number of grants whose expiry was past `now_ms` AND were
+    /// neither repaid nor defaulted yet — i.e. the entries actually
+    /// touched by this sweep.
+    pub settled_count: u64,
+    /// Of those, how many flipped to `repaid = true` (borrower had
+    /// non-zero `contributed`).
+    pub repaid_count: u64,
+    /// Of those, how many flipped to `defaulted = true`.
+    pub defaulted_count: u64,
 }
 
 impl std::fmt::Display for WelcomeLoanError {
@@ -2330,9 +2358,12 @@ impl ComputeLedger {
 
         // 3. Phase 21 Wave 2 — active welcome loan counts as effective
         //    stake. The grant is "active" iff not yet repaid AND not
-        //    yet expired.
+        //    yet defaulted (Phase 22 Wave 2) AND not yet expired.
         if let Some(grant) = self.welcome_loans.get(node_id) {
-            if !grant.repaid && grant.expires_at_ms > now_ms {
+            if !grant.repaid
+                && !grant.defaulted
+                && grant.expires_at_ms > now_ms
+            {
                 return Ok(InferenceEligibility::WelcomeLoan {
                     principal_trm: grant.principal_trm,
                     expires_at_ms: grant.expires_at_ms,
@@ -2399,6 +2430,7 @@ impl ComputeLedger {
             granted_at_ms: now_ms,
             expires_at_ms: now_ms.saturating_add(term_ms),
             repaid: false,
+            defaulted: false,
         };
 
         self.balances.insert(
@@ -2418,6 +2450,73 @@ impl ComputeLedger {
             self.sybil_limiter.record(bucket, now_ms);
         }
         Ok(grant)
+    }
+
+    /// Phase 22 Wave 2 — settle all welcome loans whose 72-hour
+    /// window has elapsed.
+    ///
+    /// For each grant with `expires_at_ms <= now_ms` that is neither
+    /// `repaid` nor `defaulted` already:
+    ///
+    /// - If the borrower's `contributed` is non-zero, the grant is
+    ///   marked `repaid = true`. The borrower served some inference
+    ///   during the window — that's the legitimate-use case.
+    /// - Otherwise the grant is marked `defaulted = true` AND a
+    ///   `SlashEvent { reason = "welcome-loan-default" }` is appended
+    ///   to the ledger for auditability. No TRM is burned because no
+    ///   stake exists yet — the slash event is purely informational
+    ///   (collusion detector + reputation systems can read it later).
+    ///
+    /// Returns a [`WelcomeLoanSettlementReport`] summarising the sweep
+    /// so the periodic-task caller can log or expose metrics.
+    pub fn settle_expired_welcome_loans(
+        &mut self,
+        now_ms: u64,
+    ) -> WelcomeLoanSettlementReport {
+        let mut report = WelcomeLoanSettlementReport::default();
+        // Collect node-ids to settle first (avoid borrowing self mutably
+        // twice).
+        let to_settle: Vec<NodeId> = self
+            .welcome_loans
+            .iter()
+            .filter(|(_, g)| {
+                g.expires_at_ms <= now_ms && !g.repaid && !g.defaulted
+            })
+            .map(|(id, _)| id.clone())
+            .collect();
+
+        for node_id in to_settle {
+            let contributed = self
+                .balances
+                .get(&node_id)
+                .map(|b| b.contributed)
+                .unwrap_or(0);
+            if contributed > 0 {
+                if let Some(grant) = self.welcome_loans.get_mut(&node_id) {
+                    grant.repaid = true;
+                    report.repaid_count += 1;
+                }
+            } else {
+                if let Some(grant) = self.welcome_loans.get_mut(&node_id) {
+                    grant.defaulted = true;
+                    report.defaulted_count += 1;
+                    let timestamp = grant.expires_at_ms;
+                    // Record an informational SlashEvent — no TRM
+                    // burned (no stake to burn), just an audit
+                    // trail entry that collusion / reputation logic
+                    // can consult later.
+                    self.slash_events.push(SlashEvent {
+                        node_id: node_id.clone(),
+                        trust_penalty: 0.0,
+                        burned_trm: 0,
+                        timestamp_ms: timestamp,
+                        reason: "welcome-loan-default".to_string(),
+                    });
+                }
+            }
+            report.settled_count += 1;
+        }
+        report
     }
 
     /// Phase 17 Wave 4.1 — per-bucket welcome-loan eligibility.
@@ -5240,6 +5339,139 @@ mod tests {
             verdict,
             Ok(InferenceEligibility::Staked { .. })
         ));
+    }
+
+    // ----------------------------------------------------------------
+    // Phase 22 Wave 2 — `settle_expired_welcome_loans` sweep
+    // ----------------------------------------------------------------
+
+    #[test]
+    fn phase22_settle_marks_borrower_with_earnings_as_repaid() {
+        let mut ledger = ComputeLedger::new();
+        let borrower = NodeId([0xE1u8; 32]);
+        let now = 1_000_000_000_u64;
+        ledger.grant_welcome_loan(borrower.clone(), "", now).expect("grant");
+        // Borrower served at least one inference during the window.
+        let trade = TradeRecord {
+            provider: borrower.clone(),
+            consumer: NodeId([0x99u8; 32]),
+            trm_amount: 5,
+            tokens_processed: 5,
+            timestamp: now + 100,
+            model_id: "phase22".into(),
+            flops_estimated: 0,
+            nonce: [0u8; 16],
+        };
+        ledger.execute_trade(&trade);
+        // Fast-forward past the 72-hour window.
+        let after_expiry = now + crate::lending::WELCOME_LOAN_TERM_HOURS * 3_600_000 + 1;
+        let report = ledger.settle_expired_welcome_loans(after_expiry);
+        assert_eq!(report.settled_count, 1);
+        assert_eq!(report.repaid_count, 1);
+        assert_eq!(report.defaulted_count, 0);
+        let grant = ledger.welcome_loans.get(&borrower).expect("present");
+        assert!(grant.repaid);
+        assert!(!grant.defaulted);
+    }
+
+    #[test]
+    fn phase22_settle_marks_zero_contribution_as_defaulted_and_records_slash_event() {
+        let mut ledger = ComputeLedger::new();
+        let borrower = NodeId([0xE2u8; 32]);
+        let now = 2_000_000_000_u64;
+        ledger.grant_welcome_loan(borrower.clone(), "", now).expect("grant");
+        // No trade — borrower claimed eligibility and let it expire idle.
+        let after_expiry = now + crate::lending::WELCOME_LOAN_TERM_HOURS * 3_600_000 + 1;
+        assert_eq!(ledger.slash_events.len(), 0);
+        let report = ledger.settle_expired_welcome_loans(after_expiry);
+        assert_eq!(report.settled_count, 1);
+        assert_eq!(report.repaid_count, 0);
+        assert_eq!(report.defaulted_count, 1);
+        let grant = ledger.welcome_loans.get(&borrower).expect("present");
+        assert!(!grant.repaid);
+        assert!(grant.defaulted);
+        // A SlashEvent must have been appended with the wave-2 reason.
+        assert_eq!(ledger.slash_events.len(), 1);
+        let evt = &ledger.slash_events[0];
+        assert_eq!(evt.node_id, borrower);
+        assert_eq!(evt.reason, "welcome-loan-default");
+        assert_eq!(evt.burned_trm, 0); // no stake to burn
+        assert_eq!(evt.trust_penalty, 0.0);
+    }
+
+    #[test]
+    fn phase22_settle_skips_already_settled_grants() {
+        let mut ledger = ComputeLedger::new();
+        let borrower = NodeId([0xE3u8; 32]);
+        let now = 3_000_000_000_u64;
+        ledger.grant_welcome_loan(borrower.clone(), "", now).expect("grant");
+        let after_expiry = now + crate::lending::WELCOME_LOAN_TERM_HOURS * 3_600_000 + 1;
+        // First sweep defaults the borrower.
+        let r1 = ledger.settle_expired_welcome_loans(after_expiry);
+        assert_eq!(r1.settled_count, 1);
+        // Second sweep finds nothing new — `defaulted: true` filter excludes it.
+        let r2 = ledger.settle_expired_welcome_loans(after_expiry + 60_000);
+        assert_eq!(r2.settled_count, 0);
+        // Slash-event log is NOT inflated by the re-sweep.
+        assert_eq!(ledger.slash_events.len(), 1);
+    }
+
+    #[test]
+    fn phase22_settle_does_not_touch_grants_still_within_window() {
+        let mut ledger = ComputeLedger::new();
+        let borrower = NodeId([0xE4u8; 32]);
+        let now = 4_000_000_000_u64;
+        ledger.grant_welcome_loan(borrower.clone(), "", now).expect("grant");
+        // 1 second after grant — still within the 72-hour window.
+        let report = ledger.settle_expired_welcome_loans(now + 1_000);
+        assert_eq!(report.settled_count, 0);
+        let grant = ledger.welcome_loans.get(&borrower).expect("present");
+        assert!(!grant.repaid);
+        assert!(!grant.defaulted);
+    }
+
+    #[test]
+    fn phase22_eligibility_rejects_defaulted_grant() {
+        use crate::StakingPool;
+        let mut ledger = ComputeLedger::new();
+        let borrower = NodeId([0xE5u8; 32]);
+        let staking = StakingPool::new();
+        let now = 5_000_000_000_u64;
+        ledger.grant_welcome_loan(borrower.clone(), "", now).expect("grant");
+        let after_expiry = now + crate::lending::WELCOME_LOAN_TERM_HOURS * 3_600_000 + 1;
+        ledger.settle_expired_welcome_loans(after_expiry);
+        // Settlement defaulted the grant AND appended a
+        // `welcome-loan-default` SlashEvent. Both of those mean the
+        // eligibility verdict for this borrower along the stakeless
+        // path is `PreviouslySlashed` — the slash check fires before
+        // the welcome-loan check in `inference_eligibility`. The
+        // semantic property under test is "the WelcomeLoan branch is
+        // no longer taken" — whether that surfaces as
+        // PreviouslySlashed (with the slash event) or BootstrapWindow
+        // (without it) is policy. Phase 22 Wave 2 chose to record
+        // the slash event for auditability, so PreviouslySlashed is
+        // the expected outcome.
+        let verdict = ledger.inference_eligibility(&borrower, &staking, after_expiry);
+        assert_eq!(verdict, Err(InferenceIneligible::PreviouslySlashed));
+        // Defensive: also assert the WelcomeLoan branch did NOT fire.
+        assert!(!matches!(verdict, Ok(InferenceEligibility::WelcomeLoan { .. })));
+    }
+
+    #[test]
+    fn phase22_settle_skips_explicitly_repaid_grants() {
+        let mut ledger = ComputeLedger::new();
+        let borrower = NodeId([0xE6u8; 32]);
+        let now = 6_000_000_000_u64;
+        ledger.grant_welcome_loan(borrower.clone(), "", now).expect("grant");
+        // Pretend an explicit repay path (future Phase 23+) flipped
+        // `repaid = true` before expiry. The sweep must leave it alone.
+        if let Some(g) = ledger.welcome_loans.get_mut(&borrower) {
+            g.repaid = true;
+        }
+        let after_expiry = now + crate::lending::WELCOME_LOAN_TERM_HOURS * 3_600_000 + 1;
+        let report = ledger.settle_expired_welcome_loans(after_expiry);
+        assert_eq!(report.settled_count, 0);
+        assert_eq!(ledger.slash_events.len(), 0);
     }
 
     #[test]

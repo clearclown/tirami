@@ -454,6 +454,12 @@ impl TiramiNode {
         // trust-penalty threshold.
         self.spawn_slashing_loop();
 
+        // Phase 22 Wave 2 — periodic welcome-loan settlement sweep.
+        // Flips expired grants to `repaid` (productively used) or
+        // `defaulted` (zero contribution). Default 300s like the
+        // slashing loop.
+        self.spawn_welcome_settle_loop();
+
         // Phase 17 Wave 4.3 — spawn the trade-log checkpoint loop so
         // in-memory `trade_log` memory stays bounded over long
         // operation. Seals trades older than
@@ -759,6 +765,56 @@ impl TiramiNode {
                         let l = ledger.lock().await;
                         if let Err(e) = l.save_to_path(path) {
                             tracing::error!("Failed to persist slash events: {}", e);
+                        }
+                    }
+                }
+            }
+        });
+    }
+
+    /// Phase 22 Wave 2 — spawn the welcome-loan settlement sweep.
+    ///
+    /// Runs every `welcome_loan_settle_interval_secs` (default 300 s,
+    /// clamped ≥ 60 s). On each tick, calls
+    /// `ComputeLedger::settle_expired_welcome_loans(now_ms)` and
+    /// persists the updated ledger if a path is configured. Logs
+    /// the report at `INFO` when anything was settled.
+    fn spawn_welcome_settle_loop(&self) {
+        let ledger = self.ledger.clone();
+        let ledger_path = self.config.ledger_path.clone();
+        let interval_secs = self.config.welcome_loan_settle_interval_secs.max(60);
+
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(std::time::Duration::from_secs(interval_secs));
+            // Skip the immediate first fire; let the node bootstrap.
+            ticker.tick().await;
+
+            loop {
+                ticker.tick().await;
+
+                let now_ms = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis() as u64)
+                    .unwrap_or(0);
+
+                let report = {
+                    let mut l = ledger.lock().await;
+                    l.settle_expired_welcome_loans(now_ms)
+                };
+
+                if report.settled_count > 0 {
+                    tracing::info!(
+                        "welcome-loan settle: settled={} repaid={} defaulted={}",
+                        report.settled_count,
+                        report.repaid_count,
+                        report.defaulted_count
+                    );
+                    if let Some(path) = ledger_path.as_ref() {
+                        let l = ledger.lock().await;
+                        if let Err(e) = l.save_to_path(path) {
+                            tracing::warn!(
+                                "failed to persist ledger after welcome-loan settle: {e}"
+                            );
                         }
                     }
                 }

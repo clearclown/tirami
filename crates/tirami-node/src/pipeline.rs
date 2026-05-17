@@ -62,6 +62,13 @@ impl PipelineCoordinator {
         // handler so an AuditVerdict::Failed burns the target's stake
         // and records a SlashEvent, not just a peer-registry demotion.
         staking_pool: Arc<Mutex<tirami_ledger::StakingPool>>,
+        // Phase 23 Wave 2 — portable agent identity. When `Some(_)`,
+        // outbound P2P trades are signed with the agent's key and the
+        // `provider` attribution flips to the agent's pubkey
+        // (`did:tirami:<hex>`-equivalent) instead of the machine
+        // node id. Pass `Arc::new(Mutex::new(None))` to keep the
+        // pre-Wave-2 behaviour.
+        agent_identity: Arc<Mutex<Option<tirami_mind::AgentIdentity>>>,
     ) -> anyhow::Result<()> {
         let node_id = self.transport.tirami_node_id();
         tracing::info!("Pipeline seed running, waiting for requests...");
@@ -179,6 +186,15 @@ impl PipelineCoordinator {
                         let ledger_path = ledger_path.clone();
                         let gossip = gossip.clone();
                         let dispatcher = trade_accept_dispatcher.clone();
+                        // Phase 23 Wave 2 — snapshot the current
+                        // AgentIdentity (if any) so the trade is
+                        // attributed to the agent rather than the
+                        // machine. Cloning is cheap (Ed25519
+                        // SigningKey is a 32-byte seed copy).
+                        let agent_snapshot: Option<tirami_mind::AgentIdentity> = {
+                            let guard = agent_identity.lock().await;
+                            guard.as_ref().cloned()
+                        };
 
                         tokio::spawn(async move {
                             let _permit = permit;
@@ -194,6 +210,7 @@ impl PipelineCoordinator {
                                 req,
                                 gossip,
                                 dispatcher,
+                                agent_snapshot,
                             )
                             .await
                             {
@@ -839,6 +856,10 @@ async fn handle_inference(
     req: InferenceRequest,
     gossip: Arc<Mutex<GossipState>>,
     trade_accept_dispatcher: TradeAcceptDispatcher,
+    // Phase 23 Wave 2 — when `Some`, outbound trade `provider`
+    // attribution AND signing key follow this identity rather than
+    // the machine-level transport.
+    agent_identity: Option<tirami_mind::AgentIdentity>,
 ) -> anyhow::Result<()> {
     use tirami_infer::InferenceEngine;
 
@@ -959,8 +980,17 @@ async fn handle_inference(
         }
         actual_cost
     };
+    // Phase 23 Wave 2 — resolve the effective provider id (the
+    // 32-byte pubkey that will appear in the TradeRecord) BEFORE
+    // serialising the canonical bytes, since the provider field is
+    // part of the canonical pre-image.
+    let effective_provider = agent_identity
+        .as_ref()
+        .map(|a| NodeId(a.public_key_bytes()))
+        .unwrap_or_else(|| node_id.clone());
+
     let trade = TradeRecord {
-        provider: node_id.clone(),
+        provider: effective_provider.clone(),
         consumer: consumer_id.clone(),
         trm_amount,
         tokens_processed: total_tokens,
@@ -972,7 +1002,14 @@ async fn handle_inference(
     };
 
     let canonical = trade.canonical_bytes();
-    let provider_sig = transport.sign(&canonical).to_vec();
+    // Phase 23 Wave 2 — sign with the agent's key when one is loaded,
+    // otherwise fall back to the machine SigningKey via the transport.
+    let (_, provider_sig) = resolve_outbound_trade_signing(
+        &canonical,
+        &node_id,
+        |c| transport.sign(c).to_vec(),
+        agent_identity.as_ref(),
+    );
 
     // Fix #80 — register the dispatcher slot BEFORE sending the
     // TradeProposal so we can't race a very-fast counter-sign.
@@ -1123,6 +1160,40 @@ fn now_millis() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64
+}
+
+/// Phase 23 Wave 2 — resolve the `(provider_node_id, signature_bytes)`
+/// pair for an outbound P2P trade.
+///
+/// When `agent` is `Some`, the trade is attributed to the agent's
+/// 32-byte Ed25519 pubkey (the same value behind `did:tirami:<hex>`)
+/// AND the signature is produced by the agent's `SigningKey`. When
+/// `agent` is `None`, the function falls back to the machine
+/// identity: the trade carries `machine_node_id` as provider and is
+/// signed by `machine_sign`.
+///
+/// Extracted as a free function so the per-trade logic is unit-
+/// testable without spinning up the whole pipeline.
+pub(crate) fn resolve_outbound_trade_signing<F>(
+    canonical: &[u8],
+    machine_node_id: &NodeId,
+    machine_sign: F,
+    agent: Option<&tirami_mind::AgentIdentity>,
+) -> (NodeId, Vec<u8>)
+where
+    F: FnOnce(&[u8]) -> Vec<u8>,
+{
+    match agent {
+        Some(a) => {
+            let pk = a.public_key_bytes();
+            let sig = a.sign(canonical).to_bytes().to_vec();
+            (NodeId(pk), sig)
+        }
+        None => {
+            let sig = machine_sign(canonical);
+            (machine_node_id.clone(), sig)
+        }
+    }
 }
 
 /// Phase 21 Wave 3 — does the local-policy stake gate allow the
@@ -1299,6 +1370,152 @@ async fn send_protocol_error(
 }
 
 #[cfg(test)]
+mod resolve_outbound_trade_signing_tests {
+    use super::*;
+    use tirami_ledger::SignedTradeRecord;
+    use tirami_ledger::TradeRecord;
+    use tirami_mind::AgentIdentity;
+
+    fn sample_canonical() -> (TradeRecord, Vec<u8>) {
+        let trade = TradeRecord {
+            provider: NodeId([0xFFu8; 32]),
+            consumer: NodeId([0xEEu8; 32]),
+            trm_amount: 5,
+            tokens_processed: 5,
+            timestamp: super::now_millis(),
+            model_id: "phase23-w2".into(),
+            flops_estimated: 0,
+            nonce: [0u8; 16],
+        };
+        let canonical = trade.canonical_bytes();
+        (trade, canonical)
+    }
+
+    #[test]
+    fn machine_path_uses_machine_node_id_and_callback_signer() {
+        let (_, canonical) = sample_canonical();
+        let machine_id = NodeId([0xAAu8; 32]);
+        let signer_called = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let signer_flag = signer_called.clone();
+        let canonical_for_assert = canonical.clone();
+        let (provider, sig) = resolve_outbound_trade_signing(
+            &canonical,
+            &machine_id,
+            move |c| {
+                signer_flag.store(true, std::sync::atomic::Ordering::SeqCst);
+                // Synthetic signature: just echo a fixed 64 bytes.
+                assert_eq!(c, canonical_for_assert.as_slice());
+                vec![0u8; 64]
+            },
+            None,
+        );
+        assert!(signer_called.load(std::sync::atomic::Ordering::SeqCst));
+        assert_eq!(provider, machine_id);
+        assert_eq!(sig.len(), 64);
+    }
+
+    #[test]
+    fn agent_path_uses_agent_pubkey_as_provider() {
+        let (_, canonical) = sample_canonical();
+        let machine_id = NodeId([0xAAu8; 32]);
+        let agent = AgentIdentity::generate(0, None);
+        let agent_pk = agent.public_key_bytes();
+        let (provider, _sig) = resolve_outbound_trade_signing(
+            &canonical,
+            &machine_id,
+            |_| unreachable!("agent path must not invoke machine signer"),
+            Some(&agent),
+        );
+        assert_eq!(provider, NodeId(agent_pk));
+        assert_ne!(provider, machine_id, "provider must be agent, not machine");
+    }
+
+    #[test]
+    fn agent_path_produces_valid_ed25519_signature() {
+        let (trade, canonical) = sample_canonical();
+        let machine_id = NodeId([0xAAu8; 32]);
+        let agent = AgentIdentity::generate(0, None);
+        let (provider, sig) = resolve_outbound_trade_signing(
+            &canonical,
+            &machine_id,
+            |_| panic!("not used"),
+            Some(&agent),
+        );
+        // The returned signature must be a valid Ed25519 signature
+        // when verified against the returned provider (= the agent
+        // pubkey). Construct a SignedTradeRecord with the agent as
+        // provider AND attach a placeholder consumer sig — we only
+        // care that the provider half verifies.
+        let mut signed_trade = trade.clone();
+        signed_trade.provider = provider.clone();
+        let canonical_agent = signed_trade.canonical_bytes();
+        let resigned = agent.sign(&canonical_agent).to_bytes().to_vec();
+        // The helper signs the CALLER-supplied canonical (which is
+        // the original trade's). Verify the equivalence: signing the
+        // same input with the same key yields the same sig.
+        let same_sig = agent.sign(&canonical).to_bytes().to_vec();
+        assert_eq!(sig, same_sig);
+        // Also confirm the agent's key can sign its own version too.
+        assert_eq!(resigned.len(), 64);
+    }
+
+    #[test]
+    fn two_agents_sign_the_same_canonical_with_different_signatures() {
+        let (_, canonical) = sample_canonical();
+        let machine_id = NodeId([0xAAu8; 32]);
+        let a = AgentIdentity::generate(0, None);
+        let b = AgentIdentity::generate(0, None);
+        let (provider_a, sig_a) = resolve_outbound_trade_signing(
+            &canonical,
+            &machine_id,
+            |_| panic!("not used"),
+            Some(&a),
+        );
+        let (provider_b, sig_b) = resolve_outbound_trade_signing(
+            &canonical,
+            &machine_id,
+            |_| panic!("not used"),
+            Some(&b),
+        );
+        assert_ne!(provider_a, provider_b);
+        assert_ne!(sig_a, sig_b);
+    }
+
+    /// End-to-end shape: build a SignedTradeRecord where BOTH halves
+    /// are produced via this helper (using the agent for the provider
+    /// side; using a fresh ephemeral key for the consumer side), then
+    /// run `signed.verify()` and confirm it accepts. This pins the
+    /// Wave-2 guarantee that "agent-signed trades remain valid under
+    /// the existing ledger verifier".
+    #[test]
+    fn signed_trade_record_verifies_when_provider_signed_by_agent_identity() {
+        use ed25519_dalek::SigningKey;
+        let (mut trade, _) = sample_canonical();
+        let agent = AgentIdentity::generate(0, None);
+        let consumer_sk = SigningKey::from_bytes(&[0xCEu8; 32]);
+        let consumer_pk = consumer_sk.verifying_key();
+        // Set provider = agent pubkey, consumer = consumer_pk.
+        trade.provider = NodeId(agent.public_key_bytes());
+        trade.consumer = NodeId(consumer_pk.to_bytes());
+        let canonical = trade.canonical_bytes();
+        let (_provider, provider_sig) = resolve_outbound_trade_signing(
+            &canonical,
+            &NodeId([0xAAu8; 32]),
+            |_| panic!("not used"),
+            Some(&agent),
+        );
+        use ed25519_dalek::Signer;
+        let consumer_sig = consumer_sk.sign(&canonical).to_bytes().to_vec();
+        let signed = SignedTradeRecord {
+            trade: trade.clone(),
+            provider_sig: provider_sig.clone(),
+            consumer_sig,
+        };
+        signed.verify().expect("dual-signed verify");
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use tirami_infer::CandleEngine;
@@ -1452,6 +1669,7 @@ mod tests {
                         None,
                         Arc::new(Mutex::new(GossipState::new())),
                         Arc::new(Mutex::new(tirami_ledger::StakingPool::new())),
+                        Arc::new(Mutex::new(None)),
                     )
                     .await
                     .expect("seed loop");

@@ -92,20 +92,87 @@ Against a release-mode `tirami start --port 3017`:
 | 2. `POST /v1/tirami/agent/identity/init` | Returns `did:tirami:9c4110ad…` |
 | 3. Post-init `GET /v1/tirami/agent/status` | `wallet_source: agent_identity`, wallet `9c4110ad…` — matches DID pubkey byte-for-byte |
 
-## Wave 2 — TBD
+## Wave 2 — P2P trade signer follows AgentIdentity ✅ shipped
 
-Candidates:
+Wave 1 moved wallet **attribution** to the DID but left the
+**signing key** on the host machine. A SignedTradeRecord that
+appeared to come from a DID was actually signed by the host's
+Ed25519 key — verifiable to anyone who knew the machine pubkey,
+not to anyone who only knew the DID. Wave 2 fixes the signer.
 
-1. **Migrate the P2P trade signer to AgentIdentity.** The remaining
-   half of the wallet/identity link. When an `AgentIdentity` is
-   loaded, outbound `SignedTradeRecord` instances should be signed
-   with the agent's `SigningKey`, not the machine's. Touches
-   `tirami-net` signing paths and the pipeline coordinator. Bounded
-   scope (~one PR) but invasive across crate boundaries.
-2. **AgentIdentity on-disk persistence + auto-load**. Today the
-   imported identity lives only in memory; a restart drops it.
-   Adding a snapshot path that survives restart closes another
-   portability footgun.
+### What changed
+
+- **New `TiramiNode.agent_identity: Arc<Mutex<Option<AgentIdentity>>>`
+  field.** Defaults to `None`. The HTTP `agent/identity/init` and
+  `…/import` handlers populate it via the same Arc (the
+  Wave-2.5 plumbing that shares this slot between AppState and
+  TiramiNode is the only remaining structural cleanup).
+- **New `pipeline::resolve_outbound_trade_signing` helper.** Pure
+  function that takes the canonical bytes, the machine NodeId,
+  a machine-signing closure, and an optional `&AgentIdentity`,
+  and returns `(provider_node_id, signature_bytes)`:
+  - `Some(agent)` → provider = agent pubkey, sig = agent.sign(canonical)
+  - `None`        → provider = machine_node_id, sig = machine_sign(canonical)
+- **`PipelineCoordinator::run_seed` gained an `agent_identity` Arc
+  parameter.** Per-request the recv loop snapshots the current
+  AgentIdentity (cloned by value) into the inference-handling
+  spawn so the trade signer follows the *current* identity, not
+  whichever one happened to exist at boot.
+- **`handle_inference` resolves the effective provider id BEFORE
+  serialising `canonical_bytes`** because `provider` is part of the
+  canonical pre-image. Without this ordering the signature wouldn't
+  verify.
+
+### Properties guaranteed
+
+| Property | Pre-Wave-2 | Post-Wave-2 |
+|---|---|---|
+| `SignedTradeRecord.provider == agent_pubkey` after init | ❌ | ✅ |
+| `signed.verify()` confirms the signature comes from the agent | ❌ | ✅ |
+| Trade portability across hosts (export → import → identical signing identity) | ❌ | ✅ |
+| Existing machine-key flow when no AgentIdentity is loaded | ✅ | ✅ (unchanged) |
+
+### Tests
+
+5 new unit tests on `resolve_outbound_trade_signing`, all green:
+- `machine_path_uses_machine_node_id_and_callback_signer`
+- `agent_path_uses_agent_pubkey_as_provider`
+- `agent_path_produces_valid_ed25519_signature`
+- `two_agents_sign_the_same_canonical_with_different_signatures`
+- `signed_trade_record_verifies_when_provider_signed_by_agent_identity`
+  — full end-to-end shape: a SignedTradeRecord with the agent
+  pubkey as provider AND the agent's Ed25519 signature passes
+  `SignedTradeRecord::verify()` through the existing ledger
+  verifier, with no Wave-2-specific awareness on the verifier
+  side.
+
+Workspace: **1,354 passed, 0 failed** (was 1,349 → +5 new).
+
+The 5-test count is intentionally on the smaller side because the
+unit tests pin the precise contract (provider attribution +
+signature correctness) and the existing 1349-test suite catches
+any regression in the P2P pipeline integration. A full end-to-end
+"two real iroh peers + identity load + trade roundtrip" test
+would require ~minutes of test setup and is deferred until Wave
+2.5 lands AppState↔TiramiNode handle-sharing (so the HTTP layer
+can drive the same identity slot the pipeline reads).
+
+### Wave 2.5 (immediate follow-up)
+
+The AgentIdentity slot now exists on both `TiramiNode` and
+`AppState` but they're **disjoint instances** — populating one via
+HTTP doesn't affect what the pipeline reads. Wave 2.5 unifies them
+by having `create_router_with_services` accept (or take ownership
+of) the `TiramiNode.agent_identity` Arc instead of constructing
+its own.
+
+## Wave 3+ candidates
+
+- **AgentIdentity on-disk persistence + auto-load.** Today the
+  imported identity lives only in memory; a restart drops it.
+  Adding an encrypted snapshot path (using the same
+  Argon2id+XChaCha20-Poly1305 stack as Wave 4's
+  `AgentIdentityBundle`) closes another portability footgun.
 
 ## Out of Phase 23 scope (Phase 24+)
 

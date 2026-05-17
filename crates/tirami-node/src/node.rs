@@ -50,6 +50,13 @@ pub struct TiramiNode {
     /// Exposed via `/v1/tirami/agent/status` as `loop.{ticks, last_action,
     /// last_tick_ms}`.
     pub agent_loop_stats: Arc<Mutex<AgentLoopStats>>,
+    /// Phase 23 Wave 2 — portable `AgentIdentity` slot owned by the
+    /// running node. When `Some`, outbound P2P trade records use the
+    /// agent's pubkey as `provider` AND the trade is signed with the
+    /// agent's Ed25519 `SigningKey` instead of the host machine's.
+    /// Defaults to `None` on construction so existing behaviour is
+    /// preserved when no identity is loaded.
+    pub agent_identity: Arc<Mutex<Option<tirami_mind::AgentIdentity>>>,
     heartbeat_started: bool,
 }
 
@@ -149,6 +156,10 @@ impl TiramiNode {
             chain_client: Arc::new(tirami_anchor::MockChainClient::new()),
             personal_agent: Arc::new(Mutex::new(None)),
             agent_loop_stats: Arc::new(Mutex::new(AgentLoopStats::new())),
+            // Phase 23 Wave 2 — empty by default; populated by the
+            // HTTP `agent/identity/init` or `…/import` flow once
+            // Wave 2.5 wires the shared handle into AppState.
+            agent_identity: Arc::new(Mutex::new(None)),
             heartbeat_started: false,
         }
     }
@@ -499,6 +510,9 @@ impl TiramiNode {
                 self.config.ledger_path.clone(),
                 self.gossip.clone(),
                 self.staking_pool.clone(),
+                // Phase 23 Wave 2 — propagate the AgentIdentity slot
+                // so trade signing follows the DID when one is loaded.
+                self.agent_identity.clone(),
             )
             .await
             .map_err(|e| tirami_core::TiramiError::NetworkError(format!("seed: {e}")))?;

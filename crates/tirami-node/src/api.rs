@@ -2517,6 +2517,9 @@ async fn forge_protocol(
         "features": local_protocol_features(&state),
         "proof_policy": state.config.proof_policy,
         "zkml_backend": state.config.zkml_backend,
+        // Phase 24 Wave 5.1 — machine-readable strength taxonomy
+        // so agents can route trades to the strongest peer.
+        "zkml_strength": tirami_core::zkml_backend_strength_tag(&state.config.zkml_backend),
         "transport": "iroh-quic-noise",
         "wire_codec": "bincode",
         "price_signal": {

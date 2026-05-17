@@ -21,3 +21,9 @@ tracing = { workspace = true }
 async-trait = { workspace = true }
 tokio = { workspace = true }
 reqwest = { workspace = true }
+# Phase 20 Wave 4 — portable agent identity primitives.
+ed25519-dalek = { workspace = true }
+rand = { workspace = true }
+hex = { workspace = true }
+chacha20poly1305 = { workspace = true }
+argon2 = { workspace = true }

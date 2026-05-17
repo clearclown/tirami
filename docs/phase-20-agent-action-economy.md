@@ -249,15 +249,63 @@ ceiling, (2) PersonalAgent's `daily_spend_limit_trm`,
   failed-trade with a reverse-direction `TradeRecord`) is the obvious
   follow-up but needs care to keep audit trails sound.
 
-### Wave 4 — Identity portability
+### Wave 4 — Identity portability ✅ shipped
 
-- **Detach `AgentIdentity` from `NodeId`.** An agent has its own
-  Ed25519 keypair, separate from the machine's. Trades are signed by
-  the agent key; the node key only signs the transport.
-- **`tirami agent export` / `tirami agent import`** — move an agent
-  identity and its sealed reputation receipts to another node.
-- **Agent DID**: emit `did:tirami:<base32>` so external systems can
-  cite an agent stably.
+`tirami_mind::AgentIdentity` is now a self-contained Ed25519 keypair
+separate from `NodeId` (which remains the machine key). An agent that
+holds an `AgentIdentity` can move across hosts — export from node A,
+import on node B, same DID continues to refer to the same actor.
+
+- **DID format**: `did:tirami:<64-char-hex-pubkey>`. Deliberately
+  hex rather than multibase so the same 64-character public key string
+  that already shows up in `/v1/tirami/trades` is the DID suffix —
+  no new alphabet needed.
+- **`GET /v1/tirami/agent/identity`** — public DID + public-key +
+  display-name + created-at. Never the private key.
+- **`POST /v1/tirami/agent/identity/init`** — idempotent bootstrap.
+  Generates a fresh Ed25519 keypair; subsequent calls return the
+  existing identity untouched.
+- **`POST /v1/tirami/agent/identity/export`** — `{ passphrase }` →
+  encrypted [`AgentIdentityBundle`]. The KDF is Argon2id
+  (m=64 MB, t=3, p=1, 32-byte output) and the AEAD is
+  XChaCha20-Poly1305 with a 24-byte nonce. Bundle carries
+  `schema_version=1`, `kdf="argon2id"`, `aead="xchacha20poly1305"`,
+  salt+nonce in plaintext (standard practice for password-derived
+  AEAD), and the ciphertext over the 32-byte seed. Passphrase must be
+  ≥ 8 characters; shorter is rejected.
+- **`POST /v1/tirami/agent/identity/import`** — decrypts a bundle and
+  replaces this node's loaded identity. AEAD authentication fails
+  loudly on wrong passphrase. After import a defense-in-depth check
+  verifies the recovered seed produces the public key the bundle
+  advertised.
+- **Discovery manifest** — `/.well-known/tirami-agent.json` now
+  carries an `agent_did` field (null when no identity is loaded)
+  alongside the existing `node_id`.
+- **Signature verification helper**: `AgentIdentity::verify_with_did`
+  lets any party verify a signed claim against a DID without needing
+  the holder's `AgentIdentity` instance.
+
+**Wave 4 follow-ups**:
+
+- **On-disk persistence of the loaded identity** — currently
+  in-memory only; restart drops it. Will reuse the existing
+  `personal_agent_state_path` snapshot mechanism but with an
+  additional `agent_identity.json` file (encrypted at rest under
+  the same passphrase scheme used for export).
+- **`tirami agent export` / `import` CLI subcommands** — the HTTP
+  surface is in place; CLI surface deferred (the existing tirami-cli
+  has uncommitted changes from a separate worker-inbox branch, and
+  the merge order needs care).
+- **Reputation receipts** — Wave 4 ships the keypair; signed
+  reputation observations that follow the agent across nodes
+  (the "sealed reputation receipts" line in the original design
+  bullet) land as a follow-up once `tirami-ledger`'s reputation
+  system can be re-keyed off `AgentIdentity` rather than `NodeId`.
+- **Linking PersonalAgent.wallet to AgentIdentity** — today the
+  `wallet: NodeId` field on PersonalAgent points at the machine
+  key. The right migration is for the wallet to derive from
+  AgentIdentity when one is loaded. Deferred to keep Wave 4 strictly
+  additive.
 
 ### Wave 5 — Autonomous mesh join
 

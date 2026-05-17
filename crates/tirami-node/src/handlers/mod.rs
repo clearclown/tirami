@@ -1,4 +1,5 @@
 pub mod agent_discovery;
+pub mod agent_identity;
 pub mod agent_message;
 pub mod agora;
 pub mod anchor;

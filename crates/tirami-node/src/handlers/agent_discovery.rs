@@ -21,6 +21,11 @@ pub struct AgentManifest {
     pub schema_version: &'static str,
     pub protocol: &'static str,
     pub node_id: String,
+    /// Phase 20 Wave 4 — DID of the local agent identity (if one has
+    /// been bootstrapped on this node). When absent the node is
+    /// either headless or has not yet had
+    /// `POST /v1/tirami/agent/identity/init` called.
+    pub agent_did: Option<String>,
     pub currency: CurrencySpec,
     pub actions: Vec<ActionDescriptor>,
     pub discovery: DiscoveryLinks,
@@ -67,6 +72,13 @@ pub struct MaintainerStance {
 pub(crate) async fn well_known_agent_manifest(
     State(state): State<AppState>,
 ) -> Json<AgentManifest> {
+    // Wave 4: expose the local agent's DID if one has been bootstrapped.
+    // Read without blocking; if the lock is contended the manifest
+    // reports `None` for this request (safe default).
+    let agent_did = match state.agent_identity.try_lock() {
+        Ok(guard) => guard.as_ref().map(|id| id.did()),
+        Err(_) => None,
+    };
     let actions = vec![
         ActionDescriptor {
             name: "inference",
@@ -125,6 +137,34 @@ pub(crate) async fn well_known_agent_manifest(
             auth_required: true,
         },
         ActionDescriptor {
+            name: "agent_identity_get",
+            endpoint: "/v1/tirami/agent/identity",
+            method: "GET",
+            pricing: "free (public-info only)",
+            auth_required: true,
+        },
+        ActionDescriptor {
+            name: "agent_identity_init",
+            endpoint: "/v1/tirami/agent/identity/init",
+            method: "POST",
+            pricing: "free (idempotent; existing identity preserved)",
+            auth_required: true,
+        },
+        ActionDescriptor {
+            name: "agent_identity_export",
+            endpoint: "/v1/tirami/agent/identity/export",
+            method: "POST",
+            pricing: "free; passphrase-encrypted bundle (Argon2id + XChaCha20-Poly1305)",
+            auth_required: true,
+        },
+        ActionDescriptor {
+            name: "agent_identity_import",
+            endpoint: "/v1/tirami/agent/identity/import",
+            method: "POST",
+            pricing: "free; replaces this node's loaded identity",
+            auth_required: true,
+        },
+        ActionDescriptor {
             name: "agent_task",
             endpoint: "/v1/tirami/agent/task",
             method: "POST",
@@ -179,6 +219,7 @@ pub(crate) async fn well_known_agent_manifest(
         schema_version: "1.0",
         protocol: "tirami",
         node_id: hex::encode(state.local_node_id.0),
+        agent_did,
         currency: CurrencySpec {
             unit: "TRM",
             anchor_flops_per_unit: FLOPS_PER_CU,

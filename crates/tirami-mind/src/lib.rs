@@ -15,10 +15,12 @@ pub mod meta_optimizer;
 pub mod cu_paid_optimizer;
 pub mod cycle;
 pub mod agent;
+pub mod agent_identity;
 pub mod federated;
 pub mod personal_agent;
 
 pub use errors::MindError;
+pub use agent_identity::{AgentIdentity, AgentIdentityBundle, AgentIdentityError, DID_PREFIX};
 pub use types::{BenchmarkResult, CycleDecision, ImprovementCycle, ImprovementProposal, MindAgentSnapshot};
 pub use harness::Harness;
 pub use budget::TrmBudget;

@@ -156,6 +156,9 @@ impl TiramiNode {
         let initial_proof_policy = tirami_ledger::zk::ProofPolicy::parse(&config.proof_policy)
             .unwrap_or(tirami_ledger::zk::ProofPolicy::Disabled);
         let current_proof_policy = Arc::new(tokio::sync::RwLock::new(initial_proof_policy));
+        // Phase 25 C4 — read gossip_max_seen BEFORE moving `config`
+        // into `self`.
+        let gossip_max_seen = config.gossip_max_seen;
 
         Self {
             config,
@@ -165,7 +168,9 @@ impl TiramiNode {
             advertised_topology: Arc::new(Mutex::new(None)),
             transport: None,
             cluster: None,
-            gossip: Arc::new(Mutex::new(GossipState::new())),
+            gossip: Arc::new(Mutex::new(tirami_net::GossipState::with_capacity(
+                gossip_max_seen,
+            ))),
             bank: Arc::new(Mutex::new(bank)),
             marketplace: Arc::new(Mutex::new(marketplace)),
             mind_agent: Arc::new(Mutex::new(mind_agent)),

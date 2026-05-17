@@ -307,12 +307,64 @@ import on node B, same DID continues to refer to the same actor.
   AgentIdentity when one is loaded. Deferred to keep Wave 4 strictly
   additive.
 
-### Wave 5 — Autonomous mesh join
+### Wave 5 — Autonomous mesh join ✅ shipped
 
-- **`tirami agent bootstrap`** — generate keys, pay (or be sponsored
-  for) the welcome loan, and join the mesh without a human-shared
-  bearer token. Auth migrates from "shared secret" to "stake-required
-  ratchet" (already designed in Phase 18.2 but not enforced).
+The blocker for fully-autonomous AI agents on Tirami used to be:
+a human had to pre-share `TIRAMI_API_TOKEN` with every node the
+agent wanted to use. Wave 5 swaps that for a Sign-In-With-Ed25519
+challenge protocol:
+
+- **`GET /v1/tirami/auth/challenge`** — public, no auth. Server
+  returns `{ challenge_hex, expires_at_ms, server_node_id, ttl_secs }`
+  where `challenge_hex` is a fresh 32-byte random nonce. TTL: 300 s.
+- **`POST /v1/tirami/auth/verify`** — public, no auth. Body:
+  `{ did, challenge_hex, signature_hex }`. Server (i) consumes the
+  challenge — single-use, so a replay can never succeed —
+  (ii) parses the DID's embedded Ed25519 public key,
+  (iii) verifies the signature against that pubkey + the
+  challenge bytes, then issues a short-lived bearer token via
+  the existing `Phase 17 Wave 1.5` `TokenStore`. The token's
+  `node_id` is the DID's public key, so trades + metrics attribute
+  to the right agent rather than to whatever shared admin secret
+  the operator happened to issue.
+- **Session lifetime**: 3600 s by default. Long enough that a
+  paused-then-resumed agent loop doesn't have to re-handshake on
+  every step; short enough that revocation propagates quickly.
+- **No new transport** — the existing
+  `Authorization: Bearer <token>` middleware accepts these tokens
+  unchanged because they go through the same `TokenStore`.
+- **Discovery manifest** advertises both endpoints with
+  `auth_required: false`; an agent discovering Tirami for the first
+  time learns from one unauthenticated GET that it can sign in via
+  its DID.
+
+Properties guaranteed:
+
+- **No human-shared secret** is required for an agent to join. The
+  agent onboards purely with cryptographic material it generated
+  itself in Wave 4.
+- **Replay protection** is structural: the challenge entry is
+  removed from the store before the signature is even verified, so
+  even a valid challenge cannot be reused.
+- **DID-keyed audit trail**: every API call made under a DID-issued
+  token attributes to the DID's pubkey on the ledger and Prometheus.
+
+**Wave 5 follow-ups**:
+
+- **Stake-required mining enforcement**. The `can_provide_inference`
+  function exists in `tirami-ledger` from Phase 18.2; it is not yet
+  consulted in the trade-recording path. Wave 5.5 turns it on so
+  that "joined the mesh" is a real economic step (must hold ≥
+  `MIN_PROVIDER_STAKE` either by self-stake or via the welcome loan),
+  not just a cryptographic step.
+- **Welcome-loan auto-claim**. A fresh DID that has just verified
+  should be able to claim a welcome loan directly via its session
+  token rather than requiring an admin to grant one out of band.
+- **Persistence of the issued challenge store**. Today the store is
+  in-memory, which is fine because challenges are 5-min ephemeral.
+  If we ever extend the protocol to support delayed signatures
+  (e.g. signed-offline-then-submitted-later), the store will need
+  to survive restart.
 
 ### Estimated scope
 

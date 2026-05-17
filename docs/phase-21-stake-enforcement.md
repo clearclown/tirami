@@ -109,18 +109,66 @@ Error response shape on duplicate claim:
 
 Mapped to status codes 409 / 410 / 429 respectively.
 
-### Wave 3 — Stake gate on the P2P trade-recording path
+### Wave 3 — Stake gate on the P2P gossip-receive path ✅ shipped
 
-The Wave 1 / Wave 2 gate sits on the HTTP serving path. The P2P
-`broadcast_trade` / `handle_trade_gossip` path in `pipeline.rs` is
-where a gossiped trade from a remote provider lands locally. Wave 3
-adds the gate there too:
+Wave 1 + Wave 2 sit on the HTTP serving path. Wave 3 adds the same
+verdict to the P2P `Payload::TradeGossip` handler in
+`pipeline.rs`'s `run_seed` recv loop. The semantics are
+intentionally local-only:
 
-- When receiving a gossiped signed trade, also verify the provider
-  was eligible at the time of trade (per the receiver's view of
-  staking + slashing).
-- Reject the trade record if not — keeps the local ledger free of
-  inflation from Sybil-staked nodes elsewhere on the mesh.
+- A denied gossip trade refuses **local recording only**. The
+  dual-signed bilateral agreement between the remote provider and
+  consumer is unaffected; other nodes with different policy may
+  still record it.
+- The gate is conditional on `Config.stake_gate_enabled` (default
+  `true` since Wave 2). Operators that explicitly opted out keep
+  the pre-Phase-21 permissive gossip behaviour.
+
+Implementation: a new pure helper
+`pipeline::check_gossip_trade_eligibility` wraps
+`ComputeLedger::inference_eligibility` and is consulted before
+`execute_signed_trade` runs on a gossip-received signed trade:
+
+```rust
+pub(crate) fn check_gossip_trade_eligibility(
+    ledger: &ComputeLedger,
+    staking: &StakingPool,
+    provider: &NodeId,
+    now_ms: u64,
+    gate_enabled: bool,
+) -> Result<(), InferenceIneligible>
+```
+
+A denial logs at `WARN` level with the provider's hex id + the
+reason; the trade is dropped silently from the perspective of the
+gossip helper. The wire-level signature verification + nonce dedup
+that the existing path already does run *after* the gate, so a
+malformed or replayed trade still gets caught by those layers.
+
+**Verdict matrix at the gossip-receive boundary (gate_enabled = true)**:
+
+| Provider state | Verdict | Recorded locally? |
+|---|---|---|
+| Staked ≥ MIN_PROVIDER_STAKE_TRM | Ok(Staked) | yes |
+| Active welcome loan (unrepaid, unexpired) | Ok(WelcomeLoan) | yes |
+| Stakeless cap not yet reached | Ok(BootstrapWindow) | yes |
+| Previously slashed | Err(PreviouslySlashed) | **no** |
+| Past cap, no stake, no loan | Err(StakeRequired) | **no** |
+
+## Phase 21 closing summary
+
+After Wave 3, the stake-required mining property the README
+advertised as 🟡 *scaffolded* in Wave 4 is now 🟢 *enforced* across
+both the HTTP serving path and the P2P gossip-receive path. A
+single eligibility predicate
+(`ComputeLedger::inference_eligibility`) is the source of truth;
+both ingress paths consult it before recording.
+
+What this Phase explicitly does NOT do (Phase 22 territory):
+- zkML real backends (`ezkl` / `risc0`).
+- NIP-90 Schnorr signing for cross-mesh advertisements.
+- Welcome-loan auto-repayment.
+- Portable reputation receipts across DID migrations.
 
 ---
 

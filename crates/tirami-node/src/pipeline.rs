@@ -1,5 +1,8 @@
 use tirami_core::{Config, ModelManifest, NodeId, PipelineTopology};
-use tirami_ledger::{ComputeLedger, LoanRecord, LoanStatus, SignedTradeRecord, TradeRecord};
+use tirami_ledger::{
+    ComputeLedger, InferenceIneligible, LoanRecord, LoanStatus, SignedTradeRecord, StakingPool,
+    TradeRecord,
+};
 use tirami_net::{ClusterManager, ForgeTransport, GossipState};
 use tirami_proto::{
     Envelope, ErrorCode, ErrorMsg, InferenceRequest, LoanAccept, Payload, PipelineTopologyMsg,
@@ -389,11 +392,49 @@ impl PipelineCoordinator {
                         let gossip = gossip.clone();
                         let ledger = ledger.clone();
                         let ledger_path = ledger_path.clone();
+                        // Phase 21 Wave 3 — capture the staking pool +
+                        // gate flag so the spawned task can consult
+                        // `ComputeLedger::inference_eligibility` before
+                        // it records a remote-originated trade.
+                        let staking = staking_pool.clone();
+                        let stake_gate_enabled = config.stake_gate_enabled;
                         tokio::spawn(async move {
                             if let Some(signed) =
                                 tirami_net::gossip::handle_trade_gossip(&gossip, &trade_gossip).await
                             {
                                 let mut ledger = ledger.lock().await;
+                                // Phase 21 Wave 3 — gate the gossip-
+                                // receive path on the same eligibility
+                                // verdict the HTTP path enforces. Defense
+                                // in depth: the dual-sig already
+                                // validates the bilateral agreement, but
+                                // this keeps the local ledger free of
+                                // contribution-inflation from remote
+                                // providers this node's policy
+                                // considers ineligible (slashed, or
+                                // past the stakeless cap without stake
+                                // and without a welcome loan).
+                                //
+                                // Failure here only refuses the LOCAL
+                                // recording — the remote bilateral
+                                // agreement is unaffected.
+                                {
+                                    let staking_guard = staking.lock().await;
+                                    if let Err(ineligible) = check_gossip_trade_eligibility(
+                                        &ledger,
+                                        &staking_guard,
+                                        &signed.trade.provider,
+                                        now_millis(),
+                                        stake_gate_enabled,
+                                    ) {
+                                        tracing::warn!(
+                                            "Rejected gossip trade: provider {} is ineligible per local policy: {}",
+                                            signed.trade.provider.to_hex(),
+                                            ineligible
+                                        );
+                                        return;
+                                    }
+                                }
                                 // Phase 17 Wave 1.2 — route inbound gossip
                                 // through the signed path so nonce dedup
                                 // rejects replays of already-observed v2
@@ -1082,6 +1123,156 @@ fn now_millis() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64
+}
+
+/// Phase 21 Wave 3 — does the local-policy stake gate allow the
+/// node to **record** an incoming gossiped trade?
+///
+/// This is a deliberately small wrapper around
+/// [`ComputeLedger::inference_eligibility`] so the gossip handler's
+/// behaviour is unit-testable in isolation from `tokio::spawn` /
+/// network setup. The semantics are intentionally local-only:
+///
+/// - `gate_enabled = false` → always `Ok(())`. Restores pre-Phase-21
+///   behaviour for operators that explicitly opt out.
+/// - `gate_enabled = true` → consult the verdict. `Ok` for Staked /
+///   WelcomeLoan / BootstrapWindow; `Err(InferenceIneligible)` for
+///   PreviouslySlashed / StakeRequired.
+///
+/// A denial here only refuses **local** recording; the dual-signed
+/// trade still stands as a bilateral agreement between the remote
+/// provider and consumer, and other nodes with different policies
+/// may still record it.
+pub(crate) fn check_gossip_trade_eligibility(
+    ledger: &ComputeLedger,
+    staking: &StakingPool,
+    provider: &NodeId,
+    now_ms: u64,
+    gate_enabled: bool,
+) -> Result<(), InferenceIneligible> {
+    if !gate_enabled {
+        return Ok(());
+    }
+    ledger
+        .inference_eligibility(provider, staking, now_ms)
+        .map(|_| ())
+}
+
+#[cfg(test)]
+mod gossip_gate_tests {
+    use super::*;
+    use tirami_ledger::{ComputeLedger, StakeDuration, StakingPool};
+
+    #[test]
+    fn gate_disabled_always_passes_even_for_slashed_provider() {
+        let mut ledger = ComputeLedger::new();
+        let staking = StakingPool::new();
+        let provider = NodeId([0xA1u8; 32]);
+        ledger.record_slash_event(provider.clone(), 0.3, 100, "collusion", 0);
+        assert!(
+            check_gossip_trade_eligibility(&ledger, &staking, &provider, 1_000, false).is_ok()
+        );
+    }
+
+    #[test]
+    fn gate_enabled_passes_fresh_provider_via_bootstrap_window() {
+        let ledger = ComputeLedger::new();
+        let staking = StakingPool::new();
+        let provider = NodeId([0xA2u8; 32]);
+        assert!(
+            check_gossip_trade_eligibility(&ledger, &staking, &provider, 1_000, true).is_ok()
+        );
+    }
+
+    #[test]
+    fn gate_enabled_rejects_previously_slashed_provider() {
+        let mut ledger = ComputeLedger::new();
+        let staking = StakingPool::new();
+        let provider = NodeId([0xA3u8; 32]);
+        ledger.record_slash_event(provider.clone(), 0.3, 100, "collusion", 0);
+        let verdict =
+            check_gossip_trade_eligibility(&ledger, &staking, &provider, 1_000, true);
+        assert_eq!(verdict, Err(InferenceIneligible::PreviouslySlashed));
+    }
+
+    #[test]
+    fn gate_enabled_passes_provider_with_active_welcome_loan_past_cap() {
+        // Provider with an active welcome loan AND past the
+        // stakeless cap. The HTTP-path test in api.rs covers the
+        // same case from the server-serving side; this exercise
+        // it from the gossip-receive side.
+        let mut ledger = ComputeLedger::new();
+        let staking = StakingPool::new();
+        let provider = NodeId([0xA4u8; 32]);
+        // Wall-clock now so the 72 h expiry is in the future.
+        let now = now_millis();
+        ledger.grant_welcome_loan(provider.clone(), "", now).expect("grant");
+        let cap_buster = TradeRecord {
+            provider: provider.clone(),
+            consumer: NodeId([0x77u8; 32]),
+            trm_amount: tirami_ledger::lending::STAKELESS_EARN_CAP_TRM + 1,
+            tokens_processed: 1,
+            timestamp: now,
+            model_id: "pump".into(),
+            flops_estimated: 0,
+            nonce: [0u8; 16],
+        };
+        ledger.execute_trade(&cap_buster);
+        assert!(
+            check_gossip_trade_eligibility(&ledger, &staking, &provider, now, true).is_ok(),
+            "active welcome loan should let the gate accept a past-cap provider"
+        );
+    }
+
+    #[test]
+    fn gate_enabled_rejects_past_cap_provider_without_stake_or_loan() {
+        // Seed a balance via the public API: grant a welcome loan
+        // (creates the balance entry), pump contributions past cap,
+        // then mark the loan repaid so the eligibility check falls
+        // through to StakeRequired.
+        let mut ledger = ComputeLedger::new();
+        let staking = StakingPool::new();
+        let provider = NodeId([0xA5u8; 32]);
+        let now = now_millis();
+        ledger.grant_welcome_loan(provider.clone(), "", now).expect("grant");
+        let cap_buster = TradeRecord {
+            provider: provider.clone(),
+            consumer: NodeId([0x77u8; 32]),
+            trm_amount: tirami_ledger::lending::STAKELESS_EARN_CAP_TRM + 1,
+            tokens_processed: 1,
+            timestamp: now,
+            model_id: "pump".into(),
+            flops_estimated: 0,
+            nonce: [0u8; 16],
+        };
+        ledger.execute_trade(&cap_buster);
+        // Flip the welcome loan to repaid so it no longer satisfies
+        // the gate. The remaining path is then StakeRequired.
+        if let Some(grant) = ledger.welcome_loans.get_mut(&provider) {
+            grant.repaid = true;
+        }
+        let verdict =
+            check_gossip_trade_eligibility(&ledger, &staking, &provider, now, true);
+        assert!(
+            matches!(verdict, Err(InferenceIneligible::StakeRequired { .. })),
+            "got {verdict:?}"
+        );
+    }
+
+    #[test]
+    fn gate_enabled_accepts_staked_provider() {
+        use tirami_ledger::lending::MIN_PROVIDER_STAKE_TRM;
+        let ledger = ComputeLedger::new();
+        let mut staking = StakingPool::new();
+        let provider = NodeId([0xA6u8; 32]);
+        let now = now_millis();
+        staking
+            .stake(provider.clone(), MIN_PROVIDER_STAKE_TRM, StakeDuration::Days7, now)
+            .expect("stake ok");
+        assert!(
+            check_gossip_trade_eligibility(&ledger, &staking, &provider, now, true).is_ok()
+        );
+    }
 }
 
 async fn send_protocol_error(

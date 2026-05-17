@@ -7144,7 +7144,10 @@ mod tests {
     #[tokio::test]
     async fn welcome_loan_claim_returns_grant_for_fresh_node() {
         let app = test_router_with_agent(Config::default(), None);
-        let claimant = "aa".repeat(32);
+        // Phase 25 A7 — must be a high-entropy id to clear the
+        // welcome-claim entropy floor.
+        use sha2::Digest;
+        let claimant = hex::encode(sha2::Sha256::digest(b"a7-welcome-fresh-fixture"));
         let (status, body) = post_claim_welcome(app, &claimant, Some("AS-test")).await;
         assert_eq!(status, StatusCode::OK, "claim failed: {body}");
         assert_eq!(body["node_id"], claimant);
@@ -7164,8 +7167,9 @@ mod tests {
     /// to `false`.
     #[tokio::test]
     async fn welcome_loan_claim_is_one_shot_per_node() {
+        use sha2::Digest;
         let app = test_router_with_agent(Config::default(), None);
-        let claimant = "bb".repeat(32);
+        let claimant = hex::encode(sha2::Sha256::digest(b"a7-welcome-oneshot-fixture"));
         let (status, _) = post_claim_welcome(app.clone(), &claimant, None).await;
         assert_eq!(status, StatusCode::OK);
         let (status, body) = post_claim_welcome(app, &claimant, None).await;

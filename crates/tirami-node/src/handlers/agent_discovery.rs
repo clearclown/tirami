@@ -64,6 +64,11 @@ pub struct PolicySpec {
     /// the bootstrap window has closed permanently and claims will
     /// 410.
     pub welcome_loan_available: bool,
+    /// Phase 22 Wave 3 — x-only secp256k1 pubkey of the per-node
+    /// `NostrIdentity` (hex, 64 chars), if one has been bootstrapped
+    /// via `POST /v1/tirami/agora/nostr/init`. `None` means the
+    /// node hasn't enabled Nostr publishing on this run.
+    pub nostr_pubkey: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -212,6 +217,35 @@ pub(crate) async fn well_known_agent_manifest(
             pricing: "free; grants WELCOME_LOAN_AMOUNT TRM for 72 h (one-shot per node)",
             auth_required: true,
         },
+        // Phase 22 Wave 3 — NIP-90 publish HTTP surface.
+        ActionDescriptor {
+            name: "nostr_init",
+            endpoint: "/v1/tirami/agora/nostr/init",
+            method: "POST",
+            pricing: "free; idempotent bootstrap of a per-node secp256k1 NostrIdentity",
+            auth_required: true,
+        },
+        ActionDescriptor {
+            name: "nostr_status",
+            endpoint: "/v1/tirami/agora/nostr",
+            method: "GET",
+            pricing: "free; current pubkey + bootstrap state",
+            auth_required: true,
+        },
+        ActionDescriptor {
+            name: "nostr_sign_event",
+            endpoint: "/v1/tirami/agora/nostr/sign-event",
+            method: "POST",
+            pricing: "free; signs a partially-built NIP-01 event with BIP-340 Schnorr",
+            auth_required: true,
+        },
+        ActionDescriptor {
+            name: "agora_publish",
+            endpoint: "/v1/tirami/agora/publish",
+            method: "POST",
+            pricing: "free; builds + signs a NIP-90 kind-31990 advertisement, optionally ships to a relay",
+            auth_required: true,
+        },
         ActionDescriptor {
             name: "agent_task",
             endpoint: "/v1/tirami/agent/task",
@@ -279,6 +313,13 @@ pub(crate) async fn well_known_agent_manifest(
                 Ok(l) => (l.current_epoch() as u64)
                     < tirami_ledger::lending::WELCOME_LOAN_SUNSET_EPOCH,
                 Err(_) => true,
+            },
+            // Phase 22 Wave 3 — non-blocking read of the optional
+            // NostrIdentity. None if not bootstrapped OR if the
+            // lock is contended at the moment of the manifest GET.
+            nostr_pubkey: match state.nostr_identity.try_lock() {
+                Ok(guard) => guard.as_ref().map(|id| id.pubkey_hex()),
+                Err(_) => None,
             },
         },
         currency: CurrencySpec {

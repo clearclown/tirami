@@ -91,6 +91,12 @@ pub(crate) struct AppState {
     /// Phase 20 Wave 5 — pending DID-auth challenges. Each entry is
     /// single-use and short-lived (5 min default).
     pub auth_challenges: crate::handlers::auth_did::ChallengeState,
+    /// Phase 22 Wave 3 — per-node secp256k1 keypair for NIP-01
+    /// Schnorr-signed Nostr publishing. Distinct from the Ed25519
+    /// `local_node_id`, the Wave-4 `AgentIdentity` DID, and the
+    /// per-DID session tokens. In-memory only; persistence is a
+    /// follow-up.
+    pub nostr_identity: crate::handlers::nostr_publish::NostrIdentityState,
 }
 
 /// Simple rate limiter for authentication failures.
@@ -253,6 +259,7 @@ pub fn create_router_with_services(
         auth_challenges: Arc::new(Mutex::new(
             crate::handlers::auth_did::ChallengeStore::new(),
         )),
+        nostr_identity: Arc::new(Mutex::new(None)),
     };
     let api_max_request_body_bytes = state.config.api_max_request_body_bytes;
 
@@ -496,6 +503,23 @@ pub fn create_router_with_services(
         .route(
             "/v1/tirami/agent/claim-welcome",
             post(crate::handlers::welcome_claim::claim_welcome_loan),
+        )
+        // Phase 22 Wave 3 — NIP-90 publish HTTP surface.
+        .route(
+            "/v1/tirami/agora/nostr/init",
+            post(crate::handlers::nostr_publish::nostr_init),
+        )
+        .route(
+            "/v1/tirami/agora/nostr",
+            get(crate::handlers::nostr_publish::nostr_status),
+        )
+        .route(
+            "/v1/tirami/agora/nostr/sign-event",
+            post(crate::handlers::nostr_publish::nostr_sign_event),
+        )
+        .route(
+            "/v1/tirami/agora/publish",
+            post(crate::handlers::nostr_publish::agora_publish),
         )
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
@@ -6773,6 +6797,487 @@ mod tests {
         assert!(
             names.iter().any(|n| n == "claim_welcome_loan"),
             "manifest missing claim_welcome_loan, actions={names:?}"
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // Phase 22 Wave 3 — agora Nostr publish HTTP surface
+    // ------------------------------------------------------------------
+
+    async fn post_nostr_init(app: Router) -> (StatusCode, serde_json::Value) {
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/tirami/agora/nostr/init")
+                    .header("content-type", "application/json")
+                    .body(Body::from("{}"))
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        (status, serde_json::from_slice(&bytes).unwrap_or_default())
+    }
+
+    async fn get_nostr_status(app: Router) -> (StatusCode, serde_json::Value) {
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/v1/tirami/agora/nostr")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        (status, serde_json::from_slice(&bytes).unwrap_or_default())
+    }
+
+    async fn post_nostr_sign(
+        app: Router,
+        event: serde_json::Value,
+    ) -> (StatusCode, serde_json::Value) {
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/tirami/agora/nostr/sign-event")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({ "event": event }).to_string(),
+                    ))
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        (status, serde_json::from_slice(&bytes).unwrap_or_default())
+    }
+
+    async fn post_agora_publish(
+        app: Router,
+        body: serde_json::Value,
+    ) -> (StatusCode, serde_json::Value) {
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/tirami/agora/publish")
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        (status, serde_json::from_slice(&bytes).unwrap_or_default())
+    }
+
+    fn sample_advertisement_body() -> serde_json::Value {
+        serde_json::json!({
+            "node_pubkey_hex": "a".repeat(64),
+            "models": ["qwen2.5:0.5b"],
+            "tier": "small",
+            "trm_per_token": 1u64,
+            "reputation": 0.5f64,
+            "accepted_payment": ["cu"],
+            "relays": ["wss://relay.test"]
+        })
+    }
+
+    /// Bootstrap a Nostr identity; subsequent GET reflects it.
+    #[tokio::test]
+    async fn nostr_init_then_status_round_trip() {
+        let app = test_router_with_agent(Config::default(), None);
+        // Before init.
+        let (status, body) = get_nostr_status(app.clone()).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["initialized"], false);
+        assert!(body["pubkey_hex"].is_null());
+
+        // Init.
+        let (status, body) = post_nostr_init(app.clone()).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["initialized"], true);
+        let pk1 = body["pubkey_hex"].as_str().expect("pk").to_string();
+        assert_eq!(pk1.len(), 64);
+        assert!(pk1.chars().all(|c| c.is_ascii_hexdigit()));
+
+        // After init.
+        let (status, body) = get_nostr_status(app).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["initialized"], true);
+        assert_eq!(body["pubkey_hex"].as_str().unwrap(), pk1);
+    }
+
+    /// Calling init twice must be idempotent: the second call MUST
+    /// return the same pubkey (the existing identity, not a fresh one).
+    #[tokio::test]
+    async fn nostr_init_is_idempotent() {
+        let app = test_router_with_agent(Config::default(), None);
+        let (_, body_a) = post_nostr_init(app.clone()).await;
+        let (_, body_b) = post_nostr_init(app).await;
+        assert_eq!(body_a["pubkey_hex"], body_b["pubkey_hex"]);
+    }
+
+    /// sign-event before init must 412.
+    #[tokio::test]
+    async fn nostr_sign_without_init_returns_412() {
+        let app = test_router_with_agent(Config::default(), None);
+        let event = serde_json::json!({
+            "kind": 31990u64,
+            "created_at": 1_700_000_000u64,
+            "tags": [],
+            "content": "x"
+        });
+        let (status, body) = post_nostr_sign(app, event).await;
+        assert_eq!(status, StatusCode::PRECONDITION_FAILED);
+        let outer = body;
+        let inner_msg = outer["error"]["message"].as_str().unwrap_or("");
+        assert!(inner_msg.contains("no NostrIdentity bootstrapped"));
+    }
+
+    /// sign-event after init: response carries a fully-formed signed
+    /// event AND verifies cleanly through `tirami_ledger::verify_nostr_event`.
+    #[tokio::test]
+    async fn nostr_sign_event_returns_verifiable_signature() {
+        let app = test_router_with_agent(Config::default(), None);
+        let (_, init) = post_nostr_init(app.clone()).await;
+        let expected_pk = init["pubkey_hex"].as_str().unwrap().to_string();
+
+        let event = serde_json::json!({
+            "kind": 31990u64,
+            "created_at": 1_700_000_000u64,
+            "tags": [["d", "forge-handler"]],
+            "content": "{}"
+        });
+        let (status, body) = post_nostr_sign(app, event).await;
+        assert_eq!(status, StatusCode::OK);
+        let signed = &body["event"];
+        assert_eq!(signed["pubkey"].as_str().unwrap(), expected_pk);
+        assert_eq!(signed["id"].as_str().unwrap().len(), 64);
+        assert_eq!(signed["sig"].as_str().unwrap().len(), 128);
+        // End-to-end verify through the library.
+        tirami_ledger::verify_nostr_event(signed).expect("verify ok");
+    }
+
+    /// sign-event with a malformed inner event (missing `kind`) must 400.
+    #[tokio::test]
+    async fn nostr_sign_event_rejects_malformed_event() {
+        let app = test_router_with_agent(Config::default(), None);
+        let (_, _) = post_nostr_init(app.clone()).await;
+        // Missing kind / created_at / tags / content.
+        let bad = serde_json::json!({ "content": "x" });
+        let (status, body) = post_nostr_sign(app, bad).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let outer = body;
+        let msg = outer["error"]["message"].as_str().unwrap_or("");
+        assert!(msg.contains("sign_event failed"), "msg: {msg}");
+    }
+
+    /// dry_run = true publish returns the signed event without
+    /// contacting any relay. `relay_accepted = false`,
+    /// `relay_url = null`.
+    #[tokio::test]
+    async fn agora_publish_dry_run_returns_signed_event_without_relay() {
+        let app = test_router_with_agent(Config::default(), None);
+        let (_, init) = post_nostr_init(app.clone()).await;
+        let expected_pk = init["pubkey_hex"].as_str().unwrap().to_string();
+        let body = serde_json::json!({
+            "advertisement": sample_advertisement_body(),
+            "dry_run": true
+        });
+        let (status, resp) = post_agora_publish(app, body).await;
+        assert_eq!(status, StatusCode::OK, "publish: {resp}");
+        assert_eq!(resp["relay_accepted"], false);
+        assert!(resp["relay_url"].is_null());
+        let signed = &resp["event"];
+        assert_eq!(signed["pubkey"].as_str().unwrap(), expected_pk);
+        assert_eq!(signed["kind"].as_u64().unwrap(), 31990);
+        tirami_ledger::verify_nostr_event(signed).expect("verify");
+    }
+
+    /// publish before init → 412.
+    #[tokio::test]
+    async fn agora_publish_without_init_returns_412() {
+        let app = test_router_with_agent(Config::default(), None);
+        let body = serde_json::json!({
+            "advertisement": sample_advertisement_body(),
+            "dry_run": true
+        });
+        let (status, body) = post_agora_publish(app, body).await;
+        assert_eq!(status, StatusCode::PRECONDITION_FAILED);
+        let msg = body["error"]["message"].as_str().unwrap_or("");
+        assert!(msg.contains("no NostrIdentity bootstrapped"));
+    }
+
+    /// publish with malformed advertisement (bad pubkey length) → 400.
+    #[tokio::test]
+    async fn agora_publish_rejects_bad_pubkey_length() {
+        let app = test_router_with_agent(Config::default(), None);
+        let (_, _) = post_nostr_init(app.clone()).await;
+        let mut ad = sample_advertisement_body();
+        ad["node_pubkey_hex"] = serde_json::Value::String("short".into());
+        let body = serde_json::json!({ "advertisement": ad, "dry_run": true });
+        let (status, body) = post_agora_publish(app, body).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let msg = body["error"]["message"].as_str().unwrap_or("");
+        assert!(msg.contains("invalid pubkey"), "msg: {msg}");
+    }
+
+    /// publish that actually attempts a relay handshake against a
+    /// dead local port must surface a 502 with the underlying
+    /// AgoraError::RelayError attached.
+    #[tokio::test]
+    async fn agora_publish_with_dead_relay_returns_502() {
+        let app = test_router_with_agent(Config::default(), None);
+        let (_, _) = post_nostr_init(app.clone()).await;
+        let body = serde_json::json!({
+            "advertisement": sample_advertisement_body(),
+            "relay_url": "ws://127.0.0.1:1",
+            "timeout_secs": 2u64,
+            "dry_run": false
+        });
+        let (status, body) = post_agora_publish(app, body).await;
+        assert_eq!(status, StatusCode::BAD_GATEWAY);
+        let msg = body["error"]["message"].as_str().unwrap_or("");
+        assert!(msg.contains("relay error"), "msg: {msg}");
+    }
+
+    /// publish without an explicit relay_url defaults to the library's
+    /// configured default. We assert the request shape is accepted —
+    /// the outcome of the network round-trip is environment-dependent
+    /// and intentionally not pinned (a CI with no outbound network
+    /// returns 502, a workstation that can reach the public relay
+    /// returns 200; both are correct given the test's narrow purpose
+    /// of "the default-URL code path runs and resolves to *some* url").
+    #[tokio::test]
+    async fn agora_publish_default_relay_url_path_resolves() {
+        let app = test_router_with_agent(Config::default(), None);
+        let (_, _) = post_nostr_init(app.clone()).await;
+        let body = serde_json::json!({
+            "advertisement": sample_advertisement_body(),
+            "timeout_secs": 1u64,
+            "dry_run": false
+        });
+        let (status, body) = post_agora_publish(app, body).await;
+        // Accept either: 200 (relay reachable and accepted) or
+        // 502 (relay unreachable in this environment).
+        assert!(
+            status == StatusCode::OK || status == StatusCode::BAD_GATEWAY,
+            "unexpected status {status}: {body}"
+        );
+    }
+
+    /// Manifest exposes the Nostr pubkey AFTER init and lists the 4
+    /// Wave-3 actions unconditionally.
+    #[tokio::test]
+    async fn manifest_exposes_nostr_pubkey_and_wave_3_actions() {
+        let app = test_router_with_agent(Config::default(), None);
+        // Before init.
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/.well-known/tirami-agent.json")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let json: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
+        assert!(
+            json["policy"]["nostr_pubkey"].is_null(),
+            "nostr_pubkey must be null before init"
+        );
+        // Actions are advertised even before bootstrap.
+        let names: Vec<String> = json["actions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|a| a["name"].as_str().unwrap_or("").to_string())
+            .collect();
+        for expected in &[
+            "nostr_init",
+            "nostr_status",
+            "nostr_sign_event",
+            "agora_publish",
+        ] {
+            assert!(
+                names.iter().any(|n| n == expected),
+                "manifest missing {expected}"
+            );
+        }
+
+        // After init — pubkey populated.
+        let (_, init) = post_nostr_init(app.clone()).await;
+        let pk = init["pubkey_hex"].as_str().unwrap().to_string();
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/.well-known/tirami-agent.json")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let json: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
+        assert_eq!(json["policy"]["nostr_pubkey"].as_str().unwrap(), pk);
+    }
+
+    /// Two nodes initialise their own NostrIdentities independently;
+    /// the same advertisement body signed by each yields different
+    /// event ids and signatures.
+    #[tokio::test]
+    async fn two_nodes_produce_independent_signatures() {
+        let app_a = test_router_with_agent(Config::default(), None);
+        let app_b = test_router_with_agent(Config::default(), None);
+        let (_, init_a) = post_nostr_init(app_a.clone()).await;
+        let (_, init_b) = post_nostr_init(app_b.clone()).await;
+        assert_ne!(init_a["pubkey_hex"], init_b["pubkey_hex"]);
+        let body = serde_json::json!({
+            "advertisement": sample_advertisement_body(),
+            "dry_run": true
+        });
+        let (_, ra) = post_agora_publish(app_a, body.clone()).await;
+        let (_, rb) = post_agora_publish(app_b, body).await;
+        assert_ne!(ra["event"]["id"], rb["event"]["id"]);
+        assert_ne!(ra["event"]["sig"], rb["event"]["sig"]);
+    }
+
+    /// The signed-event response from publish carries `kind = 31990`
+    /// (NIP-90 handler advertisement) and includes the expected tags
+    /// (`d` discriminator, `model` per advertisement model, etc.).
+    #[tokio::test]
+    async fn agora_publish_event_has_kind_31990_and_model_tags() {
+        let app = test_router_with_agent(Config::default(), None);
+        let (_, _) = post_nostr_init(app.clone()).await;
+        let body = serde_json::json!({
+            "advertisement": {
+                "node_pubkey_hex": "a".repeat(64),
+                "models": ["qwen2.5:0.5b", "llama-3.1:8b"],
+                "tier": "small",
+                "trm_per_token": 3u64,
+                "reputation": 0.85f64,
+                "accepted_payment": ["cu", "lightning"],
+                "relays": []
+            },
+            "dry_run": true
+        });
+        let (_, resp) = post_agora_publish(app, body).await;
+        let event = &resp["event"];
+        assert_eq!(event["kind"].as_u64().unwrap(), 31990);
+        let tags = event["tags"].as_array().expect("tags");
+        let tag_strings: Vec<Vec<String>> = tags
+            .iter()
+            .map(|t| {
+                t.as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|s| s.as_str().unwrap_or("").to_string())
+                    .collect()
+            })
+            .collect();
+        // d discriminator must be present.
+        assert!(tag_strings.iter().any(|t| t.first().map(|s| s.as_str()) == Some("d")));
+        // Both model tags must be present.
+        let model_tag_count = tag_strings
+            .iter()
+            .filter(|t| t.first().map(|s| s.as_str()) == Some("model"))
+            .count();
+        assert_eq!(model_tag_count, 2, "expected two model tags");
+    }
+
+    // ------------------------------------------------------------------
+    // Backfill — Phase 22 Wave 1 / Wave 2 coverage uplift
+    // ------------------------------------------------------------------
+
+    /// Wave 1 explicitly excluded an integration test for
+    /// `Nip90Publisher::publish_signed_advertisement` because we
+    /// didn't yet have a way to inject a NostrIdentity into the
+    /// HTTP layer. Wave 3 makes that possible — and we exploit it
+    /// here to nail the build+sign integration through the same
+    /// library entry point.
+    #[tokio::test]
+    async fn library_signed_advertisement_round_trips_through_library_verify() {
+        let app = test_router_with_agent(Config::default(), None);
+        let (_, _) = post_nostr_init(app.clone()).await;
+        let body = serde_json::json!({
+            "advertisement": sample_advertisement_body(),
+            "dry_run": true
+        });
+        let (_, resp) = post_agora_publish(app, body).await;
+        let event = &resp["event"];
+        // verify_nostr_event is the public library entry point; if it
+        // accepts the HTTP-layer's output then the HTTP path and the
+        // library path agree on the signing surface.
+        tirami_ledger::verify_nostr_event(event).expect("verify");
+    }
+
+    /// Wave 2 backfill — exercises the welcome-loan eligibility +
+    /// settlement integration without going through the periodic
+    /// loop. Specifically: a grant + settle sweep + eligibility
+    /// re-check on the same node, observing the slash-event side
+    /// effect propagated through the discovery manifest's slash count.
+    /// (Manifest doesn't currently surface the slash count, but the
+    /// /v1/tirami/slash-events endpoint does — this is the test
+    /// that links those layers.)
+    #[tokio::test]
+    async fn welcome_loan_default_appears_in_slash_events_endpoint() {
+        use tirami_ledger::ComputeLedger;
+        let mut ledger = ComputeLedger::new();
+        let borrower = tirami_core::NodeId([0xC1u8; 32]);
+        let now = 7_000_000_000_u64;
+        ledger.grant_welcome_loan(borrower.clone(), "", now).expect("grant");
+        let after_expiry =
+            now + tirami_ledger::lending::WELCOME_LOAN_TERM_HOURS * 3_600_000 + 1;
+        ledger.settle_expired_welcome_loans(after_expiry);
+        let app = test_router_with_agent_and_ledger(Config::default(), None, ledger, None);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/v1/tirami/slash-events")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let json: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
+        let events = json["events"]
+            .as_array()
+            .or_else(|| json.as_array())
+            .expect("array");
+        // At least one event must have the welcome-loan-default reason.
+        assert!(
+            events.iter().any(|e| e["reason"] == "welcome-loan-default"),
+            "no welcome-loan-default in {events:?}"
         );
     }
 

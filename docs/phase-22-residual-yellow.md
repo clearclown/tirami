@@ -122,19 +122,88 @@ in-memory state transition is fully covered by the unit tests and
 the loop's spawn is verified at boot (no panic / config-default
 error).
 
-## Wave 3 (TBD) — candidates
+## Wave 3 — agora Nostr publish HTTP surface ✅ shipped
 
-- **PersonalAgent wallet → AgentIdentity link**. Refactor
-  `PersonalAgent.wallet: NodeId` so it can derive from a loaded
-  `AgentIdentity`. Backwards-compat important.
-- **`POST /v1/tirami/agora/publish`** — surfacing the Wave-1
-  primitive via HTTP. Adds an `AppState.nostr_identity:
-  Arc<Mutex<Option<NostrIdentity>>>` slot.
-- **NostrIdentity persistence** — Wave 1 generates keys in
-  memory only. Adding a JSON snapshot path (analogous to the
-  Phase-20-Wave-4 `AgentIdentityBundle` but without
-  passphrase encryption since the relay-publishing key is
-  intentionally a separate trust domain).
+Wave 1 shipped the cryptographic primitives (`NostrIdentity`,
+`sign_event`, `verify_event`, `publish_signed_advertisement` library
+call) but no HTTP surface to drive them. Wave 3 closes the loop:
+an autonomous agent that has authenticated via Phase 20 Wave 5
+(DID-signed bearer token) can now bootstrap a Nostr identity, sign
+events, and publish to a real Nostr relay — all without
+human-shared secrets.
+
+### Endpoints (all auth-required)
+
+| Method | Path | Purpose |
+|---|---|---|
+| POST | `/v1/tirami/agora/nostr/init` | Idempotent bootstrap of a per-node `NostrIdentity`. Returns the x-only pubkey. |
+| GET | `/v1/tirami/agora/nostr` | Current pubkey + bootstrap state. |
+| POST | `/v1/tirami/agora/nostr/sign-event` | Sign an arbitrary partially-built NIP-01 event. |
+| POST | `/v1/tirami/agora/publish` | Build a kind-31990 ad from a `ProviderAdvertisement`, sign it, optionally ship to a relay. `dry_run: true` skips the relay round-trip and returns the signed event for inspection. |
+
+### AppState + manifest
+
+- New slot `AppState.nostr_identity: Arc<Mutex<Option<NostrIdentity>>>`. In-memory only.
+- `PolicySpec.nostr_pubkey: Option<String>` — manifest now surfaces the x-only pubkey when bootstrapped, `None` otherwise. Non-blocking read so a busy node returns `None` rather than blocking the manifest GET.
+- Four new `ActionDescriptor` entries advertised unconditionally so a discovering agent sees the publishing surface even before it bootstraps.
+
+### Test coverage uplift
+
+19 new tests in `tirami-node`, all green:
+
+- 4 unit tests on the handler types (default_timeout / view serialises / dry_run default / dry_run can be set).
+- 13 integration tests:
+  - `nostr_init_then_status_round_trip`
+  - `nostr_init_is_idempotent`
+  - `nostr_sign_without_init_returns_412`
+  - `nostr_sign_event_returns_verifiable_signature` (end-to-end through `tirami_ledger::verify_nostr_event`)
+  - `nostr_sign_event_rejects_malformed_event`
+  - `agora_publish_dry_run_returns_signed_event_without_relay`
+  - `agora_publish_without_init_returns_412`
+  - `agora_publish_rejects_bad_pubkey_length`
+  - `agora_publish_with_dead_relay_returns_502`
+  - `agora_publish_default_relay_url_path_resolves` (network-tolerant assertion)
+  - `manifest_exposes_nostr_pubkey_and_wave_3_actions`
+  - `two_nodes_produce_independent_signatures`
+  - `agora_publish_event_has_kind_31990_and_model_tags`
+- 2 backfill integration tests covering thin Wave 1 / Wave 2 areas:
+  - `library_signed_advertisement_round_trips_through_library_verify`
+  - `welcome_loan_default_appears_in_slash_events_endpoint`
+
+Workspace: **1,341 passed, 0 failed** (was 1,322 → +19 new).
+
+### Smoke
+
+End-to-end against `tirami node --api-token t`:
+
+```
+[1] GET  /v1/tirami/agora/nostr                          → {initialized:false, pubkey_hex:null}
+[2] POST /v1/tirami/agora/nostr/init                     → {initialized:true,  pubkey_hex:"072e6aeb..."}
+[3] GET  /.well-known/tirami-agent.json                  → policy.nostr_pubkey = "072e6aeb..."
+[4] POST /v1/tirami/agora/publish (dry_run=true)         → {
+                                                            event.kind:        31990,
+                                                            event.pubkey:      "072e6aeb...",
+                                                            event.id len:      64,
+                                                            event.sig len:     128,
+                                                            relay_accepted:    false (suppressed by dry_run),
+                                                            relay_url:         null
+                                                          }
+```
+
+### What this PR does NOT do
+
+- **On-disk persistence of the Nostr keypair.** A restart drops it; the next `init` call gets a new keypair. Phase 23 territory.
+- **Subscribing to incoming events.** Only publish in this surface; consumer flows are out of scope.
+- **NIP-39 identity binding** between the secp256k1 Nostr pubkey and a `did:tirami:` identity. Wave 4+.
+
+## Phase 22 residual 🟡 → 🟢 status after Wave 3
+
+| Item | Status | Notes |
+|---|---|---|
+| NIP-90 publish | 🟢 | Library (Wave 1) + HTTP surface (Wave 3) shipped. Live relay smoke deferred. |
+| Welcome-loan settlement | 🟢 | Wave 2: periodic loop + default tracking. |
+| zkML real backends | 🟡 | Phase 23. Significant scope (ezkl / risc0 dep chain). |
+| PersonalAgent.wallet ↔ AgentIdentity link | 🟡 | Phase 23 candidate. Refactor with snapshot migration. |
 
 ### Out of Phase 22 scope (Phase 23 / 24 territory)
 

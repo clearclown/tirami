@@ -122,6 +122,60 @@ pub struct SlashEvent {
     pub reason: String,
 }
 
+/// Phase 21 Wave 1 — verdict of [`ComputeLedger::inference_eligibility`]
+/// when the node is allowed to provide inference.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InferenceEligibility {
+    /// Node has posted ≥ `MIN_PROVIDER_STAKE_TRM` of locked stake.
+    Staked { staked_amount: u64 },
+    /// Node has not yet hit its stakeless earn cap. After
+    /// `contributed_so_far` ≥ `cap_trm` the node must stake.
+    BootstrapWindow {
+        contributed_so_far: u64,
+        cap_trm: u64,
+    },
+}
+
+/// Phase 21 Wave 1 — denial reason from
+/// [`ComputeLedger::inference_eligibility`].
+///
+/// Surfaced verbatim in the HTTP 403 response body so an autonomous
+/// agent can decide what to do next (e.g. claim a welcome loan, post
+/// stake, give up).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InferenceIneligible {
+    /// Constitutional permanent ban — once slashed, always banned.
+    PreviouslySlashed,
+    /// Stakeless cap reached and no stake posted.
+    StakeRequired {
+        staked_amount: u64,
+        required: u64,
+        cumulative_contributed: u64,
+        cap_trm: u64,
+    },
+}
+
+impl std::fmt::Display for InferenceIneligible {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::PreviouslySlashed => write!(
+                f,
+                "node was previously slashed; constitutional permanent ban — staking does not restore eligibility"
+            ),
+            Self::StakeRequired {
+                staked_amount,
+                required,
+                cumulative_contributed,
+                cap_trm,
+            } => write!(
+                f,
+                "node consumed stakeless earn cap (contributed {} ≥ {} TRM) and current stake {} < required {} TRM",
+                cumulative_contributed, cap_trm, staked_amount, required
+            ),
+        }
+    }
+}
+
 /// Bounded per-provider nonce cache with FIFO eviction.
 ///
 /// We cannot keep unbounded nonce history in RAM — a malicious provider
@@ -2169,6 +2223,63 @@ impl ComputeLedger {
             .map(|b| b.contributed)
             .unwrap_or(0);
         total_earned < crate::lending::STAKELESS_EARN_CAP_TRM
+    }
+
+    /// Phase 21 Wave 1 — same check as [`Self::can_provide_inference`]
+    /// but returns a structured reason on denial, suitable for
+    /// surfacing in HTTP 403 responses.
+    ///
+    /// Discriminates three deny cases:
+    ///
+    /// - The node has been slashed at least once; staking does not
+    ///   restore eligibility (constitutional).
+    /// - The node has consumed its stakeless earn cap and has not
+    ///   yet posted ≥ `MIN_PROVIDER_STAKE_TRM` of stake.
+    /// - Both — slashed AND past the cap. The slash check fires
+    ///   first.
+    pub fn inference_eligibility(
+        &self,
+        node_id: &NodeId,
+        staking: &crate::StakingPool,
+        now_ms: u64,
+    ) -> Result<InferenceEligibility, InferenceIneligible> {
+        // Primary path: real stake meets the floor.
+        let staked_amount = staking
+            .stakes_for(node_id)
+            .filter(|s| s.is_locked(now_ms))
+            .map(|s| s.amount)
+            .sum::<u64>();
+        if staked_amount >= crate::lending::MIN_PROVIDER_STAKE_TRM {
+            return Ok(InferenceEligibility::Staked { staked_amount });
+        }
+
+        // Constitutional permanent ban for previously-slashed nodes.
+        let slashed_before = self
+            .slash_events
+            .iter()
+            .any(|e| &e.node_id == node_id);
+        if slashed_before {
+            return Err(InferenceIneligible::PreviouslySlashed);
+        }
+
+        // Bootstrap window: under the stakeless cap.
+        let total_earned = self
+            .balances
+            .get(node_id)
+            .map(|b| b.contributed)
+            .unwrap_or(0);
+        if total_earned < crate::lending::STAKELESS_EARN_CAP_TRM {
+            return Ok(InferenceEligibility::BootstrapWindow {
+                contributed_so_far: total_earned,
+                cap_trm: crate::lending::STAKELESS_EARN_CAP_TRM,
+            });
+        }
+        Err(InferenceIneligible::StakeRequired {
+            staked_amount,
+            required: crate::lending::MIN_PROVIDER_STAKE_TRM,
+            cumulative_contributed: total_earned,
+            cap_trm: crate::lending::STAKELESS_EARN_CAP_TRM,
+        })
     }
 
     /// Phase 17 Wave 4.1 — per-bucket welcome-loan eligibility.
@@ -4877,6 +4988,120 @@ mod tests {
             .stake(provider.clone(), MIN_PROVIDER_STAKE_TRM, StakeDuration::Days7, now)
             .unwrap();
         assert!(ledger.can_provide_inference(&provider, &staking, now));
+    }
+
+    // ----------------------------------------------------------------
+    // Phase 21 Wave 1 — `inference_eligibility` (structured verdict)
+    // ----------------------------------------------------------------
+
+    #[test]
+    fn phase21_inference_eligibility_fresh_node_returns_bootstrap_window() {
+        use crate::StakingPool;
+        let ledger = ComputeLedger::new();
+        let provider = NodeId([0xD1u8; 32]);
+        let staking = StakingPool::new();
+        let verdict = ledger.inference_eligibility(&provider, &staking, now_millis());
+        match verdict {
+            Ok(InferenceEligibility::BootstrapWindow {
+                contributed_so_far,
+                cap_trm,
+            }) => {
+                assert_eq!(contributed_so_far, 0);
+                assert_eq!(cap_trm, crate::lending::STAKELESS_EARN_CAP_TRM);
+            }
+            other => panic!("expected BootstrapWindow, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn phase21_inference_eligibility_with_sufficient_stake_returns_staked() {
+        use crate::lending::MIN_PROVIDER_STAKE_TRM;
+        use crate::{StakeDuration, StakingPool};
+        let ledger = ComputeLedger::new();
+        let provider = NodeId([0xD2u8; 32]);
+        let mut staking = StakingPool::new();
+        let now = now_millis();
+        staking
+            .stake(provider.clone(), MIN_PROVIDER_STAKE_TRM, StakeDuration::Days7, now)
+            .unwrap();
+        let verdict = ledger.inference_eligibility(&provider, &staking, now);
+        match verdict {
+            Ok(InferenceEligibility::Staked { staked_amount }) => {
+                assert!(staked_amount >= MIN_PROVIDER_STAKE_TRM);
+            }
+            other => panic!("expected Staked, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn phase21_inference_eligibility_past_cap_without_stake_returns_stake_required() {
+        use crate::StakingPool;
+        let mut ledger = ComputeLedger::new();
+        let provider = NodeId([0xD3u8; 32]);
+        let staking = StakingPool::new();
+        // Plant contributed = exactly the cap. The check uses strict
+        // `<`, so the verdict should be ineligible at this boundary.
+        ledger.balances.insert(
+            provider.clone(),
+            NodeBalance {
+                node_id: provider.clone(),
+                contributed: crate::lending::STAKELESS_EARN_CAP_TRM,
+                consumed: 0,
+                reserved: 0,
+                reputation: 0.5,
+            },
+        );
+        let verdict = ledger.inference_eligibility(&provider, &staking, now_millis());
+        match verdict {
+            Err(InferenceIneligible::StakeRequired {
+                staked_amount,
+                required,
+                cumulative_contributed,
+                cap_trm,
+            }) => {
+                assert_eq!(staked_amount, 0);
+                assert_eq!(required, crate::lending::MIN_PROVIDER_STAKE_TRM);
+                assert_eq!(cumulative_contributed, crate::lending::STAKELESS_EARN_CAP_TRM);
+                assert_eq!(cap_trm, crate::lending::STAKELESS_EARN_CAP_TRM);
+            }
+            other => panic!("expected StakeRequired, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn phase21_inference_eligibility_previously_slashed_returns_permanent_ban() {
+        use crate::StakingPool;
+        let mut ledger = ComputeLedger::new();
+        let provider = NodeId([0xD4u8; 32]);
+        let staking = StakingPool::new();
+        let now = now_millis();
+        ledger.record_slash_event(provider.clone(), 0.3, 100, "collusion", now);
+        let verdict = ledger.inference_eligibility(&provider, &staking, now);
+        assert_eq!(verdict, Err(InferenceIneligible::PreviouslySlashed));
+    }
+
+    #[test]
+    fn phase21_inference_eligibility_slashed_node_with_stake_returns_staked() {
+        // Stake re-establishes eligibility per Phase 18.2 design — the
+        // structured verdict mirrors the bool-returning function's
+        // behaviour (slashed history is punitive, not banishment, IF
+        // the node posts fresh stake). PreviouslySlashed is only
+        // returned along the stakeless path.
+        use crate::lending::MIN_PROVIDER_STAKE_TRM;
+        use crate::{StakeDuration, StakingPool};
+        let mut ledger = ComputeLedger::new();
+        let provider = NodeId([0xD5u8; 32]);
+        let now = now_millis();
+        let mut staking = StakingPool::new();
+        ledger.record_slash_event(provider.clone(), 0.3, 100, "collusion", now);
+        staking
+            .stake(provider.clone(), MIN_PROVIDER_STAKE_TRM, StakeDuration::Days7, now)
+            .unwrap();
+        let verdict = ledger.inference_eligibility(&provider, &staking, now);
+        assert!(matches!(
+            verdict,
+            Ok(InferenceEligibility::Staked { .. })
+        ));
     }
 
     #[test]

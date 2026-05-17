@@ -1561,6 +1561,50 @@ async fn openai_chat_completions(
             )
         })?;
 
+    // Phase 21 Wave 1 — optional stake-required mining enforcement.
+    //
+    // When `stake_gate_enabled` is set on the running config, refuse
+    // to serve inference unless the local node passes
+    // `ComputeLedger::inference_eligibility`. The check has three
+    // possible outcomes:
+    //
+    //   - `Staked`              → pass (≥ MIN_PROVIDER_STAKE_TRM locked)
+    //   - `BootstrapWindow`     → pass (under the stakeless earn cap)
+    //   - `PreviouslySlashed` | `StakeRequired` → 403 with the
+    //                             machine-readable reason in the body.
+    //
+    // Default is `false` so this PR ships strictly additively. A
+    // follow-up wave (Phase 21 Wave 2) integrates welcome-loan
+    // eligibility into the verdict and flips the default to `true`.
+    if state.config.stake_gate_enabled {
+        let ledger = state.ledger.lock().await;
+        let staking = state.staking_pool.lock().await;
+        let verdict =
+            ledger.inference_eligibility(&state.local_node_id, &staking, now_millis());
+        drop(ledger);
+        drop(staking);
+        if let Err(ineligible) = verdict {
+            return Err((
+                StatusCode::FORBIDDEN,
+                serde_json::json!({
+                    "error": {
+                        "type": "stake_gate_denied",
+                        "message": ineligible.to_string(),
+                        "code": match &ineligible {
+                            tirami_ledger::InferenceIneligible::PreviouslySlashed => {
+                                "previously_slashed"
+                            }
+                            tirami_ledger::InferenceIneligible::StakeRequired { .. } => {
+                                "stake_required"
+                            }
+                        },
+                    }
+                })
+                .to_string(),
+            ));
+        }
+    }
+
     let model = model_name(&state.model_manifest).await;
     let stream = req.stream.unwrap_or(false);
     let consumer_id = parse_consumer_header(&headers);
@@ -6451,6 +6495,128 @@ mod tests {
                 name
             );
         }
+    }
+
+    // ------------------------------------------------------------------
+    // Phase 21 Wave 1 — stake-required mining enforcement gate
+    // ------------------------------------------------------------------
+
+    fn chat_body_minimum() -> serde_json::Value {
+        serde_json::json!({
+            "messages": [{ "role": "user", "content": "hi" }],
+            "max_tokens": 1,
+        })
+    }
+
+    async fn post_chat(app: Router, body: serde_json::Value) -> StatusCode {
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/chat/completions")
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        response.status()
+    }
+
+    /// When the gate is OFF (default), a fresh node hits the chat
+    /// endpoint without seeing a 403. We don't assert success because
+    /// the test router has no real model loaded — but the response
+    /// must NOT be FORBIDDEN, otherwise the gate fired unexpectedly.
+    #[tokio::test]
+    async fn stake_gate_disabled_does_not_403() {
+        let mut config = Config::default();
+        config.stake_gate_enabled = false;
+        let app = test_router_with_agent(config, None);
+        let status = post_chat(app, chat_body_minimum()).await;
+        assert_ne!(
+            status,
+            StatusCode::FORBIDDEN,
+            "gate disabled should not return 403"
+        );
+    }
+
+    /// When the gate is ON and the local node is fresh (cumulative
+    /// contribution = 0), the BootstrapWindow verdict applies and the
+    /// request passes the gate. Same not-403 assertion.
+    #[tokio::test]
+    async fn stake_gate_enabled_bootstrap_window_does_not_403() {
+        let mut config = Config::default();
+        config.stake_gate_enabled = true;
+        let app = test_router_with_agent(config, None);
+        let status = post_chat(app, chat_body_minimum()).await;
+        assert_ne!(
+            status,
+            StatusCode::FORBIDDEN,
+            "fresh node in bootstrap window should pass the gate"
+        );
+    }
+
+    /// When the gate is ON and the local node has consumed its
+    /// stakeless earn cap (≥ STAKELESS_EARN_CAP_TRM contributed) and
+    /// has no posted stake, the gate fires with 403 + a machine-
+    /// readable `stake_required` code.
+    #[tokio::test]
+    async fn stake_gate_enabled_past_cap_returns_403_stake_required() {
+        use tirami_ledger::{ComputeLedger, TradeRecord};
+        // The test router derives `local_node_id = NodeId([0u8; 32])`
+        // when no ClusterManager is wired (see `create_router_with_services`).
+        // Pre-populate the ledger so that node has already contributed
+        // past the stakeless earn cap.
+        let mut ledger = ComputeLedger::new();
+        let local = tirami_core::NodeId([0u8; 32]);
+        let trade = TradeRecord {
+            provider: local.clone(),
+            consumer: tirami_core::NodeId([0x77u8; 32]),
+            trm_amount: tirami_ledger::lending::STAKELESS_EARN_CAP_TRM + 1,
+            tokens_processed: 1,
+            timestamp: 0,
+            model_id: "phase21-prep".into(),
+            flops_estimated: 0,
+            nonce: [0u8; 16],
+        };
+        ledger.execute_trade(&trade);
+
+        let mut config = Config::default();
+        config.stake_gate_enabled = true;
+        let app = test_router_with_agent_and_ledger(config, None, ledger, None);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/chat/completions")
+                    .header("content-type", "application/json")
+                    .body(Body::from(chat_body_minimum().to_string()))
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        // The handler returned a JSON string but `(StatusCode, String)`
+        // is encoded as text/plain, which the `json_error_envelope`
+        // middleware wraps into `{"error":{"code":N,"message":"..."}}`.
+        // Our original JSON lands as the *string* value of
+        // `error.message`. Parse it back.
+        let outer: serde_json::Value = serde_json::from_slice(&bytes).expect("outer json");
+        assert_eq!(outer["error"]["code"], 403);
+        let inner_str = outer["error"]["message"].as_str().expect("inner message");
+        let inner: serde_json::Value =
+            serde_json::from_str(inner_str).expect("inner json from string");
+        assert_eq!(inner["error"]["type"], "stake_gate_denied");
+        assert_eq!(inner["error"]["code"], "stake_required");
+        let msg = inner["error"]["message"].as_str().unwrap_or("");
+        assert!(
+            msg.contains("stakeless earn cap"),
+            "unexpected inner message: {msg}"
+        );
     }
 
     // ------------------------------------------------------------------

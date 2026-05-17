@@ -24,8 +24,8 @@ pub mod zk;
 
 pub use collusion::{CollusionDetector, CollusionReport};
 pub use ledger::{
-    ComputeLedger, MarketPrice, NetworkStats, SettlementNode, SettlementStatement,
-    SignatureError, SignedTradeRecord, TradeRecord,
+    ComputeLedger, InferenceEligibility, InferenceIneligible, MarketPrice, NetworkStats,
+    SettlementNode, SettlementStatement, SignatureError, SignedTradeRecord, TradeRecord,
 };
 pub use lending::{
     LoanRecord, LoanSignatureError, LoanStatus, ModelTier, SignedLoanRecord,

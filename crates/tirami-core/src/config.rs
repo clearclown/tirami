@@ -47,6 +47,16 @@ pub struct Config {
     /// Maximum accepted HTTP request body size for the local API.
     pub api_max_request_body_bytes: usize,
 
+    /// Phase 21 Wave 1 — when `true`, refuse `/v1/chat/completions`
+    /// requests unless the local node passes
+    /// [`tirami_ledger::ComputeLedger::can_provide_inference`].
+    /// Default `false` for backwards-compat with existing deploys
+    /// that have no stake configured. Wave 2 of Phase 21 adds
+    /// welcome-loan-counts-as-stake semantics and flips this default
+    /// to `true`.
+    #[serde(default)]
+    pub stake_gate_enabled: bool,
+
     /// Bootstrap relay addresses for WAN discovery.
     pub bootstrap_relays: Vec<String>,
 
@@ -315,6 +325,7 @@ impl Default for Config {
             api_bind_addr: "127.0.0.1".to_string(),
             api_bearer_token: None,
             api_max_request_body_bytes: 64 * 1024,
+            stake_gate_enabled: false,
             bootstrap_relays: vec![],
             p2p_bind_addr: None,
             bootstrap_peers: vec![],

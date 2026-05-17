@@ -27,6 +27,7 @@ pub struct AgentManifest {
     /// `POST /v1/tirami/agent/identity/init` called.
     pub agent_did: Option<String>,
     pub currency: CurrencySpec,
+    pub policy: PolicySpec,
     pub actions: Vec<ActionDescriptor>,
     pub discovery: DiscoveryLinks,
     pub maintainer_stance: MaintainerStance,
@@ -39,6 +40,18 @@ pub struct CurrencySpec {
     pub anchor_constitutional: bool,
     pub supply_cap: u64,
     pub exchange_listed: bool,
+}
+
+/// Phase 21 Wave 1 — node-policy block exposed to agents at
+/// discovery time so they know what to expect *before* their first
+/// inference call.
+#[derive(Debug, Serialize)]
+pub struct PolicySpec {
+    /// True when this node enforces stake-required mining
+    /// ([`Config::stake_gate_enabled`]). Agents may decide to switch
+    /// to a different provider, post stake, or claim a welcome loan
+    /// based on this flag rather than discovering it via a 403.
+    pub stake_gate_enabled: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -235,6 +248,9 @@ pub(crate) async fn well_known_agent_manifest(
         protocol: "tirami",
         node_id: hex::encode(state.local_node_id.0),
         agent_did,
+        policy: PolicySpec {
+            stake_gate_enabled: state.config.stake_gate_enabled,
+        },
         currency: CurrencySpec {
             unit: "TRM",
             anchor_flops_per_unit: FLOPS_PER_CU,

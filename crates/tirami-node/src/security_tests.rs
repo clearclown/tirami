@@ -709,6 +709,7 @@ mod security_tests {
             Arc::new(tirami_anchor::MockChainClient::new()),
             Arc::new(Mutex::new(None::<tirami_mind::PersonalAgent>)),
             Arc::new(Mutex::new(crate::agent_loop::AgentLoopStats::new())),
+            Arc::new(Mutex::new(None)),
         );
         let _ = state; // suppress unused warning
 

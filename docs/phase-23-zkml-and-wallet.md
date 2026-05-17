@@ -157,14 +157,66 @@ would require ~minutes of test setup and is deferred until Wave
 2.5 lands AppState↔TiramiNode handle-sharing (so the HTTP layer
 can drive the same identity slot the pipeline reads).
 
-### Wave 2.5 (immediate follow-up)
+### Wave 2.5 — shared agent_identity Arc ✅ shipped
 
-The AgentIdentity slot now exists on both `TiramiNode` and
-`AppState` but they're **disjoint instances** — populating one via
-HTTP doesn't affect what the pipeline reads. Wave 2.5 unifies them
-by having `create_router_with_services` accept (or take ownership
-of) the `TiramiNode.agent_identity` Arc instead of constructing
-its own.
+Wave 2 left an awkward decoupling: `AppState.agent_identity` and
+`TiramiNode.agent_identity` were two **disjoint** instances of
+`Arc<Mutex<Option<AgentIdentity>>>`. HTTP `agent/identity/init`
+populated AppState's slot only — the pipeline kept reading the
+TiramiNode slot, which remained `None` forever. Wave 2's signing
+logic was correct but unreachable.
+
+Wave 2.5 unifies them:
+
+- **`create_router_with_services` gained an `agent_identity:
+  Arc<Mutex<Option<AgentIdentity>>>` parameter.** AppState now
+  stores the supplied handle instead of constructing its own. All
+  6 call sites updated (the thin `create_router` wrapper, the
+  two `TiramiNode` API entrypoints, the test helpers, and
+  `security_tests.rs`).
+- **`TiramiNode::serve_api` and `serve_api_with_listener` pass
+  `self.agent_identity.clone()`** — the SAME Arc the pipeline
+  receives through `run_seed`. HTTP-side mutations are now
+  immediately visible to the signing path.
+- **Test helpers default to a fresh, unshared Arc** so the 1,354
+  pre-Wave-2.5 tests stay unchanged.
+
+### Properties guaranteed
+
+| Property | Pre-Wave-2.5 | Post-Wave-2.5 |
+|---|---|---|
+| HTTP `init_identity` updates AppState's agent_identity slot | ✅ | ✅ |
+| Same call updates the slot the pipeline reads | ❌ (disjoint Arc) | ✅ (shared Arc) |
+| Cross-node import propagates to pipeline | ❌ | ✅ |
+| Pre-Wave-2.5 callers (tests, simple `create_router`) still work | ✅ | ✅ (unshared default) |
+
+### Tests
+
+2 new integration tests, all green:
+- `shared_agent_identity_arc_receives_init` — caller supplies an
+  externally-held Arc, hits `POST /v1/tirami/agent/identity/init`
+  over HTTP, then re-reads the external Arc and confirms the DID
+  matches the HTTP response.
+- `shared_agent_identity_arc_replaced_on_import` — same shape but
+  for the `/import` path, including the export-from-A → import-on-B
+  cross-node round-trip.
+
+Workspace: **1,356 passed, 0 failed** (was 1,354 → +2 new).
+
+### Live smoke
+
+`tirami start --port 3018`:
+
+  [1] pre-init  /v1/tirami/agent/status        → wallet_source: machine_node, wallet: 30156cf7…
+  [2] POST /v1/tirami/agent/identity/init      → did:tirami:47b4a62b…
+  [3] post-init /.well-known/tirami-agent.json → agent_did: did:tirami:47b4a62b…
+  [3] post-init /v1/tirami/agent/status        → wallet_source: agent_identity, wallet: 47b4a62b…
+                                                  (matches DID pubkey byte-for-byte)
+
+The fact that `manifest.agent_did` and `status.wallet` are
+*consistent* after init — and would be consistent for the
+pipeline-side signer if there were P2P traffic to observe — is
+the property Wave 2.5 makes structural rather than coincidental.
 
 ## Wave 3+ candidates
 

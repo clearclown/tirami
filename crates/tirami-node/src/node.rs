@@ -214,6 +214,10 @@ impl TiramiNode {
             self.chain_client.clone(),
             self.personal_agent.clone(),
             self.agent_loop_stats.clone(),
+            // Phase 23 Wave 2.5 — share the *same* AgentIdentity Arc
+            // with the pipeline. HTTP `agent/identity/init` now
+            // populates the slot the signer reads.
+            self.agent_identity.clone(),
         );
         let addr = self.config.api_socket_addr();
         tracing::info!("API server listening on {}", addr);
@@ -247,6 +251,7 @@ impl TiramiNode {
         let chain_client_api = self.chain_client.clone();
         let personal_agent_api = self.personal_agent.clone();
         let agent_loop_stats_api = self.agent_loop_stats.clone();
+        let agent_identity_api = self.agent_identity.clone();
         let api_config = self.config.clone();
         tokio::spawn(async move {
             let app = crate::api::create_router_with_services(
@@ -267,6 +272,8 @@ impl TiramiNode {
                 chain_client_api,
                 personal_agent_api,
                 agent_loop_stats_api,
+                // Phase 23 Wave 2.5 — shared Arc.
+                agent_identity_api,
             );
             let addr = api_config.api_socket_addr();
             if let Ok(listener) = tokio::net::TcpListener::bind(&addr).await {

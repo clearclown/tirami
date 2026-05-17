@@ -25,6 +25,8 @@ pub const FEATURE_ZKML_BACKEND_MOCK: &str = "zkml-backend:mock";
 pub const FEATURE_ZKML_BACKEND_ED_ATTEST: &str = "zkml-backend:ed-attest";
 pub const FEATURE_ZKML_BACKEND_EZKL: &str = "zkml-backend:ezkl";
 pub const FEATURE_ZKML_BACKEND_RISC0: &str = "zkml-backend:risc0";
+// Phase 24 Wave 5.2 — host-side risc0 verifier (real risc0-zkvm).
+pub const FEATURE_ZKML_BACKEND_RISC0_HOST: &str = "zkml-backend:risc0-host";
 pub const FEATURE_ZKML_BACKEND_HALO2: &str = "zkml-backend:halo2";
 // Phase 24 Wave 5.1 — machine-readable taxonomy of how strong the
 // node's configured backend's proof is. Agents read this to route
@@ -44,8 +46,13 @@ pub const FEATURE_ZKML_STRENGTH_COMPUTE_BOUND: &str = "zkml-strength:compute-bou
 pub fn zkml_backend_strength_tag(backend: &str) -> &'static str {
     match backend.trim().to_ascii_lowercase().as_str() {
         "ed-attest" => "cryptographic",
+        // Phase 24 Wave 5.2 — host-side risc0 verifier with the
+        // real risc0-zkvm crate. STARK receipts verified
+        // cryptographically against a trusted image ID.
+        "risc0-host" => "input-output-bound",
         // Scaffold backends — real risc0/ezkl/halo2 bumps this to
-        // "input-output-bound" once Wave 5.1+ wires the real crates.
+        // "input-output-bound" once Wave 5.2+ wires the real crates
+        // for them too.
         "mock" | "ezkl" | "risc0" | "halo2" => "none",
         _ => "none",
     }
@@ -98,6 +105,7 @@ pub fn advertised_protocol_features_with_backend(
         "ed-attest" => features.push(FEATURE_ZKML_BACKEND_ED_ATTEST.to_string()),
         "ezkl" => features.push(FEATURE_ZKML_BACKEND_EZKL.to_string()),
         "risc0" => features.push(FEATURE_ZKML_BACKEND_RISC0.to_string()),
+        "risc0-host" => features.push(FEATURE_ZKML_BACKEND_RISC0_HOST.to_string()),
         "halo2" => features.push(FEATURE_ZKML_BACKEND_HALO2.to_string()),
         _ => {}
     }

@@ -539,6 +539,118 @@ pub fn verify_ed_attest_proof_by_signer(
 }
 
 // ---------------------------------------------------------------------------
+// Phase 24 Wave 5.2 — risc0-zkvm host-side verifier
+// ---------------------------------------------------------------------------
+//
+// What this backend does:
+//
+//   - `verify`: deserialise a real `risc0_zkvm::Receipt` from the
+//     wire `bytes`, cryptographically verify the STARK against
+//     the configured image ID, then cross-check the journal
+//     commits to the exact `BenchSpec` we're verifying against.
+//     A passing verify means the (model_hash, prompt_hash,
+//     output_hash, token_count, flops) tuple was produced by a
+//     trusted-image execution — `BackendStrength::InputOutputBound`.
+//
+// What this backend does NOT yet do (Wave 5.2.1+):
+//
+//   - `prove`: today returns `BackendUnavailable`. Real proving
+//     requires a guest ELF + Risc-V toolchain prebuild. Wave 5.2
+//     ships only the host-side wire-up so receivers can verify
+//     proofs produced by other operators who have the toolchain.
+
+#[cfg(feature = "risc0-host")]
+pub mod risc0_host {
+    use super::{BackendStrength, BenchBackend, BenchError, BenchProof, BenchSpec};
+    use sha2::{Digest, Sha256};
+
+    /// Canonical journal commitment a guest is expected to write —
+    /// the host re-derives it from the `BenchSpec` and cross-checks
+    /// against the journal in the receipt.
+    pub fn expected_journal_commit(spec: &BenchSpec) -> [u8; 32] {
+        let mut h = Sha256::new();
+        h.update(b"tirami-risc0-commit-v1");
+        h.update(spec.model_hash);
+        h.update(spec.prompt_hash);
+        h.update(spec.output_hash);
+        h.update(spec.token_count.to_le_bytes());
+        h.update(spec.flops.to_le_bytes());
+        h.finalize().into()
+    }
+
+    /// Host-side risc0 backend. Holds the 32-byte image ID of the
+    /// trusted guest ELF. Verifier-only until Wave 5.2.1+ adds the
+    /// guest binary.
+    #[derive(Debug, Clone, Copy)]
+    pub struct Risc0HostBackend {
+        pub image_id: [u8; 32],
+    }
+
+    impl Risc0HostBackend {
+        pub const NAME: &'static str = "risc0-host";
+
+        pub fn new(image_id: [u8; 32]) -> Self {
+            Self { image_id }
+        }
+    }
+
+    impl BenchBackend for Risc0HostBackend {
+        fn name(&self) -> &'static str {
+            Self::NAME
+        }
+
+        fn prove(&self, _spec: &BenchSpec) -> Result<BenchProof, BenchError> {
+            // Wave 5.2.1+ wires the guest ELF + cargo-risczero
+            // toolchain. Today the host crate is verifier-only.
+            Err(BenchError::BackendUnavailable(
+                "risc0-host: prove requires guest ELF (Wave 5.2.1+)",
+            ))
+        }
+
+        fn verify(&self, spec: &BenchSpec, proof: &BenchProof) -> Result<(), BenchError> {
+            if proof.backend != Self::NAME {
+                return Err(BenchError::VerifyFailed(format!(
+                    "wrong backend: {}",
+                    proof.backend
+                )));
+            }
+            // Step 1: bincode-decode the receipt.
+            let receipt: risc0_zkvm::Receipt =
+                bincode::deserialize(&proof.bytes).map_err(|e| {
+                    BenchError::VerifyFailed(format!("receipt decode: {e}"))
+                })?;
+            // Step 2: cryptographically verify the STARK against
+            // the trusted image ID. The risc0 crate handles the
+            // FRI-based proof system internally.
+            receipt
+                .verify(self.image_id)
+                .map_err(|e| BenchError::VerifyFailed(format!("receipt verify: {e}")))?;
+            // Step 3: cross-check the public journal commits to
+            // this exact BenchSpec. The receipt's STARK only
+            // proves "the guest ran and committed *something*";
+            // we still need to bind that something to the spec.
+            let journal_commit: [u8; 32] = receipt.journal.decode().map_err(|e| {
+                BenchError::VerifyFailed(format!("journal decode: {e}"))
+            })?;
+            let expected = expected_journal_commit(spec);
+            if journal_commit != expected {
+                return Err(BenchError::VerifyFailed(
+                    "journal commit does not match spec".into(),
+                ));
+            }
+            Ok(())
+        }
+
+        fn strength(&self) -> BackendStrength {
+            BackendStrength::InputOutputBound
+        }
+    }
+}
+
+#[cfg(feature = "risc0-host")]
+pub use risc0_host::Risc0HostBackend;
+
+// ---------------------------------------------------------------------------
 // Phase 24 Wave 2 — TradeAttestation <-> BenchProof conversion
 // ---------------------------------------------------------------------------
 
@@ -613,6 +725,12 @@ pub enum BenchBackendKind {
     Ezkl,
     /// ZKVM-based zk-STARK (feature `risc0`). Same caveat.
     Risc0,
+    /// Phase 24 Wave 5.2 — host-side risc0 verifier wired to the
+    /// real `risc0-zkvm` crate (feature `risc0-host`). `prove`
+    /// still returns `BackendUnavailable` (guest ELF is Wave
+    /// 5.2.1+), but `verify` cryptographically checks STARK
+    /// receipts produced elsewhere. Strength: `InputOutputBound`.
+    Risc0Host,
     /// Halo2 generic. Same caveat.
     Halo2,
 }
@@ -640,6 +758,7 @@ impl BenchBackendKind {
             Self::EdAttest => EdAttestBackend::NAME,
             Self::Ezkl => "ezkl",
             Self::Risc0 => "risc0",
+            Self::Risc0Host => "risc0-host",
             Self::Halo2 => "halo2",
         }
     }
@@ -663,6 +782,10 @@ impl BenchBackendKind {
             // Scaffold backends are NOT zk; real risc0/ezkl/halo2
             // lands in Wave 5.1+ and bumps the strength.
             Self::Ezkl | Self::Risc0 | Self::Halo2 => BackendStrength::None,
+            // Phase 24 Wave 5.2 — host-side real risc0 verifier
+            // (prove still pending guest ELF, but verify
+            // cryptographically checks STARK receipts).
+            Self::Risc0Host => BackendStrength::InputOutputBound,
         }
     }
 }
@@ -1215,6 +1338,7 @@ mod tests {
             BenchBackendKind::EdAttest,
             BenchBackendKind::Ezkl,
             BenchBackendKind::Risc0,
+            BenchBackendKind::Risc0Host,
             BenchBackendKind::Halo2,
         ] {
             assert_eq!(
@@ -1226,6 +1350,132 @@ mod tests {
                 tirami_core::zkml_backend_strength_tag(kind.name()),
             );
         }
+    }
+
+    // ---- Phase 24 Wave 5.2 — Risc0Host backend (host-side verifier) ----
+
+    #[test]
+    fn risc0_host_kind_name_is_kebab_case() {
+        assert_eq!(BenchBackendKind::Risc0Host.name(), "risc0-host");
+    }
+
+    #[test]
+    fn risc0_host_kind_strength_is_input_output_bound() {
+        assert_eq!(
+            BenchBackendKind::Risc0Host.strength(),
+            BackendStrength::InputOutputBound,
+        );
+    }
+
+    #[test]
+    fn risc0_host_serialises_as_kebab_case_for_config() {
+        let k = BenchBackendKind::Risc0Host;
+        let s = serde_json::to_string(&k).unwrap();
+        assert_eq!(s, "\"risc0-host\"");
+        let parsed: BenchBackendKind =
+            serde_json::from_str("\"risc0-host\"").unwrap();
+        assert_eq!(parsed, BenchBackendKind::Risc0Host);
+    }
+
+    #[test]
+    fn tirami_core_taxonomy_recognises_risc0_host_as_input_output_bound() {
+        assert_eq!(
+            tirami_core::zkml_backend_strength_tag("risc0-host"),
+            "input-output-bound",
+        );
+    }
+
+    // Feature-gated tests that touch the actual risc0_zkvm crate.
+    // These exercise the verifier's malformed-input handling without
+    // needing a real Receipt (which requires the Risc-V toolchain
+    // landing in Wave 5.2.1+).
+
+    #[cfg(feature = "risc0-host")]
+    #[test]
+    fn risc0_host_backend_name_matches_kind() {
+        let b = Risc0HostBackend::new([0u8; 32]);
+        assert_eq!(b.name(), BenchBackendKind::Risc0Host.name());
+    }
+
+    #[cfg(feature = "risc0-host")]
+    #[test]
+    fn risc0_host_backend_strength_via_trait_matches_kind() {
+        let b = Risc0HostBackend::new([0u8; 32]);
+        assert_eq!(b.strength(), BenchBackendKind::Risc0Host.strength());
+        assert_eq!(b.strength(), BackendStrength::InputOutputBound);
+    }
+
+    #[cfg(feature = "risc0-host")]
+    #[test]
+    fn risc0_host_prove_returns_backend_unavailable_until_guest_lands() {
+        // Wave 5.2 is host-verifier-only; prove requires the guest
+        // ELF + Risc-V toolchain (Wave 5.2.1+). Calling prove must
+        // fail cleanly, not panic.
+        let b = Risc0HostBackend::new([0u8; 32]);
+        let err = b.prove(&spec()).unwrap_err();
+        assert!(matches!(err, BenchError::BackendUnavailable(msg) if msg.contains("guest ELF")));
+    }
+
+    #[cfg(feature = "risc0-host")]
+    #[test]
+    fn risc0_host_verify_rejects_wrong_backend_label() {
+        let b = Risc0HostBackend::new([0u8; 32]);
+        let proof = BenchProof {
+            backend: "mock-sha256".into(),
+            bytes: vec![0u8; 100],
+        };
+        let err = b.verify(&spec(), &proof).unwrap_err();
+        assert!(matches!(err, BenchError::VerifyFailed(msg) if msg.contains("wrong backend")));
+    }
+
+    #[cfg(feature = "risc0-host")]
+    #[test]
+    fn risc0_host_verify_rejects_malformed_receipt_bytes() {
+        // Random bytes are not a valid bincode-encoded Receipt;
+        // verify must reject cleanly without panicking through
+        // risc0-zkvm's deserialiser.
+        let b = Risc0HostBackend::new([0u8; 32]);
+        let proof = BenchProof {
+            backend: "risc0-host".into(),
+            bytes: vec![0xAB; 50],
+        };
+        let err = b.verify(&spec(), &proof).unwrap_err();
+        assert!(matches!(err, BenchError::VerifyFailed(msg) if msg.contains("decode")));
+    }
+
+    #[cfg(feature = "risc0-host")]
+    #[test]
+    fn risc0_host_expected_journal_commit_is_deterministic() {
+        use crate::risc0_host::expected_journal_commit;
+        let a = expected_journal_commit(&spec());
+        let b = expected_journal_commit(&spec());
+        assert_eq!(a, b);
+    }
+
+    #[cfg(feature = "risc0-host")]
+    #[test]
+    fn risc0_host_expected_journal_commit_changes_with_spec_fields() {
+        use crate::risc0_host::expected_journal_commit;
+        let base = expected_journal_commit(&spec());
+        let mut s2 = spec();
+        s2.token_count += 1;
+        assert_ne!(base, expected_journal_commit(&s2));
+        let mut s3 = spec();
+        s3.prompt_hash[0] ^= 0xFF;
+        assert_ne!(base, expected_journal_commit(&s3));
+    }
+
+    #[cfg(feature = "risc0-host")]
+    #[test]
+    fn risc0_host_image_id_distinguishes_backend_instances() {
+        // Different image IDs are different "trust roots" — a
+        // receipt valid under image A must not pass under image B.
+        // We can't construct a real receipt here, but we can at
+        // least verify the field plumbs through Clone/Copy + the
+        // image_id is structurally visible.
+        let a = Risc0HostBackend::new([0xAAu8; 32]);
+        let b = Risc0HostBackend::new([0xBBu8; 32]);
+        assert_ne!(a.image_id, b.image_id);
     }
 
     #[test]

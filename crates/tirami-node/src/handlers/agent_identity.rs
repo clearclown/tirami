@@ -135,7 +135,13 @@ pub(crate) async fn init_identity(
     }
     let id = AgentIdentity::generate(now_millis_pub(), req.display_name);
     let view = IdentityPublicView::from(&id);
+    let pk = id.public_key_bytes();
     *guard = Some(id);
+    drop(guard);
+    // Phase 23 Wave 1 — propagate the new identity to the
+    // PersonalAgent wallet so trade attribution follows the DID,
+    // not the machine key.
+    rebind_personal_agent_wallet(&state, pk).await;
     Ok(Json(view))
 }
 
@@ -167,8 +173,25 @@ pub(crate) async fn import_identity(
 ) -> Result<Json<IdentityPublicView>, (StatusCode, String)> {
     check_forge_rate_limit(&state).await?;
     let imported = AgentIdentity::import(&req.bundle, &req.passphrase).map_err(map_err)?;
+    let pk = imported.public_key_bytes();
     let view = IdentityPublicView::from(&imported);
     let mut guard = state.agent_identity.lock().await;
     *guard = Some(imported);
+    drop(guard);
+    // Phase 23 Wave 1 — same rebind hook as `init_identity`.
+    rebind_personal_agent_wallet(&state, pk).await;
     Ok(Json(view))
+}
+
+/// Phase 23 Wave 1 — propagate a fresh agent pubkey down to the
+/// `PersonalAgent.wallet` slot, if one is configured.
+///
+/// No-op when no PersonalAgent exists. Idempotent when the agent's
+/// wallet already matches `pk` and its source is already
+/// `WalletSource::AgentIdentity`.
+async fn rebind_personal_agent_wallet(state: &AppState, pk: [u8; 32]) {
+    let mut guard = state.personal_agent.lock().await;
+    if let Some(agent) = guard.as_mut() {
+        agent.rebind_wallet_from_agent_identity(pk, now_millis_pub());
+    }
 }

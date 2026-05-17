@@ -3848,6 +3848,11 @@ async fn forge_agent_status(
     Ok(Json(serde_json::json!({
         "configured": true,
         "wallet": agent.wallet.to_hex(),
+        // Phase 23 Wave 1 — provenance discriminator. Clients can
+        // tell at a glance whether trades attribute to the machine
+        // (`machine_node`) or a portable AgentIdentity
+        // (`agent_identity`).
+        "wallet_source": agent.wallet_source,
         "spent_today_trm": agent.spent_today_trm,
         "earned_today_trm": agent.earned_today_trm,
         "net_today_trm": agent.net_today_trm(),
@@ -7279,6 +7284,187 @@ mod tests {
             events.iter().any(|e| e["reason"] == "welcome-loan-default"),
             "no welcome-loan-default in {events:?}"
         );
+    }
+
+    // ------------------------------------------------------------------
+    // Phase 23 Wave 1 — PersonalAgent.wallet ↔ AgentIdentity link
+    // ------------------------------------------------------------------
+
+    async fn get_agent_status(app: Router) -> (StatusCode, serde_json::Value) {
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/v1/tirami/agent/status")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        (status, serde_json::from_slice(&bytes).unwrap_or_default())
+    }
+
+    /// A fresh PersonalAgent without any AgentIdentity init must
+    /// report `wallet_source = "machine_node"` and a wallet equal to
+    /// the test-router's deterministic local NodeId.
+    #[tokio::test]
+    async fn agent_status_pre_identity_reports_machine_node_source() {
+        let agent_node_id = NodeId([0xAAu8; 32]);
+        let app = test_router_with_agent(Config::default(), Some(agent_at(agent_node_id.clone())));
+        let (status, body) = get_agent_status(app).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["configured"], true);
+        assert_eq!(body["wallet_source"], "machine_node");
+        assert_eq!(body["wallet"].as_str().unwrap(), agent_node_id.to_hex());
+    }
+
+    /// After `POST /v1/tirami/agent/identity/init`, the PersonalAgent's
+    /// wallet must flip to the new DID's pubkey AND the
+    /// `wallet_source` must report `agent_identity`.
+    #[tokio::test]
+    async fn agent_identity_init_rebinds_personal_agent_wallet() {
+        let app = test_router_with_agent(
+            Config::default(),
+            Some(agent_at(NodeId([0xAAu8; 32]))),
+        );
+        // Pre-init: wallet is the machine NodeId.
+        let (_, pre) = get_agent_status(app.clone()).await;
+        assert_eq!(pre["wallet_source"], "machine_node");
+        let pre_wallet = pre["wallet"].as_str().unwrap().to_string();
+
+        // Init identity.
+        let (status, init) = post_identity_init(app.clone(), Some("alice")).await;
+        assert_eq!(status, StatusCode::OK);
+        let did = init["did"].as_str().unwrap().to_string();
+        // The DID is "did:tirami:<64-hex-pk>"; the pk part is what the
+        // wallet should now reflect.
+        let did_pk = did.strip_prefix("did:tirami:").unwrap();
+
+        // Post-init: wallet rebound to the DID's pubkey.
+        let (_, post) = get_agent_status(app).await;
+        assert_eq!(post["wallet_source"], "agent_identity");
+        assert_eq!(post["wallet"].as_str().unwrap(), did_pk);
+        assert_ne!(post["wallet"], pre_wallet, "wallet should change");
+    }
+
+    /// Idempotent init must NOT re-flip the wallet (no churn on
+    /// daily tallies).
+    #[tokio::test]
+    async fn agent_identity_init_idempotent_preserves_rebound_wallet() {
+        let app = test_router_with_agent(
+            Config::default(),
+            Some(agent_at(NodeId([0xAAu8; 32]))),
+        );
+        let (_, init1) = post_identity_init(app.clone(), Some("alice")).await;
+        let did1 = init1["did"].as_str().unwrap().to_string();
+        let (_, init2) = post_identity_init(app.clone(), Some("bob")).await;
+        // Idempotent — same DID returned, display name not updated.
+        assert_eq!(init2["did"], did1);
+        // Wallet unchanged.
+        let (_, status) = get_agent_status(app).await;
+        let did_pk = did1.strip_prefix("did:tirami:").unwrap();
+        assert_eq!(status["wallet"].as_str().unwrap(), did_pk);
+        assert_eq!(status["wallet_source"], "agent_identity");
+    }
+
+    /// Import (replacing a previously-imported identity) must rebind
+    /// the wallet to the imported DID's pubkey.
+    #[tokio::test]
+    async fn agent_identity_import_rebinds_personal_agent_wallet() {
+        let app_a = test_router_with_agent(
+            Config::default(),
+            Some(agent_at(NodeId([0xAAu8; 32]))),
+        );
+        let (_, init_a) = post_identity_init(app_a.clone(), Some("alice")).await;
+        let did_a = init_a["did"].as_str().unwrap().to_string();
+        let (_, bundle) = post_identity_export(app_a, "passphrase-1234567").await;
+
+        // Move to a second node and import.
+        let app_b = test_router_with_agent(
+            Config::default(),
+            Some(agent_at(NodeId([0xBBu8; 32]))),
+        );
+        // Pre-import on B: wallet is the machine NodeId
+        // ([0; 32] for the test router), source = machine_node.
+        let (_, pre_b) = get_agent_status(app_b.clone()).await;
+        assert_eq!(pre_b["wallet_source"], "machine_node");
+        let (status, view) =
+            post_identity_import(app_b.clone(), "passphrase-1234567", bundle).await;
+        assert_eq!(status, StatusCode::OK, "import: {view}");
+        assert_eq!(view["did"], did_a);
+        // Post-import on B: wallet now matches A's DID pubkey.
+        let (_, post_b) = get_agent_status(app_b).await;
+        assert_eq!(post_b["wallet_source"], "agent_identity");
+        let did_pk = did_a.strip_prefix("did:tirami:").unwrap();
+        assert_eq!(post_b["wallet"].as_str().unwrap(), did_pk);
+    }
+
+    /// Init on a node with NO PersonalAgent configured is a clean
+    /// no-op for the wallet path. The init itself succeeds; the
+    /// rebind is silently skipped.
+    #[tokio::test]
+    async fn agent_identity_init_without_personal_agent_is_safe() {
+        let app = test_router_with_agent(Config::default(), None);
+        let (status, _) = post_identity_init(app.clone(), Some("headless")).await;
+        assert_eq!(status, StatusCode::OK);
+        // Status reports "configured: false" since no PersonalAgent.
+        let (status, body) = get_agent_status(app).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["configured"], false);
+    }
+
+    /// Unit-level: rebinding to the same pubkey AND source is a
+    /// total no-op (does not reset daily tallies).
+    #[tokio::test]
+    async fn rebind_to_same_identity_does_not_reset_tallies() {
+        use tirami_mind::WalletSource;
+        let mut agent = agent_at(NodeId([0xAAu8; 32]));
+        let new_pk = [0xCCu8; 32];
+        agent.rebind_wallet_from_agent_identity(new_pk, 1_000_000);
+        agent.earned_today_trm = 5;
+        agent.spent_today_trm = 3;
+        // Rebind to the same pubkey + source.
+        agent.rebind_wallet_from_agent_identity(new_pk, 2_000_000);
+        // Tallies preserved.
+        assert_eq!(agent.earned_today_trm, 5);
+        assert_eq!(agent.spent_today_trm, 3);
+        assert_eq!(agent.wallet_source, WalletSource::AgentIdentity);
+    }
+
+    /// Unit-level: rebinding to a DIFFERENT pubkey resets tallies
+    /// (those belonged to whoever held the wallet before).
+    #[tokio::test]
+    async fn rebind_to_different_identity_resets_tallies() {
+        use tirami_mind::WalletSource;
+        let mut agent = agent_at(NodeId([0xAAu8; 32]));
+        agent.earned_today_trm = 100;
+        agent.spent_today_trm = 50;
+        agent.rebind_wallet_from_agent_identity([0xCCu8; 32], 1_000_000);
+        // Different pk → reset.
+        assert_eq!(agent.earned_today_trm, 0);
+        assert_eq!(agent.spent_today_trm, 0);
+        assert_eq!(agent.day_started_at_ms, 1_000_000);
+        assert_eq!(agent.wallet_source, WalletSource::AgentIdentity);
+    }
+
+    /// Status response from `/v1/tirami/agent/status` must serialise
+    /// the `wallet_source` enum using snake_case (so JSON consumers
+    /// don't have to deserialise PascalCase).
+    #[tokio::test]
+    async fn agent_status_wallet_source_serialises_as_snake_case() {
+        let app = test_router_with_agent(
+            Config::default(),
+            Some(agent_at(NodeId([0xAAu8; 32]))),
+        );
+        let (_, pre) = get_agent_status(app.clone()).await;
+        assert_eq!(pre["wallet_source"].as_str(), Some("machine_node"));
+        let (_, _) = post_identity_init(app.clone(), None).await;
+        let (_, post) = get_agent_status(app).await;
+        assert_eq!(post["wallet_source"].as_str(), Some("agent_identity"));
     }
 
     // ------------------------------------------------------------------

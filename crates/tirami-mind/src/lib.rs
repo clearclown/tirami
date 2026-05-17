@@ -35,5 +35,5 @@ pub use federated::{
 };
 pub use personal_agent::{
     AgentDecision, AgentPreferences, PersonalAgent, ServingRequest, TaskCostEstimate, TaskSize,
-    TickAction, TickContext,
+    TickAction, TickContext, WalletSource,
 };

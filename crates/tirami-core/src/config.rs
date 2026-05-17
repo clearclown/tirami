@@ -230,6 +230,15 @@ pub struct Config {
     /// Default `"mock"` matches `BenchBackendKind::default()`.
     #[serde(default = "default_zkml_backend")]
     pub zkml_backend: String,
+
+    /// Phase 25 A3 — when `true`, `GET /metrics` requires the same
+    /// bearer that `api_bearer_token` configures. Default `false`
+    /// preserves the Prometheus-friendly default for private
+    /// networks. Public-facing deployments should set this to
+    /// `true` so node-internal economic state doesn't leak to
+    /// scrapers without credentials.
+    #[serde(default)]
+    pub metrics_require_bearer: bool,
 }
 
 /// Phase 21 Wave 2 — stake gate is **on by default** so that fresh
@@ -412,6 +421,7 @@ impl Default for Config {
             agent_tick_interval_secs: 30,
             personal_agent_enabled: true,
             zkml_backend: "mock".to_string(),
+            metrics_require_bearer: false,
         }
     }
 }

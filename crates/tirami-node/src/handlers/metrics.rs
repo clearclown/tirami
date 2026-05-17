@@ -8,7 +8,7 @@
 
 use crate::api::{AppState, now_millis_pub};
 use axum::extract::State;
-use axum::http::{StatusCode, header};
+use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::IntoResponse;
 use tirami_ledger::metrics::TiramiMetrics;
 use std::sync::OnceLock;
@@ -18,10 +18,47 @@ fn metrics_instance() -> &'static TiramiMetrics {
     INSTANCE.get_or_init(TiramiMetrics::new)
 }
 
+/// Phase 25 A3 — check whether the presented bearer satisfies the
+/// metrics-protection policy. Returns `Ok(())` when the caller is
+/// allowed to read /metrics, or `Err` with the status/body to send.
+///
+/// Policy:
+///   - `config.metrics_require_bearer == false` (default): always allowed,
+///     preserving Prometheus-friendly behaviour for private networks.
+///   - `config.metrics_require_bearer == true`: the request must carry
+///     a bearer that matches `config.api_bearer_token`. Without a token
+///     configured the protection is meaningless, so the handler 503s
+///     to surface the misconfiguration.
+fn check_metrics_auth(state: &AppState, headers: &HeaderMap) -> Result<(), (StatusCode, String)> {
+    if !state.config.metrics_require_bearer {
+        return Ok(());
+    }
+    let Some(expected) = state.config.api_bearer_token.as_ref() else {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "metrics_require_bearer is set but no api_bearer_token configured".to_string(),
+        ));
+    };
+    let presented = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "));
+    if presented == Some(expected.as_str()) {
+        Ok(())
+    } else {
+        Err((
+            StatusCode::UNAUTHORIZED,
+            "metrics endpoint requires bearer auth".to_string(),
+        ))
+    }
+}
+
 /// GET /metrics — Prometheus exposition format.
 pub(crate) async fn metrics_handler(
     State(state): State<AppState>,
+    headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
+    check_metrics_auth(&state, &headers)?;
     let now_ms = now_millis_pub();
     let ledger = state.ledger.lock().await;
     let staking = state.staking_pool.lock().await;
@@ -81,5 +118,110 @@ mod tests {
             text.contains("# TYPE"),
             "missing # TYPE line in /metrics response"
         );
+    }
+
+    // -----------------------------------------------------------------
+    // Phase 25 A3 — metrics_require_bearer
+    // -----------------------------------------------------------------
+
+    #[tokio::test]
+    async fn metrics_default_is_open_for_prometheus_scrapers() {
+        // metrics_require_bearer = false (default) — Prometheus
+        // scraping behind a private boundary keeps working.
+        let mut config = Config::default();
+        config.api_bearer_token = Some("scrape-secret".to_string());
+        let app = test_router_default(config);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/metrics")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn metrics_require_bearer_rejects_unauthenticated() {
+        let mut config = Config::default();
+        config.metrics_require_bearer = true;
+        config.api_bearer_token = Some("scrape-secret".to_string());
+        let app = test_router_default(config);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/metrics")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn metrics_require_bearer_accepts_matching_token() {
+        let mut config = Config::default();
+        config.metrics_require_bearer = true;
+        config.api_bearer_token = Some("scrape-secret".to_string());
+        let app = test_router_default(config);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/metrics")
+                    .header("Authorization", "Bearer scrape-secret")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn metrics_require_bearer_rejects_wrong_token() {
+        let mut config = Config::default();
+        config.metrics_require_bearer = true;
+        config.api_bearer_token = Some("scrape-secret".to_string());
+        let app = test_router_default(config);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/metrics")
+                    .header("Authorization", "Bearer wrong")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn metrics_require_bearer_without_token_returns_503_misconfig() {
+        // If operator enables protection but forgets to configure the
+        // token, fail loud rather than silently letting all traffic
+        // through.
+        let mut config = Config::default();
+        config.metrics_require_bearer = true;
+        config.api_bearer_token = None;
+        let app = test_router_default(config);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/metrics")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
     }
 }

@@ -5446,6 +5446,9 @@ dependencies = [
 name = "tirami-zkml-bench"
 version = "0.3.0"
 dependencies = [
+ "ed25519-dalek 2.2.0",
+ "hex",
+ "rand 0.8.5",
  "serde",
  "serde_json",
  "sha2 0.10.9",

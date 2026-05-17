@@ -47,14 +47,16 @@ pub struct Config {
     /// Maximum accepted HTTP request body size for the local API.
     pub api_max_request_body_bytes: usize,
 
-    /// Phase 21 Wave 1 — when `true`, refuse `/v1/chat/completions`
+    /// Phase 21 Wave 1+2 — when `true`, refuse `/v1/chat/completions`
     /// requests unless the local node passes
-    /// [`tirami_ledger::ComputeLedger::can_provide_inference`].
-    /// Default `false` for backwards-compat with existing deploys
-    /// that have no stake configured. Wave 2 of Phase 21 adds
-    /// welcome-loan-counts-as-stake semantics and flips this default
-    /// to `true`.
-    #[serde(default)]
+    /// [`tirami_ledger::ComputeLedger::inference_eligibility`].
+    /// Default **`true`** as of Wave 2: a fresh node can pass via
+    /// the bootstrap window (≤ 10 TRM cumulative) or by claiming a
+    /// welcome loan (`POST /v1/tirami/agent/claim-welcome`,
+    /// 1 000 TRM × 72 h). Operators with custom flows that pre-
+    /// inflate contribution past the cap without staking can set
+    /// this to `false` explicitly.
+    #[serde(default = "default_stake_gate_enabled")]
     pub stake_gate_enabled: bool,
 
     /// Bootstrap relay addresses for WAN discovery.
@@ -195,6 +197,15 @@ pub struct Config {
     pub personal_agent_enabled: bool,
 }
 
+/// Phase 21 Wave 2 — stake gate is **on by default** so that fresh
+/// deploys start enforcing Sybil resistance immediately. Operators
+/// who want the pre-Wave-1 permissive behaviour can opt out by
+/// setting `stake_gate_enabled = false`. See
+/// `docs/phase-21-stake-enforcement.md` for the rationale.
+fn default_stake_gate_enabled() -> bool {
+    true
+}
+
 fn default_anchor_interval_secs() -> u64 {
     3600
 }
@@ -325,7 +336,7 @@ impl Default for Config {
             api_bind_addr: "127.0.0.1".to_string(),
             api_bearer_token: None,
             api_max_request_body_bytes: 64 * 1024,
-            stake_gate_enabled: false,
+            stake_gate_enabled: default_stake_gate_enabled(),
             bootstrap_relays: vec![],
             p2p_bind_addr: None,
             bootstrap_peers: vec![],

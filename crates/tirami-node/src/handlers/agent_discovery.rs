@@ -52,6 +52,18 @@ pub struct PolicySpec {
     /// to a different provider, post stake, or claim a welcome loan
     /// based on this flag rather than discovering it via a 403.
     pub stake_gate_enabled: bool,
+    /// Phase 21 Wave 2 — welcome-loan principal an agent can claim
+    /// via `POST /v1/tirami/agent/claim-welcome`. Lets the agent
+    /// budget around the 72-hour term before deciding to call.
+    pub welcome_loan_amount_trm: u64,
+    /// Phase 21 Wave 2 — welcome-loan term in hours. Fixed at
+    /// `WELCOME_LOAN_TERM_HOURS = 72`.
+    pub welcome_loan_term_hours: u64,
+    /// Phase 21 Wave 2 — `true` while the network's epoch is below
+    /// `WELCOME_LOAN_SUNSET_EPOCH` (constitutional). `false` means
+    /// the bootstrap window has closed permanently and claims will
+    /// 410.
+    pub welcome_loan_available: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -192,6 +204,14 @@ pub(crate) async fn well_known_agent_manifest(
             pricing: "free; public — DID-signed challenge → short-lived bearer token",
             auth_required: false,
         },
+        // Phase 21 Wave 2 — autonomous welcome-loan claim.
+        ActionDescriptor {
+            name: "claim_welcome_loan",
+            endpoint: "/v1/tirami/agent/claim-welcome",
+            method: "POST",
+            pricing: "free; grants WELCOME_LOAN_AMOUNT TRM for 72 h (one-shot per node)",
+            auth_required: true,
+        },
         ActionDescriptor {
             name: "agent_task",
             endpoint: "/v1/tirami/agent/task",
@@ -250,6 +270,16 @@ pub(crate) async fn well_known_agent_manifest(
         agent_did,
         policy: PolicySpec {
             stake_gate_enabled: state.config.stake_gate_enabled,
+            welcome_loan_amount_trm: tirami_ledger::lending::WELCOME_LOAN_AMOUNT,
+            welcome_loan_term_hours: tirami_ledger::lending::WELCOME_LOAN_TERM_HOURS,
+            // Best-effort: try a non-blocking read of the ledger. If
+            // contended, advertise `true` (the default for a fresh
+            // network) rather than blocking the manifest GET.
+            welcome_loan_available: match state.ledger.try_lock() {
+                Ok(l) => (l.current_epoch() as u64)
+                    < tirami_ledger::lending::WELCOME_LOAN_SUNSET_EPOCH,
+                Err(_) => true,
+            },
         },
         currency: CurrencySpec {
             unit: "TRM",

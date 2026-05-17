@@ -165,6 +165,39 @@ impl TokenStore {
         self.tokens.remove(token_hash).is_some()
     }
 
+    /// Phase 25 C7 — rotate a token: mint a fresh raw bearer with the
+    /// same scope and node_id as the old, but mark the old token to
+    /// expire after `grace_secs` so callers can overlap. Returns the
+    /// fresh raw token + the new `ApiToken` record, or `None` if the
+    /// old hash isn't present.
+    ///
+    /// Audit-log responsibility belongs to the HTTP handler; the store
+    /// just performs the swap.
+    pub fn rotate(
+        &mut self,
+        old_hash: &[u8; 32],
+        grace_secs: u64,
+        ttl_secs: u64,
+        now_ms: u64,
+    ) -> Option<(String, ApiToken)> {
+        let old = self.tokens.get(old_hash)?.clone();
+        // Pre-shorten the old token's expiry to `now + grace_secs` so
+        // callers have a bounded overlap window before it dies.
+        let new_old_expiry = now_ms.saturating_add(grace_secs.saturating_mul(1_000));
+        if let Some(tok) = self.tokens.get_mut(old_hash) {
+            tok.expires_at_ms = new_old_expiry;
+        }
+        // Mint the replacement.
+        let (raw, fresh) = self.issue(
+            old.node_id.clone(),
+            old.scope,
+            ttl_secs,
+            format!("rotated-from-{}", hex_encode(old_hash)),
+            now_ms,
+        );
+        Some((raw, fresh))
+    }
+
     /// Revoke by hex-encoded hash (admin-API convenience).
     pub fn revoke_hex(&mut self, hex_hash: &str) -> bool {
         let Some(hash) = hex_decode_32(hex_hash) else {
@@ -360,6 +393,65 @@ mod tests {
         assert!(store.revoke_hex(&hex));
         assert!(!store.revoke_hex("not-hex"));
         assert!(!store.revoke_hex(&"0".repeat(64))); // valid hex, unknown hash
+    }
+
+    // -----------------------------------------------------------------
+    // Phase 25 C7 — token rotation
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn rotate_mints_fresh_token_and_shortens_old_expiry() {
+        let mut store = TokenStore::new();
+        let (raw_old, old) =
+            store.issue(nid(10), ApiScope::Economy, 3_600, "before", 1_000);
+        let now = 2_000;
+        let (raw_new, fresh) = store
+            .rotate(&old.token_hash, 60, 3_600, now)
+            .expect("rotate must succeed");
+        // Two distinct raw tokens, two distinct hashes.
+        assert_ne!(raw_old, raw_new);
+        assert_ne!(old.token_hash, fresh.token_hash);
+        // Same scope + node_id propagate to the replacement.
+        assert_eq!(fresh.scope, ApiScope::Economy);
+        assert_eq!(fresh.node_id, old.node_id);
+        // Old token's expiry is shortened to (now + grace).
+        let store_old = store.tokens.get(&old.token_hash).expect("old still present");
+        assert_eq!(store_old.expires_at_ms, now + 60 * 1_000);
+    }
+
+    #[test]
+    fn rotate_overlap_window_lets_old_token_still_verify_within_grace() {
+        let mut store = TokenStore::new();
+        let (raw_old, old) =
+            store.issue(nid(11), ApiScope::ReadOnly, 3_600, "ol", 1_000);
+        let now = 2_000;
+        let _ = store.rotate(&old.token_hash, 30, 3_600, now).unwrap();
+        // Within the 30s grace window, the OLD raw still verifies.
+        assert!(matches!(
+            store.verify(&raw_old, ApiScope::ReadOnly, now + 10_000),
+            TokenVerdict::Ok(_)
+        ));
+        // Past the grace window, the OLD raw is expired.
+        assert!(matches!(
+            store.verify(&raw_old, ApiScope::ReadOnly, now + 60_000),
+            TokenVerdict::Expired
+        ));
+    }
+
+    #[test]
+    fn rotate_unknown_hash_returns_none() {
+        let mut store = TokenStore::new();
+        let result = store.rotate(&[0xFFu8; 32], 60, 3_600, 1_000);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn rotate_label_records_origin() {
+        let mut store = TokenStore::new();
+        let (_, old) =
+            store.issue(nid(12), ApiScope::Admin, 3_600, "orig", 1_000);
+        let (_, fresh) = store.rotate(&old.token_hash, 60, 3_600, 2_000).unwrap();
+        assert!(fresh.label.starts_with("rotated-from-"));
     }
 
     #[test]

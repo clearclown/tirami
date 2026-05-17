@@ -1373,6 +1373,62 @@ async fn health(State(state): State<AppState>) -> Json<HealthResponse> {
     })
 }
 
+/// Phase 25 A2 — structured 503 envelope for the inference path.
+///
+/// Returns an axum `Response` carrying:
+///   - status 503
+///   - `Retry-After: 30` header (HTTP-standard for transient outages)
+///   - `X-Tirami-Reason: <reason>` for client-side log triage
+///   - JSON body `{ error: { code, message, hint, retry_after_secs, type } }`
+///     where `hint` maps the failure mode to actionable guidance.
+///
+/// Agents reading this can decide between "wait and retry" vs.
+/// "fail over to a different peer" without parsing free-form prose.
+fn inference_unavailable_response(reason: &str) -> Response {
+    use axum::response::IntoResponse;
+    let lower = reason.to_ascii_lowercase();
+    let hint = if lower.contains("no connected peer cluster") {
+        "load a model locally (--model …) or join a mesh (--bootstrap …)"
+    } else if lower.contains("no peers connected") {
+        "wait for peer discovery or supply --bootstrap with a reachable seed"
+    } else if lower.contains("model not loaded") {
+        "POST /v1/forge/models/load or restart with --model"
+    } else {
+        "see /readyz for per-subsystem status"
+    };
+    let payload = serde_json::json!({
+        "error": {
+            "code": 503,
+            "message": reason,
+            "hint": hint,
+            "retry_after_secs": 30,
+            "type": "service_unavailable",
+        }
+    });
+    let mut resp = (StatusCode::SERVICE_UNAVAILABLE, Json(payload)).into_response();
+    let headers = resp.headers_mut();
+    headers.insert(
+        axum::http::header::RETRY_AFTER,
+        axum::http::HeaderValue::from_static("30"),
+    );
+    // Cap the reason header at a sane length and sanitise to ASCII
+    // so downstream proxies don't reject the response. Non-ASCII
+    // bytes (e.g. em-dash) get replaced with '-' rather than
+    // dropped, preserving word boundaries.
+    let reason_ascii: String = reason
+        .chars()
+        .map(|c| if c.is_ascii_graphic() || c == ' ' { c } else { '-' })
+        .take(120)
+        .collect();
+    let reason_header = axum::http::HeaderValue::from_str(&reason_ascii)
+        .unwrap_or_else(|_| axum::http::HeaderValue::from_static("inference-unavailable"));
+    headers.insert(
+        axum::http::HeaderName::from_static("x-tirami-reason"),
+        reason_header,
+    );
+    resp
+}
+
 /// Phase 25 A1 — Kubernetes-style liveness probe.
 ///
 /// MUST be lock-free and side-effect-free. If this handler ever
@@ -1766,11 +1822,14 @@ async fn openai_chat_completions(
             consumer_id,
         )
         .await
-        .map(|json| json.into_response())
     }
 }
 
 /// Non-streaming response.
+///
+/// Returns `Response` directly so the 503 path can emit a structured
+/// envelope with `Retry-After` (Phase 25 A2). The happy path wraps the
+/// JSON via `into_response()`.
 async fn openai_sync_response(
     state: AppState,
     prompt: String,
@@ -1781,7 +1840,7 @@ async fn openai_sync_response(
     model: String,
     has_tools: bool,
     consumer_id: Option<NodeId>,
-) -> Result<Json<OpenAIChatResponse>, (StatusCode, String)> {
+) -> Result<Response, (StatusCode, String)> {
     let mut engine = state.engine.lock().await;
     if !engine.is_loaded() {
         // Phase 18.5-part-4 (fix #80) — local engine has no model;
@@ -1789,8 +1848,22 @@ async fn openai_sync_response(
         // over P2P. This is the only path that triggers a real
         // dual-signed TRM negotiation from an HTTP client.
         drop(engine);
-        return forward_chat_to_peer(&state, &prompt, max_tokens, temperature, model, has_tools)
-            .await;
+        // Phase 25 A2 — when the forward path returns 503 (no
+        // peer / no transport), wrap the Err into the structured
+        // unavailability envelope with `Retry-After: 30` so agents
+        // can decide between "wait" vs "fail over".
+        use axum::response::IntoResponse;
+        return match forward_chat_to_peer(
+            &state, &prompt, max_tokens, temperature, model, has_tools,
+        )
+        .await
+        {
+            Ok(json) => Ok(json.into_response()),
+            Err((status, msg)) if status == StatusCode::SERVICE_UNAVAILABLE => {
+                Ok(inference_unavailable_response(&msg))
+            }
+            Err((status, msg)) => Err((status, msg)),
+        };
     }
 
     // Use the engine's tokenizer for accurate prompt token count (#P11-prompt-tokens).
@@ -1894,6 +1967,7 @@ async fn openai_sync_response(
         )
     };
 
+    use axum::response::IntoResponse;
     Ok(Json(OpenAIChatResponse {
         id: gen_request_id(),
         object: "chat.completion".to_string(),
@@ -1913,7 +1987,8 @@ async fn openai_sync_response(
             trm_cost,
             effective_balance,
         }),
-    }))
+    })
+    .into_response())
 }
 
 /// Phase 18.5-part-4 (fix #80) — forward a chat request to a
@@ -4709,6 +4784,127 @@ mod tests {
             .expect("response");
         // Must not be 401/403 — open even when bearer is configured.
         assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    // -----------------------------------------------------------------
+    // Phase 25 A2 — inference-unavailable envelope
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn inference_unavailable_envelope_carries_retry_after_header() {
+        let resp = super::inference_unavailable_response(
+            "no connected peer cluster — model not loaded and transport inactive",
+        );
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(
+            resp.headers()
+                .get(axum::http::header::RETRY_AFTER)
+                .and_then(|v| v.to_str().ok()),
+            Some("30"),
+        );
+    }
+
+    #[test]
+    fn inference_unavailable_envelope_carries_reason_header() {
+        let resp = super::inference_unavailable_response(
+            "no connected peer cluster — model not loaded and transport inactive",
+        );
+        assert!(resp
+            .headers()
+            .get("x-tirami-reason")
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|v| v.contains("no connected peer cluster")));
+    }
+
+    #[test]
+    fn inference_unavailable_envelope_truncates_long_reason_in_header() {
+        // 200-char reason — header value is capped to ≤120 chars.
+        let long = "x".repeat(200);
+        let resp = super::inference_unavailable_response(&long);
+        let hdr = resp
+            .headers()
+            .get("x-tirami-reason")
+            .and_then(|v| v.to_str().ok())
+            .unwrap();
+        assert!(hdr.len() <= 120, "header len {} should be ≤120", hdr.len());
+    }
+
+    #[tokio::test]
+    async fn inference_unavailable_envelope_body_has_hint_and_retry_after_secs() {
+        let resp = super::inference_unavailable_response(
+            "no connected peer cluster — model not loaded and transport inactive",
+        );
+        let bytes = axum::body::to_bytes(resp.into_body(), 10_000).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(json["error"]["code"].as_u64().unwrap(), 503);
+        assert_eq!(json["error"]["retry_after_secs"].as_u64().unwrap(), 30);
+        assert_eq!(json["error"]["type"].as_str().unwrap(), "service_unavailable");
+        let hint = json["error"]["hint"].as_str().unwrap();
+        // The "no connected peer cluster" path maps to actionable guidance.
+        assert!(
+            hint.contains("--model") || hint.contains("--bootstrap"),
+            "hint must mention how to recover, got: {hint}",
+        );
+    }
+
+    #[tokio::test]
+    async fn inference_unavailable_envelope_hint_varies_by_reason() {
+        // Different failure modes get different hints — agents can
+        // route on the hint without fuzzy-matching the message.
+        let no_peer = super::inference_unavailable_response("no peers connected to forward to");
+        let no_model = super::inference_unavailable_response("model not loaded locally");
+        let other = super::inference_unavailable_response("something else");
+        for r in [&no_peer, &no_model, &other] {
+            assert_eq!(r.status(), StatusCode::SERVICE_UNAVAILABLE);
+        }
+        let body_of = |r: axum::response::Response| async move {
+            let b = axum::body::to_bytes(r.into_body(), 10_000).await.unwrap();
+            let j: serde_json::Value = serde_json::from_slice(&b).unwrap();
+            j["error"]["hint"].as_str().unwrap().to_string()
+        };
+        let h1 = body_of(no_peer).await;
+        let h2 = body_of(no_model).await;
+        let h3 = body_of(other).await;
+        // Three distinct hints for three distinct failure modes.
+        assert_ne!(h1, h2);
+        assert_ne!(h2, h3);
+        assert_ne!(h1, h3);
+    }
+
+    #[tokio::test]
+    async fn openai_chat_completions_503_path_returns_envelope() {
+        // No model loaded + no transport → forward_chat_to_peer
+        // returns 503 → the A2 envelope kicks in.
+        let app = test_router(Config::default());
+        let body = serde_json::json!({
+            "model": "test-model",
+            "messages": [{"role":"user","content":"hi"}]
+        })
+        .to_string();
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/chat/completions")
+                    .header("content-type", "application/json")
+                    .body(Body::from(body))
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(
+            resp.headers()
+                .get(axum::http::header::RETRY_AFTER)
+                .and_then(|v| v.to_str().ok()),
+            Some("30"),
+        );
+        assert!(resp.headers().get("x-tirami-reason").is_some());
+        let bytes = axum::body::to_bytes(resp.into_body(), 10_000).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(json["error"]["code"].as_u64().unwrap(), 503);
+        assert!(json["error"]["hint"].as_str().is_some());
+        assert_eq!(json["error"]["type"].as_str().unwrap(), "service_unavailable");
     }
 
     #[tokio::test]

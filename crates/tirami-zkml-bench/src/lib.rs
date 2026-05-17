@@ -179,9 +179,41 @@ impl BenchBackend for MockBackend {
 }
 
 // ---------------------------------------------------------------------------
-// Ezkl / Risc0 / Halo2 stubs (feature-gated; return BackendUnavailable
-// until Phase 18.3-part-2 wires real integrations)
+// Ezkl / Risc0 / Halo2 — feature-gated.
+//
+// Default build (no features): return `BackendUnavailable` so the
+// harness compiles + tests stay lean.
+//
+// Phase 24 Wave 5.0 — when the corresponding feature is enabled,
+// the backend produces a *scaffold* commitment that:
+//   - is deterministic (same spec → same proof bytes)
+//   - has a backend-specific version prefix in the canonical pre-image
+//   - verifies via recomputation (NOT zero-knowledge; not yet zk-SNARK)
+//
+// The scaffold establishes the wire format and lets downstream code
+// (`SignedTradeRecord.attestation`, gossip verifier) exercise the
+// non-ed-attest path. Real risc0-zkvm / ezkl / halo2 crate imports
+// land in Wave 5.1+ (see `docs/phase-24-wave-5-zk-backends.md`).
 // ---------------------------------------------------------------------------
+
+/// Phase 24 Wave 5.0 — compute the scaffold commitment for a given
+/// backend label + spec. The label is part of the canonical pre-image
+/// so collisions across backends are structurally impossible. Format
+/// (versioned, see `SCAFFOLD_VERSION`): 32-byte SHA-256 over
+/// `b"tirami-{label}-scaffold-v0" || canonical_spec`.
+fn scaffold_commitment(label: &str, spec: &BenchSpec) -> [u8; 32] {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(b"tirami-");
+    h.update(label.as_bytes());
+    h.update(b"-scaffold-v0");
+    h.update(spec.model_hash);
+    h.update(spec.prompt_hash);
+    h.update(spec.output_hash);
+    h.update(spec.token_count.to_le_bytes());
+    h.update(spec.flops.to_le_bytes());
+    h.finalize().into()
+}
 
 macro_rules! stub_backend {
     ($name:ident, $label:expr) => {
@@ -208,9 +240,72 @@ macro_rules! stub_backend {
     };
 }
 
+#[cfg(not(feature = "ezkl"))]
 stub_backend!(EzklBackend, "ezkl");
+
+#[cfg(not(feature = "risc0"))]
 stub_backend!(Risc0Backend, "risc0");
+
+#[cfg(not(feature = "halo2"))]
 stub_backend!(Halo2Backend, "halo2");
+
+macro_rules! scaffold_backend {
+    ($name:ident, $label:expr) => {
+        /// Phase 24 Wave 5.0 — scaffold backend. Produces a
+        /// deterministic 32-byte SHA-256 commitment keyed by the
+        /// backend label and the full canonical `BenchSpec`. NOT
+        /// zero-knowledge; receivers verify by recomputing.
+        /// Real zk implementation lands in Wave 5.1+.
+        #[derive(Debug, Clone, Copy, Default)]
+        pub struct $name;
+
+        impl BenchBackend for $name {
+            fn name(&self) -> &'static str {
+                $label
+            }
+
+            fn prove(&self, spec: &BenchSpec) -> Result<BenchProof, BenchError> {
+                if spec.token_count == 0 {
+                    return Err(BenchError::InvalidSpec("token_count must be > 0".into()));
+                }
+                let bytes = scaffold_commitment($label, spec).to_vec();
+                Ok(BenchProof { backend: $label.to_string(), bytes })
+            }
+
+            fn verify(
+                &self,
+                spec: &BenchSpec,
+                proof: &BenchProof,
+            ) -> Result<(), BenchError> {
+                if proof.backend != $label {
+                    return Err(BenchError::VerifyFailed(format!(
+                        "backend mismatch: expected {} got {}",
+                        $label, proof.backend
+                    )));
+                }
+                if proof.bytes.len() != 32 {
+                    return Err(BenchError::VerifyFailed(
+                        "proof bytes must be 32 bytes (SHA-256)".into(),
+                    ));
+                }
+                let expected = scaffold_commitment($label, spec);
+                if proof.bytes.as_slice() != expected.as_slice() {
+                    return Err(BenchError::VerifyFailed("scaffold commitment mismatch".into()));
+                }
+                Ok(())
+            }
+        }
+    };
+}
+
+#[cfg(feature = "ezkl")]
+scaffold_backend!(EzklBackend, "ezkl");
+
+#[cfg(feature = "risc0")]
+scaffold_backend!(Risc0Backend, "risc0");
+
+#[cfg(feature = "halo2")]
+scaffold_backend!(Halo2Backend, "halo2");
 
 // ---------------------------------------------------------------------------
 // Phase 24 Wave 1 — Ed25519 attestation backend
@@ -628,6 +723,8 @@ mod tests {
         assert!(matches!(err, BenchError::InvalidSpec(_)));
     }
 
+    // Default feature build: ezkl/risc0/halo2 are unavailable stubs.
+    #[cfg(not(any(feature = "ezkl", feature = "risc0", feature = "halo2")))]
     #[test]
     fn stub_backends_return_unavailable() {
         for b_result in [
@@ -640,6 +737,104 @@ mod tests {
                 Err(BenchError::BackendUnavailable(_))
             ));
         }
+    }
+
+    // -----------------------------------------------------------------
+    // Phase 24 Wave 5.0 — scaffold-backend property tests (feature-gated)
+    // -----------------------------------------------------------------
+
+    #[cfg(feature = "risc0")]
+    #[test]
+    fn risc0_scaffold_round_trip_succeeds() {
+        let b = Risc0Backend;
+        let s = spec();
+        let proof = b.prove(&s).expect("prove");
+        assert_eq!(proof.backend, "risc0");
+        assert_eq!(proof.bytes.len(), 32);
+        b.verify(&s, &proof).expect("verify");
+    }
+
+    #[cfg(feature = "risc0")]
+    #[test]
+    fn risc0_scaffold_is_deterministic() {
+        let b = Risc0Backend;
+        let s = spec();
+        let p1 = b.prove(&s).expect("prove");
+        let p2 = b.prove(&s).expect("prove");
+        assert_eq!(p1.bytes, p2.bytes);
+    }
+
+    #[cfg(feature = "risc0")]
+    #[test]
+    fn risc0_scaffold_rejects_tampered_spec() {
+        let b = Risc0Backend;
+        let s = spec();
+        let proof = b.prove(&s).expect("prove");
+        let mut tampered = s.clone();
+        tampered.prompt_hash[0] ^= 0xFF;
+        let err = b.verify(&tampered, &proof).unwrap_err();
+        assert!(matches!(err, BenchError::VerifyFailed(_)));
+    }
+
+    #[cfg(feature = "risc0")]
+    #[test]
+    fn risc0_scaffold_rejects_wrong_backend_label_on_proof() {
+        let b = Risc0Backend;
+        let s = spec();
+        let mut proof = b.prove(&s).expect("prove");
+        proof.backend = "ezkl".to_string();
+        let err = b.verify(&s, &proof).unwrap_err();
+        assert!(matches!(err, BenchError::VerifyFailed(_)));
+    }
+
+    #[cfg(feature = "risc0")]
+    #[test]
+    fn risc0_scaffold_rejects_zero_token_count() {
+        let mut s = spec();
+        s.token_count = 0;
+        let err = Risc0Backend.prove(&s).unwrap_err();
+        assert!(matches!(err, BenchError::InvalidSpec(_)));
+    }
+
+    #[cfg(feature = "risc0")]
+    #[test]
+    fn risc0_scaffold_label_is_part_of_canonical_preimage() {
+        // Each scaffold backend produces a label-keyed commitment, so
+        // even identical specs yield different bytes across backends.
+        // Without that, an attacker could replay an `ezkl` proof under
+        // the `risc0` label and pass receiver-side dispatch.
+        #[cfg(feature = "ezkl")]
+        {
+            let s = spec();
+            let r0 = Risc0Backend.prove(&s).unwrap();
+            let ez = EzklBackend.prove(&s).unwrap();
+            assert_ne!(r0.bytes, ez.bytes);
+        }
+    }
+
+    #[cfg(feature = "risc0")]
+    #[test]
+    fn risc0_scaffold_runs_through_run_bench_harness() {
+        let r = run_bench(&Risc0Backend, &spec(), 5).expect("bench");
+        assert_eq!(r.backend, "risc0");
+        assert_eq!(r.proof_bytes, 32);
+        assert_eq!(r.trials, 5);
+    }
+
+    #[cfg(feature = "risc0")]
+    #[test]
+    fn risc0_scaffold_runs_through_run_bench_trade_attestation() {
+        // Wave-2 verifier helper dispatches by backend name — confirm
+        // the scaffold backend is rejected (it's not on the dispatch
+        // matrix; only `mock` and `ed-attest` are). This is the
+        // intended behaviour: scaffold proofs are NOT meant to pass
+        // through `verify_trade_attestation` until Wave 5.1+ makes
+        // them real zk.
+        let s = spec();
+        let proof = Risc0Backend.prove(&s).expect("prove");
+        let att = TradeAttestation::new(proof.backend.clone(), proof.bytes.clone());
+        let err = verify_trade_attestation(&s, &att, &[0u8; 32]);
+        assert!(err.is_err());
     }
 
     #[test]

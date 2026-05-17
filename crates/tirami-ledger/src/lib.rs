@@ -15,6 +15,7 @@ pub mod fork;
 pub mod kani_proofs;
 pub mod peer_qos;
 pub mod sybil;
+pub mod wal;
 pub mod metrics;
 pub mod nostr;
 pub mod peer_registry;

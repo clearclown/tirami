@@ -152,6 +152,24 @@ pub const SENIORITY_1_EPOCH_BONUS: f64 = 1.5;
 /// Seniority bonus for 3+ epochs of participation.
 pub const SENIORITY_3_EPOCH_BONUS: f64 = 2.0;
 
+/// Phase 25 A5 — minimum number of unique voters a proposal must
+/// gather to be tallied as Passed. Tally on a proposal with fewer
+/// distinct voters → automatic `Rejected` regardless of stake
+/// weight, so a single high-stake actor cannot push proposals
+/// through during low network attention.
+///
+/// 3 is the smallest value that prevents a 1-voter Sybil with a
+/// 2-of-1 weighted-majority illusion. Operators wanting a tighter
+/// threshold can run a higher constant via a future
+/// `governance_min_quorum_participants` config override (deferred).
+pub const GOVERNANCE_MIN_QUORUM_PARTICIPANTS: usize = 3;
+
+/// Phase 25 A5 — minimum *summed approving stake weight* a tally
+/// must reach to register as Passed. Independent of participant
+/// count: even with 3 voters, if all three together represent
+/// only a token amount, the proposal stays Rejected.
+pub const GOVERNANCE_MIN_QUORUM_STAKE: u64 = 10_000;
+
 // ---------- Types ----------
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -295,7 +313,32 @@ impl GovernanceState {
                 });
             }
         }
-        let id = self.next_proposal_id;
+        // Phase 25 A4 — unpredictable proposal id. Sequential u64
+        // is front-runnable: an attacker watching gossip can predict
+        // the next id and replay-vote on it. Hash over (proposer,
+        // sequence-nonce, now_ms, kind) → truncate to u64. The
+        // sequence nonce still increments to guarantee uniqueness
+        // when two proposals collide on (proposer, ms, kind).
+        let id = {
+            use sha2::{Digest, Sha256};
+            let mut h = Sha256::new();
+            h.update(b"tirami-proposal-id-v1");
+            h.update(&proposer.0);
+            h.update(&self.next_proposal_id.to_le_bytes());
+            h.update(&now_ms.to_le_bytes());
+            // The kind discriminant + payload is variable-length; serde
+            // gives us a stable canonicalisation for hashing.
+            if let Ok(kind_bytes) = serde_json::to_vec(&kind) {
+                h.update(&kind_bytes);
+            }
+            let digest: [u8; 32] = h.finalize().into();
+            let mut id_bytes = [0u8; 8];
+            id_bytes.copy_from_slice(&digest[..8]);
+            // u64::MAX is reserved as "not found" in some integration
+            // tests; map it to 1 to avoid false-negative lookups.
+            let candidate = u64::from_le_bytes(id_bytes);
+            if candidate == u64::MAX { 1 } else { candidate }
+        };
         self.next_proposal_id += 1;
         self.proposals.push(Proposal {
             id,
@@ -401,7 +444,18 @@ impl GovernanceState {
         }
 
         let total = approve_weight + reject_weight;
-        let status = if total > 0.0 && approve_weight / total > 0.5 {
+        // Phase 25 A5 — quorum check. A proposal passes only when:
+        //   (a) the simple majority is in favour AND
+        //   (b) ≥ GOVERNANCE_MIN_QUORUM_PARTICIPANTS distinct voters
+        //       participated AND
+        //   (c) the approving-stake-weight is ≥ GOVERNANCE_MIN_QUORUM_STAKE.
+        // Below quorum on either axis → Rejected. Independent of
+        // attack vector: low participation OR low aggregate stake.
+        let unique_voters: std::collections::HashSet<&NodeId> =
+            votes.iter().map(|v| &v.voter).collect();
+        let quorum_ok = unique_voters.len() >= GOVERNANCE_MIN_QUORUM_PARTICIPANTS
+            && approve_weight as u64 >= GOVERNANCE_MIN_QUORUM_STAKE;
+        let status = if quorum_ok && total > 0.0 && approve_weight / total > 0.5 {
             ProposalStatus::Passed
         } else {
             ProposalStatus::Rejected
@@ -507,6 +561,9 @@ mod tests {
 
     #[test]
     fn test_create_proposal_returns_id() {
+        // Phase 25 A4 — id is now unpredictable (SHA-256-derived).
+        // We assert the returned id is non-zero and the proposal
+        // landed in Active state.
         let mut gov = GovernanceState::new(1);
         let id = gov
             .create_proposal(
@@ -516,14 +573,15 @@ mod tests {
                 DEADLINE,
             )
             .unwrap();
-        assert_eq!(id, 1);
+        assert!(id != 0, "id must be non-zero");
         assert_eq!(gov.proposals.len(), 1);
+        assert_eq!(gov.proposals[0].id, id);
         assert_eq!(gov.proposals[0].status, ProposalStatus::Active);
         assert_eq!(gov.proposals[0].epoch, 1);
     }
 
     #[test]
-    fn test_create_proposal_increments_id() {
+    fn test_create_proposal_distinct_ids() {
         let mut gov = GovernanceState::new(1);
         let id1 = gov
             .create_proposal(node(1), ProposalKind::EmergencyPause, NOW, DEADLINE)
@@ -540,8 +598,8 @@ mod tests {
                 DEADLINE,
             )
             .unwrap();
-        assert_eq!(id1, 1);
-        assert_eq!(id2, 2);
+        assert_ne!(id1, id2, "consecutive proposals must get distinct ids");
+        assert!(id1 != 0 && id2 != 0);
     }
 
     // --- Voting ---
@@ -605,13 +663,50 @@ mod tests {
 
     #[test]
     fn test_tally_single_approve() {
+        // Phase 25 A5 — a single approving voter is now insufficient
+        // to reach quorum (3 distinct participants required). With
+        // 3+ approving voters the tally passes.
         let mut gov = GovernanceState::new(1);
         let id = gov
             .create_proposal(node(1), ProposalKind::EmergencyPause, NOW, DEADLINE)
             .unwrap();
-        gov.cast_vote(node(2), id, true, 5_000, 0.9, 0).unwrap();
+        for voter in [node(2), node(3), node(4)] {
+            gov.cast_vote(voter, id, true, 5_000, 0.9, 3).unwrap();
+        }
         let status = gov.tally(id).unwrap();
         assert_eq!(status, ProposalStatus::Passed);
+    }
+
+    #[test]
+    fn test_tally_below_participant_quorum_rejects() {
+        // Phase 25 A5 sentinel — 2 voters approving doesn't reach
+        // the 3-participant quorum, so the proposal stays Rejected
+        // even though every vote is approve.
+        let mut gov = GovernanceState::new(1);
+        let id = gov
+            .create_proposal(node(1), ProposalKind::EmergencyPause, NOW, DEADLINE)
+            .unwrap();
+        gov.cast_vote(node(2), id, true, 100_000, 0.9, 3).unwrap();
+        gov.cast_vote(node(3), id, true, 100_000, 0.9, 3).unwrap();
+        let status = gov.tally(id).unwrap();
+        assert_eq!(status, ProposalStatus::Rejected);
+    }
+
+    #[test]
+    fn test_tally_below_stake_quorum_rejects() {
+        // Phase 25 A5 sentinel — 3 voters but combined approving
+        // weight is below GOVERNANCE_MIN_QUORUM_STAKE.
+        let mut gov = GovernanceState::new(1);
+        let id = gov
+            .create_proposal(node(1), ProposalKind::EmergencyPause, NOW, DEADLINE)
+            .unwrap();
+        // 3 voters × 1_000 stake × 1.0x seniority = 3_000 weight
+        // < GOVERNANCE_MIN_QUORUM_STAKE (10_000).
+        for voter in [node(2), node(3), node(4)] {
+            gov.cast_vote(voter, id, true, 1_000, 0.9, 0).unwrap();
+        }
+        let status = gov.tally(id).unwrap();
+        assert_eq!(status, ProposalStatus::Rejected);
     }
 
     #[test]
@@ -635,7 +730,10 @@ mod tests {
         gov.cast_vote(node(2), id, true, 10_000, 0.9, 3).unwrap();
         // Voter B: 5,000 stake, 0 epochs (1.0x) => weight 5,000, reject
         gov.cast_vote(node(3), id, false, 5_000, 0.8, 0).unwrap();
-        // Total: 20,000 approve vs 5,000 reject => 80% approve => Passed
+        // Phase 25 A5 — add a third approving voter to satisfy the
+        // 3-participant quorum. Voter C: 5,000 × 1.0 = 5,000 approve.
+        gov.cast_vote(node(4), id, true, 5_000, 0.9, 0).unwrap();
+        // Total: 25,000 approve vs 5,000 reject => > 50% approve => Passed
         let status = gov.tally(id).unwrap();
         assert_eq!(status, ProposalStatus::Passed);
     }
@@ -723,7 +821,10 @@ mod tests {
         let id = gov
             .create_proposal(node(1), ProposalKind::EmergencyPause, NOW, DEADLINE)
             .unwrap();
-        gov.cast_vote(node(2), id, true, 5_000, 0.9, 0).unwrap();
+        // Phase 25 A5 — 3 approving voters for quorum.
+        for voter in [node(2), node(3), node(4)] {
+            gov.cast_vote(voter, id, true, 5_000, 0.9, 3).unwrap();
+        }
 
         // Advance to epoch 2 — proposal from epoch 1 should be tallied
         gov.advance_epoch(2);
@@ -780,8 +881,12 @@ mod tests {
             )
             .unwrap();
 
-        // Vote on both
-        gov.cast_vote(node(3), id1, true, 5_000, 0.9, 0).unwrap();
+        // Phase 25 A5 — 3 voters each for quorum on the passing
+        // proposal; rejecting one is unaffected (Reject doesn't
+        // require quorum to fail).
+        for voter in [node(3), node(4), node(5)] {
+            gov.cast_vote(voter, id1, true, 5_000, 0.9, 3).unwrap();
+        }
         gov.cast_vote(node(3), id2, false, 5_000, 0.9, 0).unwrap();
 
         let s1 = gov.tally(id1).unwrap();
@@ -963,8 +1068,9 @@ mod tests {
                 DEADLINE,
             )
             .unwrap();
-        assert_eq!(id, 1);
+        assert!(id != 0);
         assert_eq!(gov.proposals.len(), 1);
+        assert_eq!(gov.proposals[0].id, id);
     }
 
     #[test]
@@ -1085,8 +1191,11 @@ mod tests {
 
     fn pass_proposal(gov: &mut GovernanceState, kind: ProposalKind) -> u64 {
         let id = gov.create_proposal(node(1), kind, NOW, DEADLINE).unwrap();
-        // Cast a single approving vote so tally → Passed.
+        // Phase 25 A5 — 3 distinct voters with combined stake well
+        // above GOVERNANCE_MIN_QUORUM_STAKE so tally → Passed.
         gov.cast_vote(node(2), id, true, 5_000, 0.9, 3).unwrap();
+        gov.cast_vote(node(3), id, true, 5_000, 0.9, 3).unwrap();
+        gov.cast_vote(node(4), id, true, 5_000, 0.9, 3).unwrap();
         let status = gov.tally(id).unwrap();
         assert_eq!(status, ProposalStatus::Passed);
         id

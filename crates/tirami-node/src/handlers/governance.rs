@@ -524,27 +524,30 @@ mod tests {
         let pjson: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         let proposal_id = pjson["proposal_id"].as_u64().unwrap();
 
-        // Vote approve
-        let vote_body = serde_json::json!({
-            "voter": voter_hex(),
-            "proposal_id": proposal_id,
-            "approve": true,
-            "stake": 5000,
-            "reputation": 0.9,
-            "epochs_participated": 0,
-        })
-        .to_string();
-        app.clone()
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/v1/tirami/governance/vote")
-                    .header("content-type", "application/json")
-                    .body(Body::from(vote_body))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
+        // Phase 25 A5 — 3 distinct approving voters for quorum.
+        for voter_seed in ["bb", "cc", "dd"] {
+            let voter = voter_seed.repeat(32);
+            let vote_body = serde_json::json!({
+                "voter": voter,
+                "proposal_id": proposal_id,
+                "approve": true,
+                "stake": 5000,
+                "reputation": 0.9,
+                "epochs_participated": 3,
+            })
+            .to_string();
+            app.clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/v1/tirami/governance/vote")
+                        .header("content-type", "application/json")
+                        .body(Body::from(vote_body))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+        }
 
         // Tally
         let resp = app
@@ -760,7 +763,33 @@ mod tests {
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
 
-        // 3. Tally — approve should win (10000*2.0=20000 vs 2000*1.0=2000)
+        // Phase 25 A5 — add a third approving voter to clear the
+        // 3-participant quorum.
+        let voter3_hex = "dd".repeat(32);
+        let vote3 = serde_json::json!({
+            "voter": voter3_hex,
+            "proposal_id": proposal_id,
+            "approve": true,
+            "stake": 5000,
+            "reputation": 0.9,
+            "epochs_participated": 3,
+        })
+        .to_string();
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/tirami/governance/vote")
+                    .header("content-type", "application/json")
+                    .body(Body::from(vote3))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        // 3. Tally — approve dominant (20000 + 10000 vs 2000)
         let resp = app
             .oneshot(
                 Request::builder()
@@ -812,26 +841,31 @@ mod tests {
         let bytes = axum::body::to_bytes(resp.into_body(), 10_000).await.unwrap();
         let pjson: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         let id = pjson["proposal_id"].as_u64().unwrap();
-        let vote_body = serde_json::json!({
-            "voter": voter_hex(),
-            "proposal_id": id,
-            "approve": true,
-            "stake": 5_000,
-            "reputation": 0.9,
-            "epochs_participated": 3,
-        })
-        .to_string();
-        app.clone()
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/v1/tirami/governance/vote")
-                    .header("content-type", "application/json")
-                    .body(Body::from(vote_body))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
+        // Phase 25 A5 — 3 distinct voters to clear the 3-participant
+        // quorum threshold.
+        for voter_seed in ["bb", "cc", "dd"] {
+            let voter = voter_seed.repeat(32);
+            let vote_body = serde_json::json!({
+                "voter": voter,
+                "proposal_id": id,
+                "approve": true,
+                "stake": 5_000,
+                "reputation": 0.9,
+                "epochs_participated": 3,
+            })
+            .to_string();
+            app.clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/v1/tirami/governance/vote")
+                        .header("content-type", "application/json")
+                        .body(Body::from(vote_body))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+        }
         app.clone()
             .oneshot(
                 Request::builder()
@@ -1022,27 +1056,30 @@ mod tests {
         let bytes = axum::body::to_bytes(resp.into_body(), 10_000).await.unwrap();
         let pjson: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         let id = pjson["proposal_id"].as_u64().unwrap();
-        // Vote + tally → Passed.
-        let vote_body = serde_json::json!({
-            "voter": voter_hex(),
-            "proposal_id": id,
-            "approve": true,
-            "stake": 5_000,
-            "reputation": 0.9,
-            "epochs_participated": 3,
-        })
-        .to_string();
-        app.clone()
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/v1/tirami/governance/vote")
-                    .header("content-type", "application/json")
-                    .body(Body::from(vote_body))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
+        // Phase 25 A5 — 3 distinct voters for quorum, then tally.
+        for voter_seed in ["bb", "cc", "dd"] {
+            let voter = voter_seed.repeat(32);
+            let vote_body = serde_json::json!({
+                "voter": voter,
+                "proposal_id": id,
+                "approve": true,
+                "stake": 5_000,
+                "reputation": 0.9,
+                "epochs_participated": 3,
+            })
+            .to_string();
+            app.clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/v1/tirami/governance/vote")
+                        .header("content-type", "application/json")
+                        .body(Body::from(vote_body))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+        }
         app.clone()
             .oneshot(
                 Request::builder()

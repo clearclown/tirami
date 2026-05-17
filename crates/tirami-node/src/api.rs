@@ -492,6 +492,11 @@ pub fn create_router_with_services(
             "/v1/tirami/agent/identity/import",
             post(crate::handlers::agent_identity::import_identity),
         )
+        // Phase 21 Wave 2 — autonomous welcome-loan claim.
+        .route(
+            "/v1/tirami/agent/claim-welcome",
+            post(crate::handlers::welcome_claim::claim_welcome_loan),
+        )
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             require_bearer_auth,
@@ -6616,6 +6621,158 @@ mod tests {
         assert!(
             msg.contains("stakeless earn cap"),
             "unexpected inner message: {msg}"
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // Phase 21 Wave 2 — welcome-loan claim + welcome-loan-as-stake
+    // ------------------------------------------------------------------
+
+    async fn post_claim_welcome(
+        app: Router,
+        node_id_hex: &str,
+        bucket: Option<&str>,
+    ) -> (StatusCode, serde_json::Value) {
+        let body = serde_json::json!({ "bucket": bucket.unwrap_or("") });
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/tirami/agent/claim-welcome")
+                    .header("content-type", "application/json")
+                    .header("X-Tirami-Node-Id", node_id_hex)
+                    .body(Body::from(body.to_string()))
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        (status, serde_json::from_slice(&bytes).unwrap_or_default())
+    }
+
+    /// Happy path: a fresh node claims its welcome loan and the
+    /// response carries the principal + 72-hour expiry.
+    #[tokio::test]
+    async fn welcome_loan_claim_returns_grant_for_fresh_node() {
+        let app = test_router_with_agent(Config::default(), None);
+        let claimant = "aa".repeat(32);
+        let (status, body) = post_claim_welcome(app, &claimant, Some("AS-test")).await;
+        assert_eq!(status, StatusCode::OK, "claim failed: {body}");
+        assert_eq!(body["node_id"], claimant);
+        assert_eq!(body["principal_trm"], tirami_ledger::lending::WELCOME_LOAN_AMOUNT);
+        let granted = body["granted_at_ms"].as_u64().expect("granted_at_ms");
+        let expires = body["expires_at_ms"].as_u64().expect("expires_at_ms");
+        assert!(expires > granted, "expires must be after granted");
+        // Term should be 72 h.
+        let term_ms = (expires - granted) as i64;
+        let expected_term_ms =
+            (tirami_ledger::lending::WELCOME_LOAN_TERM_HOURS * 3_600_000) as i64;
+        assert_eq!(term_ms, expected_term_ms);
+    }
+
+    /// A second claim from the same node must fail because the
+    /// grant left a balance entry that flips `can_issue_welcome_loan`
+    /// to `false`.
+    #[tokio::test]
+    async fn welcome_loan_claim_is_one_shot_per_node() {
+        let app = test_router_with_agent(Config::default(), None);
+        let claimant = "bb".repeat(32);
+        let (status, _) = post_claim_welcome(app.clone(), &claimant, None).await;
+        assert_eq!(status, StatusCode::OK);
+        let (status, body) = post_claim_welcome(app, &claimant, None).await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        // Body is wrapped by the envelope middleware (handler returned a
+        // JSON string under (StatusCode, String)).
+        let outer = body;
+        let inner_str = outer["error"]["message"].as_str().expect("inner");
+        let inner: serde_json::Value =
+            serde_json::from_str(inner_str).expect("inner json");
+        assert_eq!(inner["error"]["code"], "already_has_balance");
+    }
+
+    /// With the stake gate enabled and the local node well past the
+    /// stakeless cap, a freshly-granted welcome loan must flip
+    /// eligibility back to "allowed" via the `WelcomeLoan` verdict.
+    #[tokio::test]
+    async fn stake_gate_with_welcome_loan_passes_inference() {
+        use tirami_ledger::{ComputeLedger, TradeRecord};
+        let mut ledger = ComputeLedger::new();
+        let local = tirami_core::NodeId([0u8; 32]);
+        // Trick: grant the welcome loan first (creates the balance
+        // entry), then push contributions past the cap on the same
+        // entry — eligibility should still report `WelcomeLoan`.
+        // Use the current wall-clock so the 72-hour expiry is in
+        // the future relative to `now_millis()` inside the gate.
+        let now = now_millis();
+        let grant = ledger
+            .grant_welcome_loan(local.clone(), "", now)
+            .expect("grant ok");
+        assert!(grant.principal_trm > 0);
+        let trade = TradeRecord {
+            provider: local.clone(),
+            consumer: tirami_core::NodeId([0x99u8; 32]),
+            trm_amount: tirami_ledger::lending::STAKELESS_EARN_CAP_TRM + 1,
+            tokens_processed: 1,
+            timestamp: 0,
+            model_id: "phase21-w2-prep".into(),
+            flops_estimated: 0,
+            nonce: [0u8; 16],
+        };
+        ledger.execute_trade(&trade);
+
+        let mut config = Config::default();
+        config.stake_gate_enabled = true;
+        let app = test_router_with_agent_and_ledger(config, None, ledger, None);
+        let status = post_chat(app, chat_body_minimum()).await;
+        assert_ne!(
+            status,
+            StatusCode::FORBIDDEN,
+            "active welcome loan should pass the stake gate"
+        );
+    }
+
+    /// The discovery manifest must surface the welcome-loan policy
+    /// (amount, term, availability) AND the new action so an
+    /// autonomous agent can plan its bootstrap before its first call.
+    #[tokio::test]
+    async fn manifest_exposes_wave_2_welcome_loan_policy_and_action() {
+        let app = test_router_with_agent(Config::default(), None);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/.well-known/tirami-agent.json")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let json: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
+        assert_eq!(
+            json["policy"]["welcome_loan_amount_trm"],
+            tirami_ledger::lending::WELCOME_LOAN_AMOUNT
+        );
+        assert_eq!(
+            json["policy"]["welcome_loan_term_hours"],
+            tirami_ledger::lending::WELCOME_LOAN_TERM_HOURS
+        );
+        assert_eq!(json["policy"]["welcome_loan_available"], true);
+        let names: Vec<String> = json["actions"]
+            .as_array()
+            .expect("array")
+            .iter()
+            .map(|a| a["name"].as_str().unwrap_or("").to_string())
+            .collect();
+        assert!(
+            names.iter().any(|n| n == "claim_welcome_loan"),
+            "manifest missing claim_welcome_loan, actions={names:?}"
         );
     }
 

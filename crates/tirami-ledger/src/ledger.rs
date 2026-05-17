@@ -102,6 +102,17 @@ pub struct ComputeLedger {
     /// even if the global Sybil ceiling hasn't been hit.
     #[serde(default, skip_serializing)]
     pub sybil_limiter: crate::sybil::WelcomeLoanLimiter,
+    /// Phase 21 Wave 2 — record of welcome-loan grants the local
+    /// node has issued (or that arrived via gossip). Keyed by
+    /// borrower NodeId; single-grant-per-node enforced by the
+    /// `can_issue_welcome_loan` "no existing balance" rule.
+    ///
+    /// Used by [`Self::inference_eligibility`] to recognise an
+    /// unrepaid, unexpired welcome loan as effective stake — the
+    /// missing link between Wave 1's opt-in gate and Wave 2's
+    /// default-on enforcement.
+    #[serde(default)]
+    pub welcome_loans: HashMap<NodeId, WelcomeLoanGrant>,
 }
 
 /// Audit trail entry written each time [`ComputeLedger::update_trust_penalties`]
@@ -128,12 +139,66 @@ pub struct SlashEvent {
 pub enum InferenceEligibility {
     /// Node has posted ≥ `MIN_PROVIDER_STAKE_TRM` of locked stake.
     Staked { staked_amount: u64 },
+    /// Phase 21 Wave 2 — node has an active, unrepaid welcome loan.
+    /// Treated as effective stake until repayment or expiry.
+    WelcomeLoan {
+        principal_trm: u64,
+        expires_at_ms: u64,
+    },
     /// Node has not yet hit its stakeless earn cap. After
     /// `contributed_so_far` ≥ `cap_trm` the node must stake.
     BootstrapWindow {
         contributed_so_far: u64,
         cap_trm: u64,
     },
+}
+
+/// Phase 21 Wave 2 — a single welcome-loan grant.
+///
+/// Recorded by [`ComputeLedger::grant_welcome_loan`]. While `repaid =
+/// false` and `expires_at_ms > now`, the borrower passes the
+/// stake-gate via the `WelcomeLoan` variant of
+/// [`InferenceEligibility`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WelcomeLoanGrant {
+    pub node_id: NodeId,
+    pub principal_trm: u64,
+    pub granted_at_ms: u64,
+    pub expires_at_ms: u64,
+    pub repaid: bool,
+}
+
+/// Phase 21 Wave 2 — error variants from
+/// [`ComputeLedger::grant_welcome_loan`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WelcomeLoanError {
+    /// Node already has a balance (welcome loans are one-shot).
+    AlreadyHasBalance,
+    /// Network has reached the sunset epoch — welcome-loan bootstrap
+    /// path is permanently closed (constitutional).
+    SunsetReached,
+    /// Sybil ceiling (per-bucket or global) reached. Caller may
+    /// retry later when the rolling window decays.
+    SybilCeiling,
+}
+
+impl std::fmt::Display for WelcomeLoanError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::AlreadyHasBalance => write!(
+                f,
+                "node already has a ledger balance; welcome loans are one-shot per node"
+            ),
+            Self::SunsetReached => write!(
+                f,
+                "welcome-loan sunset epoch reached; constitutional bootstrap window closed"
+            ),
+            Self::SybilCeiling => write!(
+                f,
+                "Sybil rate limiter denied this grant; retry after the rolling window decays"
+            ),
+        }
+    }
 }
 
 /// Phase 21 Wave 1 — denial reason from
@@ -627,6 +692,7 @@ impl ComputeLedger {
             slash_events: Vec::new(),
             checkpoints: Vec::new(),
             sybil_limiter: crate::sybil::WelcomeLoanLimiter::new(),
+            welcome_loans: HashMap::new(),
         }
     }
 
@@ -987,6 +1053,7 @@ impl ComputeLedger {
             slash_events: snapshot.slash_events,
             checkpoints: snapshot.checkpoints,
             sybil_limiter: crate::sybil::WelcomeLoanLimiter::new(),
+            welcome_loans: HashMap::new(),
         };
         // Phase 17 Wave 1.2 — replay defense must survive a restart.
         ledger.rebuild_nonce_cache();
@@ -2229,21 +2296,20 @@ impl ComputeLedger {
     /// but returns a structured reason on denial, suitable for
     /// surfacing in HTTP 403 responses.
     ///
-    /// Discriminates three deny cases:
-    ///
-    /// - The node has been slashed at least once; staking does not
-    ///   restore eligibility (constitutional).
-    /// - The node has consumed its stakeless earn cap and has not
-    ///   yet posted ≥ `MIN_PROVIDER_STAKE_TRM` of stake.
-    /// - Both — slashed AND past the cap. The slash check fires
-    ///   first.
+    /// Phase 21 Wave 2 extended this to recognise an active,
+    /// unrepaid welcome loan as effective stake. Precedence:
+    ///   1. Real locked stake ≥ MIN_PROVIDER_STAKE_TRM → Staked.
+    ///   2. Previously slashed → PreviouslySlashed (constitutional).
+    ///   3. Active unrepaid welcome loan → WelcomeLoan.
+    ///   4. Cumulative contributed < cap → BootstrapWindow.
+    ///   5. Else → StakeRequired.
     pub fn inference_eligibility(
         &self,
         node_id: &NodeId,
         staking: &crate::StakingPool,
         now_ms: u64,
     ) -> Result<InferenceEligibility, InferenceIneligible> {
-        // Primary path: real stake meets the floor.
+        // 1. Primary path: real stake meets the floor.
         let staked_amount = staking
             .stakes_for(node_id)
             .filter(|s| s.is_locked(now_ms))
@@ -2253,7 +2319,7 @@ impl ComputeLedger {
             return Ok(InferenceEligibility::Staked { staked_amount });
         }
 
-        // Constitutional permanent ban for previously-slashed nodes.
+        // 2. Constitutional permanent ban for previously-slashed nodes.
         let slashed_before = self
             .slash_events
             .iter()
@@ -2262,7 +2328,19 @@ impl ComputeLedger {
             return Err(InferenceIneligible::PreviouslySlashed);
         }
 
-        // Bootstrap window: under the stakeless cap.
+        // 3. Phase 21 Wave 2 — active welcome loan counts as effective
+        //    stake. The grant is "active" iff not yet repaid AND not
+        //    yet expired.
+        if let Some(grant) = self.welcome_loans.get(node_id) {
+            if !grant.repaid && grant.expires_at_ms > now_ms {
+                return Ok(InferenceEligibility::WelcomeLoan {
+                    principal_trm: grant.principal_trm,
+                    expires_at_ms: grant.expires_at_ms,
+                });
+            }
+        }
+
+        // 4. Bootstrap window: under the stakeless cap.
         let total_earned = self
             .balances
             .get(node_id)
@@ -2280,6 +2358,66 @@ impl ComputeLedger {
             cumulative_contributed: total_earned,
             cap_trm: crate::lending::STAKELESS_EARN_CAP_TRM,
         })
+    }
+
+    /// Phase 21 Wave 2 — grant a welcome loan to `node_id`.
+    ///
+    /// On success:
+    /// 1. A [`WelcomeLoanGrant`] is recorded in `welcome_loans` so
+    ///    [`Self::inference_eligibility`] sees it.
+    /// 2. A zero-balance [`NodeBalance`] is inserted so subsequent
+    ///    [`Self::can_issue_welcome_loan`] calls return false
+    ///    (one-shot per node).
+    /// 3. The Sybil rate limiter is updated for the supplied bucket
+    ///    (use `""` for "no bucketing").
+    ///
+    /// The loan principal is **not** added to the balance's
+    /// `contributed` field — Phase 21 treats the welcome loan as a
+    /// stake-equivalent right, not an inflation of the borrower's
+    /// earnings. Repayment after the 72 h term is the borrower's
+    /// responsibility (Phase 21 Wave 3+ may automate this).
+    pub fn grant_welcome_loan(
+        &mut self,
+        node_id: NodeId,
+        bucket: &str,
+        now_ms: u64,
+    ) -> Result<WelcomeLoanGrant, WelcomeLoanError> {
+        // Sunset check (constitutional).
+        if (self.current_epoch() as u64) >= crate::lending::WELCOME_LOAN_SUNSET_EPOCH {
+            return Err(WelcomeLoanError::SunsetReached);
+        }
+        // Single-grant rule: must not already have a balance.
+        if self.balances.contains_key(&node_id) {
+            return Err(WelcomeLoanError::AlreadyHasBalance);
+        }
+
+        let principal_trm = crate::lending::WELCOME_LOAN_AMOUNT;
+        let term_ms = crate::lending::WELCOME_LOAN_TERM_HOURS.saturating_mul(3_600_000);
+        let grant = WelcomeLoanGrant {
+            node_id: node_id.clone(),
+            principal_trm,
+            granted_at_ms: now_ms,
+            expires_at_ms: now_ms.saturating_add(term_ms),
+            repaid: false,
+        };
+
+        self.balances.insert(
+            node_id.clone(),
+            NodeBalance {
+                node_id: node_id.clone(),
+                contributed: 0,
+                consumed: 0,
+                reserved: 0,
+                reputation: crate::lending::DEFAULT_REPUTATION,
+            },
+        );
+        self.welcome_loans.insert(node_id, grant.clone());
+        // Record for the rolling Sybil window — keeps the bucket
+        // counters honest even when callers pass empty buckets.
+        if !bucket.is_empty() {
+            self.sybil_limiter.record(bucket, now_ms);
+        }
+        Ok(grant)
     }
 
     /// Phase 17 Wave 4.1 — per-bucket welcome-loan eligibility.

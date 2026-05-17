@@ -60,25 +60,54 @@ Three waves:
 This wave is strictly additive. Existing nodes upgrade with zero
 behavioural change (gate stays off) until the operator opts in.
 
-### Wave 2 — Welcome-loan counts as effective stake; flip the default
+### Wave 2 — Welcome-loan counts as effective stake; flip the default ✅ shipped
 
-Today, a fresh node with no stake hits the `BootstrapWindow` (10 TRM
-stakeless earn cap) and then must post real stake. A welcome loan
-(1,000 TRM at 0% for 72 h) exists separately and is intended to be
-the bootstrap path *after* the cap, but `can_provide_inference`
-doesn't currently consult loan state.
+Until Wave 2, a fresh node with no stake had only a 10 TRM stakeless
+window before the gate would refuse to serve. A welcome loan
+(1 000 TRM at 0 % for 72 h) was advertised in `lending.rs` constants
+but never materialised on the ledger — `can_provide_inference` did
+not consult any loan state. Wave 2 closes the gap end-to-end:
 
-Wave 2:
+- **New `WelcomeLoanGrant` type** + new
+  `ComputeLedger.welcome_loans: HashMap<NodeId, WelcomeLoanGrant>`
+  field. Tracks granted, expires-at-ms, repaid flag.
+- **New `ComputeLedger::grant_welcome_loan(node_id, bucket, now_ms)`**
+  performs the eligibility check (sunset epoch, no existing balance),
+  records the grant, inserts a zero-balance entry so the single-
+  grant-per-node rule fires for any retry, and bumps the Sybil
+  rate-limit window for the supplied bucket.
+- **`InferenceEligibility` gains a `WelcomeLoan` variant**. The
+  verdict order is now: real stake → previously-slashed →
+  **welcome loan (unrepaid, unexpired)** → bootstrap window → deny.
+- **`POST /v1/tirami/agent/claim-welcome`** (new endpoint). Body
+  carries an optional `bucket` for the Sybil window. Returns the
+  `WelcomeLoanGrant` (principal, granted_at_ms, expires_at_ms).
+  Reachable with a DID-issued bearer token from Phase 20 Wave 5,
+  so an autonomous agent can claim without admin scope.
+- **`PolicySpec` extended** — manifest now carries
+  `welcome_loan_amount_trm`, `welcome_loan_term_hours`, and
+  `welcome_loan_available` so an agent knows the bootstrap path
+  exists before its first inference call.
+- **`Config.stake_gate_enabled` default flipped to `true`.**
+  Fresh deploys now enforce stake-required mining out of the box.
+  The bootstrap window + welcome-loan auto-claim together cover
+  the legitimate-newcomer path; operators with custom flows that
+  pre-inflate contributions past the cap without staking can set
+  the flag back to `false` explicitly.
 
-- Extend `inference_eligibility` to recognise an active welcome
-  loan ≥ `MIN_PROVIDER_STAKE_TRM` as effective stake.
-- Add a `POST /v1/tirami/agent/claim-welcome` endpoint reachable
-  from a DID-issued session token (Phase 20 Wave 5), so an
-  autonomous agent can claim its own loan without admin scope.
-- **Flip `Config::stake_gate_enabled` default to `true`.** With
-  welcome-loan auto-claim in place, the gate has a real fallback
-  path for fresh joiners. Status Honesty in the README flips
-  this item from 🟡 to ✅.
+Error response shape on duplicate claim:
+
+```json
+{
+  "error": {
+    "type": "welcome_loan_denied",
+    "code": "already_has_balance" | "sunset_reached" | "sybil_ceiling",
+    "message": "..."
+  }
+}
+```
+
+Mapped to status codes 409 / 410 / 429 respectively.
 
 ### Wave 3 — Stake gate on the P2P trade-recording path
 

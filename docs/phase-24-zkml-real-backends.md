@@ -8,7 +8,9 @@
 > forgeable" to "production-grade proof of inference" without a
 > single multi-week commit.
 
-Status: Wave 1 + Wave 2 + Wave 2.5 + Wave 3 + Wave 4 + Wave 4.5 shipped.
+Status: Wave 1 + Wave 2 + Wave 2.5 + Wave 3 + Wave 4 + Wave 4.5 + Wave 5.0 shipped.
+Wave 5.1+ (real risc0/ezkl crate integration) is week-scale work
+tracked in `docs/phase-24-wave-5-zk-backends.md`.
 
 ## The trajectory
 
@@ -344,14 +346,60 @@ When `policy = Required` and an unattested trade arrives:
 
 Workspace passes **1,450** tests (Wave 4 1,441 → +9).
 
-### Wave 5 (next, week-scale) — real zk backend
+### Wave 5.0 ✅ shipped — scaffold backends behind feature flags
 
-The protocol now has the full pipeline:
-- Wave 1: ed-attest backend produces unforgeable signature-based attestations
-- Waves 2–3: attestations flow end-to-end over wire and are cryptographically verifiable by receivers
-- Waves 4–4.5: governance can ratchet the policy upward and the trade-accept gate enforces it
+Pre-Wave-5.0 state: `Risc0Backend` / `EzklBackend` / `Halo2Backend`
+were stubs returning `BackendUnavailable` even with their Cargo
+feature enabled. Real risc0-zkvm / ezkl crate integration is
+genuinely week-scale work (Risc-V toolchain, ~100 MB SRS files,
+guest program builds), so it doesn't ship in one PR.
 
-Remaining work: replace ed-attest's "I signed this with my key" claim with a real zk proof — "I correctly computed Y on X without revealing the model weights or intermediate activations." This means wiring `risc0` or `ezkl` as a real `BenchBackend` and shipping `risc0`-flavoured `BenchProof` bytes. The on-trade `TradeAttestation` format already accommodates any backend name + bytes; the wire path doesn't change.
+Wave 5.0 closes a narrower gap: when the `risc0` / `ezkl` /
+`halo2` features are enabled, the backends produce a
+**deterministic SHA-256 commitment scaffold** keyed by the
+backend label and the full canonical `BenchSpec`. This is
+explicitly **not zero-knowledge** — receivers verify by
+recomputing — but it lets the downstream wiring be exercised:
+
+- The `BenchBackendKind` selector dispatches to a non-mock backend.
+- The wire format (`TradeAttestation { backend, bytes }`) carries
+  a non-ed-attest proof through the gossip pipeline.
+- An attacker can't replay an `ezkl` scaffold proof under the
+  `risc0` label (the label is part of the canonical pre-image).
+- The verifier dispatch in `verify_trade_attestation` correctly
+  rejects scaffold proofs — they're dev-only and must not pass
+  through the protocol's authoritative verifier.
+
+#### Tests added
+
+`tirami-zkml-bench` +8 (all `#[cfg(feature = "risc0")]`):
+- `risc0_scaffold_round_trip_succeeds`
+- `risc0_scaffold_is_deterministic`
+- `risc0_scaffold_rejects_tampered_spec`
+- `risc0_scaffold_rejects_wrong_backend_label_on_proof`
+- `risc0_scaffold_rejects_zero_token_count`
+- `risc0_scaffold_label_is_part_of_canonical_preimage`
+- `risc0_scaffold_runs_through_run_bench_harness`
+- `risc0_scaffold_runs_through_run_bench_trade_attestation` (asserts the scaffold proof is rejected by the protocol verifier — intended)
+
+Default-feature workspace still passes **1,450** tests; with
+`--features risc0` enabled, `tirami-zkml-bench` runs 44 tests
+(was 37 → +7 active, plus the 8th replaces the no-longer-firing
+`stub_backends_return_unavailable` which is now feature-gated
+to the no-features build).
+
+### Wave 5.1 (next, week-scale) — real risc0 zkVM integration
+
+`docs/phase-24-wave-5-zk-backends.md` carries the full plan:
+- guest program (`bench_commit`) — commits to all spec fields
+- host-side `Risc0Backend` impl using `risc0_zkvm::default_prover`
+- receipt serialised as `BenchProof.bytes`
+- verifier dispatches `"risc0"` proofs to receipt verify + journal
+  commitment cross-check
+- `Config.zkml_backend = "risc0"` routes producers to it
+
+Wave 5.2 mirrors the same shape for `ezkl`. Wave 5.3 is research
+scope (model-forward circuits proving inference correctness).
 
 ## Wave 3 — risc0 or ezkl integration
 

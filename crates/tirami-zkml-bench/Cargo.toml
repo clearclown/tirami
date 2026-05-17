@@ -32,8 +32,16 @@ rand = { workspace = true }
 #
 # The MockBackend is always available so the harness compiles
 # (and has tests) without any real zk dep.
+#
+# Phase 24 Wave 5.0 — the `risc0` / `ezkl` / `halo2` features now
+# wire up a *scaffold* implementation that is structurally honest:
+# it produces a deterministic commitment with a backend-specific
+# version prefix so receivers know which proof family to expect,
+# but the commitment is NOT zero-knowledge yet. Real risc0-zkvm /
+# ezkl crates land in Wave 5.1+ (see
+# `docs/phase-24-wave-5-zk-backends.md`).
 [features]
 default = []
-risc0 = []  # scaffolded; actual crate import lands in 18.3-part-2
-halo2 = []  # scaffolded; actual crate import lands in 18.3-part-2
-ezkl = []   # scaffolded; ezkl is git-vendored, landing in 18.3-part-2
+risc0 = []  # Wave 5.0: scaffold commitment; Wave 5.1+ wires risc0-zkvm
+halo2 = []  # same shape; real halo2 lands separately
+ezkl = []   # same shape; ezkl is git-vendored, landing separately

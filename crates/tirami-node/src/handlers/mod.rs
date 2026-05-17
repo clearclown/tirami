@@ -3,6 +3,7 @@ pub mod agent_identity;
 pub mod agent_message;
 pub mod agora;
 pub mod anchor;
+pub mod auth_did;
 pub mod bank;
 pub mod data_offer;
 pub mod governance;

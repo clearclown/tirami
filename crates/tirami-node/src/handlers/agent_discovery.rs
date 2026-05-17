@@ -164,6 +164,21 @@ pub(crate) async fn well_known_agent_manifest(
             pricing: "free; replaces this node's loaded identity",
             auth_required: true,
         },
+        // Phase 20 Wave 5 — DID-auth (autonomous mesh join).
+        ActionDescriptor {
+            name: "auth_challenge",
+            endpoint: "/v1/tirami/auth/challenge",
+            method: "GET",
+            pricing: "free; public — issues a single-use 32-byte nonce",
+            auth_required: false,
+        },
+        ActionDescriptor {
+            name: "auth_verify",
+            endpoint: "/v1/tirami/auth/verify",
+            method: "POST",
+            pricing: "free; public — DID-signed challenge → short-lived bearer token",
+            auth_required: false,
+        },
         ActionDescriptor {
             name: "agent_task",
             endpoint: "/v1/tirami/agent/task",

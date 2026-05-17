@@ -88,6 +88,9 @@ pub(crate) struct AppState {
     /// `POST /v1/tirami/agent/identity/init` or `/import` is called.
     /// In-memory only; persistence is a follow-up.
     pub agent_identity: crate::handlers::agent_identity::AgentIdentityState,
+    /// Phase 20 Wave 5 — pending DID-auth challenges. Each entry is
+    /// single-use and short-lived (5 min default).
+    pub auth_challenges: crate::handlers::auth_did::ChallengeState,
 }
 
 /// Simple rate limiter for authentication failures.
@@ -247,6 +250,9 @@ pub fn create_router_with_services(
             crate::handlers::purchase_intent::PurchaseIntentRegistry::new(),
         )),
         agent_identity: Arc::new(Mutex::new(None)),
+        auth_challenges: Arc::new(Mutex::new(
+            crate::handlers::auth_did::ChallengeStore::new(),
+        )),
     };
     let api_max_request_body_bytes = state.config.api_max_request_body_bytes;
 
@@ -501,6 +507,18 @@ pub fn create_router_with_services(
         .route(
             "/.well-known/tirami-agent.json",
             get(crate::handlers::agent_discovery::well_known_agent_manifest),
+        )
+        // Phase 20 Wave 5 — DID-auth challenge/verify. Both endpoints
+        // are public (no bearer required) because the whole point is
+        // that an autonomous agent can sign in without a pre-shared
+        // human token.
+        .route(
+            "/v1/tirami/auth/challenge",
+            get(crate::handlers::auth_did::issue_challenge),
+        )
+        .route(
+            "/v1/tirami/auth/verify",
+            post(crate::handlers::auth_did::verify_did_signature),
         )
         .merge(protected)
         // Phase 18.5-part-3e (fix #74) — normalise every non-JSON
@@ -6116,6 +6134,321 @@ mod tests {
             assert!(
                 names.iter().any(|n| n == expected),
                 "manifest missing {expected}, actions={names:?}"
+            );
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Phase 20 Wave 5 — DID-auth challenge / verify (autonomous join)
+    // ------------------------------------------------------------------
+
+    async fn get_auth_challenge(app: Router) -> (StatusCode, serde_json::Value) {
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/v1/tirami/auth/challenge")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        (status, serde_json::from_slice(&bytes).unwrap_or_default())
+    }
+
+    async fn post_auth_verify(
+        app: Router,
+        body: serde_json::Value,
+    ) -> (StatusCode, serde_json::Value) {
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/tirami/auth/verify")
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        (status, serde_json::from_slice(&bytes).unwrap_or_default())
+    }
+
+    /// End-to-end happy path: challenge → DID-sign → verify → token.
+    #[tokio::test]
+    async fn auth_did_full_handshake_yields_session_token() {
+        let app = test_router_with_agent(Config::default(), None);
+
+        // 1. Public challenge endpoint.
+        let (status, ch) = get_auth_challenge(app.clone()).await;
+        assert_eq!(status, StatusCode::OK, "challenge: {ch}");
+        let challenge_hex = ch["challenge_hex"]
+            .as_str()
+            .expect("challenge_hex")
+            .to_string();
+        assert_eq!(challenge_hex.len(), 64);
+        assert_eq!(ch["ttl_secs"], 300);
+
+        // 2. Agent generates its own AgentIdentity (Wave 4 primitive)
+        //    and signs the challenge bytes.
+        let agent = tirami_mind::AgentIdentity::generate(0, Some("autonomous".into()));
+        let challenge_bytes = hex::decode(&challenge_hex).expect("hex");
+        let sig = agent.sign(&challenge_bytes);
+        let sig_hex = hex::encode(sig.to_bytes());
+        let did = agent.did();
+
+        // 3. Verify.
+        let (status, resp) = post_auth_verify(
+            app.clone(),
+            serde_json::json!({
+                "did": did,
+                "challenge_hex": challenge_hex,
+                "signature_hex": sig_hex,
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "verify: {resp}");
+        assert_eq!(resp["did"], did);
+        let token = resp["session_token"].as_str().expect("token").to_string();
+        assert_eq!(token.len(), 64); // 32 random bytes → 64 hex chars
+        assert!(resp["expires_at_ms"].as_u64().unwrap_or(0) > 0);
+    }
+
+    #[tokio::test]
+    async fn auth_did_rejects_replay_of_same_challenge() {
+        let app = test_router_with_agent(Config::default(), None);
+        let (_, ch) = get_auth_challenge(app.clone()).await;
+        let challenge_hex = ch["challenge_hex"].as_str().expect("ok").to_string();
+        let agent = tirami_mind::AgentIdentity::generate(0, None);
+        let sig_hex = hex::encode(
+            agent
+                .sign(&hex::decode(&challenge_hex).expect("hex"))
+                .to_bytes(),
+        );
+        // First verify succeeds.
+        let (status, _) = post_auth_verify(
+            app.clone(),
+            serde_json::json!({
+                "did": agent.did(),
+                "challenge_hex": challenge_hex,
+                "signature_hex": sig_hex,
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        // Second verify with the same challenge MUST fail — single-use.
+        let (status, body) = post_auth_verify(
+            app,
+            serde_json::json!({
+                "did": agent.did(),
+                "challenge_hex": challenge_hex,
+                "signature_hex": sig_hex,
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        let msg = body["error"]["message"].as_str().unwrap_or("");
+        assert!(
+            msg.contains("unknown challenge_hex"),
+            "msg: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn auth_did_rejects_signature_from_different_key() {
+        let app = test_router_with_agent(Config::default(), None);
+        let (_, ch) = get_auth_challenge(app.clone()).await;
+        let challenge_hex = ch["challenge_hex"].as_str().expect("ok").to_string();
+        // Sign with one key but claim a different DID.
+        let signer = tirami_mind::AgentIdentity::generate(0, None);
+        let imposter = tirami_mind::AgentIdentity::generate(0, None);
+        let sig_hex = hex::encode(
+            signer
+                .sign(&hex::decode(&challenge_hex).expect("hex"))
+                .to_bytes(),
+        );
+        let (status, body) = post_auth_verify(
+            app,
+            serde_json::json!({
+                "did": imposter.did(),
+                "challenge_hex": challenge_hex,
+                "signature_hex": sig_hex,
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        let msg = body["error"]["message"].as_str().unwrap_or("");
+        assert!(msg.contains("signature invalid"), "msg: {msg}");
+    }
+
+    #[tokio::test]
+    async fn auth_did_rejects_malformed_did_prefix() {
+        let app = test_router_with_agent(Config::default(), None);
+        let (_, ch) = get_auth_challenge(app.clone()).await;
+        let challenge_hex = ch["challenge_hex"].as_str().expect("ok").to_string();
+        let agent = tirami_mind::AgentIdentity::generate(0, None);
+        let sig_hex = hex::encode(
+            agent
+                .sign(&hex::decode(&challenge_hex).expect("hex"))
+                .to_bytes(),
+        );
+        let (status, body) = post_auth_verify(
+            app,
+            serde_json::json!({
+                "did": format!("did:other:{}", agent.public_key_hex()),
+                "challenge_hex": challenge_hex,
+                "signature_hex": sig_hex,
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let msg = body["error"]["message"].as_str().unwrap_or("");
+        assert!(msg.contains("did must start with"), "msg: {msg}");
+    }
+
+    #[tokio::test]
+    async fn auth_did_rejects_wrong_length_signature() {
+        let app = test_router_with_agent(Config::default(), None);
+        let (_, ch) = get_auth_challenge(app.clone()).await;
+        let challenge_hex = ch["challenge_hex"].as_str().expect("ok").to_string();
+        let agent = tirami_mind::AgentIdentity::generate(0, None);
+        let (status, body) = post_auth_verify(
+            app,
+            serde_json::json!({
+                "did": agent.did(),
+                "challenge_hex": challenge_hex,
+                "signature_hex": "ab".repeat(16),
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let msg = body["error"]["message"].as_str().unwrap_or("");
+        assert!(msg.contains("signature_hex must be 128"), "msg: {msg}");
+    }
+
+    #[tokio::test]
+    async fn auth_did_rejects_unknown_challenge() {
+        let app = test_router_with_agent(Config::default(), None);
+        let agent = tirami_mind::AgentIdentity::generate(0, None);
+        let fake_challenge = "00".repeat(32);
+        let sig_hex = hex::encode(
+            agent
+                .sign(&hex::decode(&fake_challenge).expect("hex"))
+                .to_bytes(),
+        );
+        let (status, body) = post_auth_verify(
+            app,
+            serde_json::json!({
+                "did": agent.did(),
+                "challenge_hex": fake_challenge,
+                "signature_hex": sig_hex,
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        let msg = body["error"]["message"].as_str().unwrap_or("");
+        assert!(msg.contains("unknown challenge_hex"), "msg: {msg}");
+    }
+
+    #[tokio::test]
+    async fn auth_did_issued_token_unlocks_authenticated_endpoints() {
+        // The whole point of Wave 5: after a successful DID handshake,
+        // the returned bearer token must let the agent hit normally-
+        // protected endpoints without a human-shared API token.
+        let mut config = Config::default();
+        // Disable the legacy implicit-admin token so the test exercises
+        // the issued-session-token path only.
+        config.api_bearer_token = None;
+        let app = test_router_with_agent(config, None);
+
+        let (_, ch) = get_auth_challenge(app.clone()).await;
+        let challenge_hex = ch["challenge_hex"].as_str().expect("ok").to_string();
+        let agent = tirami_mind::AgentIdentity::generate(0, Some("autoclient".into()));
+        let sig_hex = hex::encode(
+            agent
+                .sign(&hex::decode(&challenge_hex).expect("hex"))
+                .to_bytes(),
+        );
+        let (_, resp) = post_auth_verify(
+            app.clone(),
+            serde_json::json!({
+                "did": agent.did(),
+                "challenge_hex": challenge_hex,
+                "signature_hex": sig_hex,
+            }),
+        )
+        .await;
+        let token = resp["session_token"].as_str().expect("token").to_string();
+
+        // Hit a protected endpoint with the issued token.
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/v1/tirami/balance")
+                    .header("Authorization", format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(
+            response.status(),
+            StatusCode::OK,
+            "DID-issued token should unlock /v1/tirami/balance"
+        );
+    }
+
+    #[tokio::test]
+    async fn well_known_manifest_lists_wave_5_auth_actions() {
+        let app = test_router_with_agent(Config::default(), None);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/.well-known/tirami-agent.json")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let json: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
+        let names: Vec<String> = json["actions"]
+            .as_array()
+            .expect("array")
+            .iter()
+            .map(|a| a["name"].as_str().unwrap_or("").to_string())
+            .collect();
+        for expected in &["auth_challenge", "auth_verify"] {
+            assert!(
+                names.iter().any(|n| n == expected),
+                "manifest missing {expected}, actions={names:?}"
+            );
+        }
+        // Both new auth endpoints must advertise auth_required = false
+        // (that is literally what makes autonomous join possible).
+        let actions = json["actions"].as_array().expect("array");
+        for name in &["auth_challenge", "auth_verify"] {
+            let a = actions
+                .iter()
+                .find(|a| a["name"] == *name)
+                .expect("found");
+            assert_eq!(
+                a["auth_required"], false,
+                "{} must advertise auth_required=false",
+                name
             );
         }
     }

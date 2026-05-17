@@ -26,6 +26,30 @@ pub const FEATURE_ZKML_BACKEND_ED_ATTEST: &str = "zkml-backend:ed-attest";
 pub const FEATURE_ZKML_BACKEND_EZKL: &str = "zkml-backend:ezkl";
 pub const FEATURE_ZKML_BACKEND_RISC0: &str = "zkml-backend:risc0";
 pub const FEATURE_ZKML_BACKEND_HALO2: &str = "zkml-backend:halo2";
+// Phase 24 Wave 5.1 — machine-readable taxonomy of how strong the
+// node's configured backend's proof is. Agents read this to route
+// trades to the strongest available peer. See
+// `tirami_zkml_bench::BackendStrength` for the canonical taxonomy.
+pub const FEATURE_ZKML_STRENGTH_NONE: &str = "zkml-strength:none";
+pub const FEATURE_ZKML_STRENGTH_CRYPTOGRAPHIC: &str = "zkml-strength:cryptographic";
+pub const FEATURE_ZKML_STRENGTH_INPUT_OUTPUT_BOUND: &str = "zkml-strength:input-output-bound";
+pub const FEATURE_ZKML_STRENGTH_COMPUTE_BOUND: &str = "zkml-strength:compute-bound";
+
+/// Phase 24 Wave 5.1 — canonical map from backend string label to
+/// strength tag. Pure function so tirami-core doesn't have to
+/// depend on tirami-zkml-bench (proto < zkml-bench in workspace
+/// dep order). The two definitions must agree; the
+/// `backend_strength_tag_agrees_with_bench_kind` integration test
+/// in tirami-zkml-bench enforces that invariant.
+pub fn zkml_backend_strength_tag(backend: &str) -> &'static str {
+    match backend.trim().to_ascii_lowercase().as_str() {
+        "ed-attest" => "cryptographic",
+        // Scaffold backends — real risc0/ezkl/halo2 bumps this to
+        // "input-output-bound" once Wave 5.1+ wires the real crates.
+        "mock" | "ezkl" | "risc0" | "halo2" => "none",
+        _ => "none",
+    }
+}
 
 pub fn default_protocol_version() -> u16 {
     TIRAMI_PROTOCOL_VERSION
@@ -75,6 +99,16 @@ pub fn advertised_protocol_features_with_backend(
         "ezkl" => features.push(FEATURE_ZKML_BACKEND_EZKL.to_string()),
         "risc0" => features.push(FEATURE_ZKML_BACKEND_RISC0.to_string()),
         "halo2" => features.push(FEATURE_ZKML_BACKEND_HALO2.to_string()),
+        _ => {}
+    }
+    // Phase 24 Wave 5.1 — backend strength taxonomy on the wire.
+    match zkml_backend_strength_tag(zkml_backend) {
+        "none" => features.push(FEATURE_ZKML_STRENGTH_NONE.to_string()),
+        "cryptographic" => features.push(FEATURE_ZKML_STRENGTH_CRYPTOGRAPHIC.to_string()),
+        "input-output-bound" => {
+            features.push(FEATURE_ZKML_STRENGTH_INPUT_OUTPUT_BOUND.to_string())
+        }
+        "compute-bound" => features.push(FEATURE_ZKML_STRENGTH_COMPUTE_BOUND.to_string()),
         _ => {}
     }
     features.sort();
@@ -713,6 +747,64 @@ mod tests {
         // mock backend feature implicitly.
         let features = super::advertised_protocol_features(false, "optional");
         assert!(features.contains(&super::FEATURE_ZKML_BACKEND_MOCK.to_string()));
+    }
+
+    // -----------------------------------------------------------------
+    // Phase 24 Wave 5.1 — zkml_backend_strength_tag + manifest exposure
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn strength_tag_matches_taxonomy_for_known_backends() {
+        assert_eq!(super::zkml_backend_strength_tag("mock"), "none");
+        assert_eq!(super::zkml_backend_strength_tag("ed-attest"), "cryptographic");
+        // Scaffold backends report `none` until Wave 5.1+ wires
+        // real zk crates.
+        assert_eq!(super::zkml_backend_strength_tag("risc0"), "none");
+        assert_eq!(super::zkml_backend_strength_tag("ezkl"), "none");
+        assert_eq!(super::zkml_backend_strength_tag("halo2"), "none");
+    }
+
+    #[test]
+    fn strength_tag_unknown_backend_falls_back_to_none() {
+        assert_eq!(super::zkml_backend_strength_tag("moonshot"), "none");
+        assert_eq!(super::zkml_backend_strength_tag(""), "none");
+    }
+
+    #[test]
+    fn strength_tag_normalises_case() {
+        assert_eq!(super::zkml_backend_strength_tag("Ed-Attest"), "cryptographic");
+        assert_eq!(super::zkml_backend_strength_tag("  MOCK  "), "none");
+    }
+
+    #[test]
+    fn advertised_features_include_strength_for_mock() {
+        let features =
+            super::advertised_protocol_features_with_backend(false, "optional", "mock");
+        assert!(features.contains(&super::FEATURE_ZKML_STRENGTH_NONE.to_string()));
+        assert!(!features.contains(&super::FEATURE_ZKML_STRENGTH_CRYPTOGRAPHIC.to_string()));
+    }
+
+    #[test]
+    fn advertised_features_include_strength_for_ed_attest() {
+        let features =
+            super::advertised_protocol_features_with_backend(false, "optional", "ed-attest");
+        assert!(features.contains(&super::FEATURE_ZKML_STRENGTH_CRYPTOGRAPHIC.to_string()));
+        assert!(!features.contains(&super::FEATURE_ZKML_STRENGTH_NONE.to_string()));
+    }
+
+    #[test]
+    fn advertised_features_include_strength_for_scaffold_backends() {
+        // risc0/ezkl/halo2 currently report `none` since Wave 5.0
+        // scaffolds aren't real zk yet. Bumping the strength is the
+        // canary that Wave 5.1+ has wired in a real crate.
+        for backend in ["risc0", "ezkl", "halo2"] {
+            let features =
+                super::advertised_protocol_features_with_backend(false, "optional", backend);
+            assert!(
+                features.contains(&super::FEATURE_ZKML_STRENGTH_NONE.to_string()),
+                "{backend} should advertise zkml-strength:none under scaffold",
+            );
+        }
     }
 
     // ------------------------------------------------------------------

@@ -8,9 +8,9 @@
 > forgeable" to "production-grade proof of inference" without a
 > single multi-week commit.
 
-Status: Wave 1 + Wave 2 + Wave 2.5 + Wave 3 + Wave 4 + Wave 4.5 + Wave 5.0 shipped.
-Wave 5.1+ (real risc0/ezkl crate integration) is week-scale work
-tracked in `docs/phase-24-wave-5-zk-backends.md`.
+Status: Waves 1 → 5.1 shipped. Wave 5.2+ (real risc0/ezkl crate
+integration) remains week-scale and is tracked in
+`docs/phase-24-wave-5-zk-backends.md`.
 
 ## The trajectory
 
@@ -388,18 +388,77 @@ Default-feature workspace still passes **1,450** tests; with
 `stub_backends_return_unavailable` which is now feature-gated
 to the no-features build).
 
-### Wave 5.1 (next, week-scale) — real risc0 zkVM integration
+### Wave 5.1 ✅ shipped — backend strength taxonomy + manifest exposure
 
-`docs/phase-24-wave-5-zk-backends.md` carries the full plan:
+Wave 5.1 was originally scoped (in `docs/phase-24-wave-5-zk-backends.md`)
+as "real risc0-zkvm integration" — but that is genuinely week-scale
+(Risc-V toolchain, guest ELF, 100+ MB SRS files). Wave 5.4 in the
+same doc was scoped as "backend strength taxonomy", which is the
+prerequisite for real-zk landings to communicate their strength
+machine-readably. Wave 5.1 was reslotted to ship the taxonomy
+first; real risc0 / ezkl crate integration follows as Wave 5.2+.
+
+#### What Wave 5.1 ships
+
+- **`BackendStrength` enum** (in `tirami-zkml-bench`):
+  - `None` — recomputable, no cryptographic claim (mock, scaffolds)
+  - `Cryptographic` — unforgeable per private key, no compute proof (ed-attest)
+  - `InputOutputBound` — zk over (input, output) commitment (Wave 5.2+ risc0/ezkl real)
+  - `ComputeBound` — zk over the model forward pass itself (Wave 5.3+, research)
+  - `PartialOrd` so agents can `peer.strength() > current_best.strength()` to route trades to the strongest peer.
+- **`BenchBackend::strength()`** — default-method returns `None`;
+  `MockBackend` keeps default, `EdAttestBackend` overrides to
+  `Cryptographic`. Scaffold backends (`Risc0Backend` /
+  `EzklBackend` / `Halo2Backend` under their feature flags)
+  keep `None` — they're explicit dev-only.
+- **`BenchBackendKind::strength()`** — same taxonomy at the
+  enum level, used by the discovery manifest.
+- **`tirami_core::zkml_backend_strength_tag(backend: &str)`** —
+  wire-format equivalent. Lets `tirami-core` (which can't
+  depend on `tirami-zkml-bench`) advertise the strength.
+- **Manifest exposure**: `/v1/tirami/protocol` now includes
+  `zkml_strength` ("none" / "cryptographic" / "input-output-bound"
+  / "compute-bound") and the protocol feature vector adds
+  `zkml-strength:<tag>`.
+- **Cross-taxonomy invariant test**:
+  `backend_kind_strength_matches_tirami_core_taxonomy` — for
+  every named backend, the trait's `strength()` must agree with
+  the wire-format function. Breaking this catches divergence
+  between the local runtime and the discovery manifest.
+- **Sentinel test**:
+  `scaffold_backends_strength_is_none_until_wave_5_1_lands`
+  asserts the scaffold strength is still `None`. Wave 5.2+
+  bumping it to `InputOutputBound` *must* be a coordinated
+  change to this test + docs + manifest — keeps drift loud.
+
+#### Tests +14
+
+`tirami-core` +7: strength_tag matrix (known backends + unknown
+fallback + case normalisation) + advertised-feature inclusion
+across backends.
+
+`tirami-zkml-bench` +7: BackendStrength ordering + serde +
+per-backend trait/kind agreement + cross-taxonomy invariant +
+sentinel for scaffold strength.
+
+Workspace passes **1,464** tests (Wave 5.0 1,450 → +14).
+
+### Wave 5.2 (next, week-scale) — real risc0 zkVM integration
+
+Carrying the original Wave 5.1 plan forward:
 - guest program (`bench_commit`) — commits to all spec fields
 - host-side `Risc0Backend` impl using `risc0_zkvm::default_prover`
 - receipt serialised as `BenchProof.bytes`
 - verifier dispatches `"risc0"` proofs to receipt verify + journal
   commitment cross-check
 - `Config.zkml_backend = "risc0"` routes producers to it
+- `BenchBackendKind::Risc0.strength()` bumps from `None` to
+  `InputOutputBound` (also updates the sentinel test +
+  manifest documentation)
 
-Wave 5.2 mirrors the same shape for `ezkl`. Wave 5.3 is research
-scope (model-forward circuits proving inference correctness).
+Wave 5.3 mirrors the same shape for `ezkl`. Wave 5.4 is
+research scope (model-forward circuits proving inference
+correctness, lifting strength to `ComputeBound`).
 
 ## Wave 3 — risc0 or ezkl integration
 

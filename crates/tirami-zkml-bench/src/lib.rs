@@ -112,6 +112,53 @@ pub struct BenchResult {
 // Backend trait
 // ---------------------------------------------------------------------------
 
+/// Phase 24 Wave 5.1 — machine-readable taxonomy of how strong a
+/// backend's proof is. Agents read this off the discovery manifest
+/// (via `BenchBackendKind::strength()`) and prefer
+/// `ComputeBound > InputOutputBound > Cryptographic > None`.
+///
+/// The ordering is monotonic in cryptographic guarantee. A backend
+/// whose proof is `ComputeBound` proves strictly more than one whose
+/// proof is `InputOutputBound`, etc.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum BackendStrength {
+    /// Anyone can recompute the proof bytes. No cryptographic
+    /// claim. Dev/shape-testing only (`MockBackend`, scaffolds).
+    None,
+    /// Unforgeable without the signer's private key, but the proof
+    /// asserts only identity, not correctness of computation
+    /// (`EdAttestBackend`).
+    Cryptographic,
+    /// zk-SNARK or zk-STARK over the commitment to input/output
+    /// pairs. The proof binds the trade to specific `BenchSpec`
+    /// values cryptographically — a prover who didn't see the
+    /// (input, output) pair can't forge it. Does NOT verify that
+    /// the *computation* producing the output was correct (the
+    /// prover could lie about output). Wave 5.1+ landing target
+    /// for the real `Risc0Backend` / `EzklBackend`.
+    InputOutputBound,
+    /// zk-SNARK over the computation itself: the circuit runs
+    /// (a quantised approximation of) the model's forward pass
+    /// and commits to the output. A passing proof guarantees the
+    /// claimed output is what that exact model would have produced
+    /// on the claimed input. Research scope (Wave 5.3+).
+    ComputeBound,
+}
+
+impl BackendStrength {
+    /// Short kebab-case tag — what gets advertised on the
+    /// protocol feature vector / discovery manifest.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Cryptographic => "cryptographic",
+            Self::InputOutputBound => "input-output-bound",
+            Self::ComputeBound => "compute-bound",
+        }
+    }
+}
+
 /// Uniform interface any zkML backend must implement. Real
 /// implementations live in feature-gated modules.
 pub trait BenchBackend: Send + Sync {
@@ -120,6 +167,14 @@ pub trait BenchBackend: Send + Sync {
     fn prove(&self, spec: &BenchSpec) -> Result<BenchProof, BenchError>;
 
     fn verify(&self, spec: &BenchSpec, proof: &BenchProof) -> Result<(), BenchError>;
+
+    /// Phase 24 Wave 5.1 — what kind of guarantee does this
+    /// backend's proof provide? Default `None` so legacy / test
+    /// backends without a categorisation are conservatively
+    /// classed as "no cryptographic claim".
+    fn strength(&self) -> BackendStrength {
+        BackendStrength::None
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -419,6 +474,10 @@ impl BenchBackend for EdAttestBackend {
     fn verify(&self, spec: &BenchSpec, proof: &BenchProof) -> Result<(), BenchError> {
         verify_ed_attest_proof(spec, proof)
     }
+
+    fn strength(&self) -> BackendStrength {
+        BackendStrength::Cryptographic
+    }
 }
 
 /// Verify an `ed-attest` proof without holding the
@@ -582,6 +641,28 @@ impl BenchBackendKind {
             Self::Ezkl => "ezkl",
             Self::Risc0 => "risc0",
             Self::Halo2 => "halo2",
+        }
+    }
+
+    /// Phase 24 Wave 5.1 — the *taxonomy strength* of this kind of
+    /// backend. Distinct from `is_available` (operational status):
+    /// `is_available` says "can I prove/verify with this backend
+    /// right now"; `strength` says "if I could, how strong would
+    /// the proof be". An agent comparing peers prefers higher
+    /// strength even when both are currently available.
+    ///
+    /// `Ezkl` / `Risc0` / `Halo2` report `None` here because the
+    /// scaffold implementations behind their feature flags are not
+    /// zero-knowledge. Wave 5.1+ bumps them to `InputOutputBound`
+    /// when the real crates land; Wave 5.3+ bumps them to
+    /// `ComputeBound` when the circuit verifies inference.
+    pub fn strength(self) -> BackendStrength {
+        match self {
+            Self::Mock => BackendStrength::None,
+            Self::EdAttest => BackendStrength::Cryptographic,
+            // Scaffold backends are NOT zk; real risc0/ezkl/halo2
+            // lands in Wave 5.1+ and bumps the strength.
+            Self::Ezkl | Self::Risc0 | Self::Halo2 => BackendStrength::None,
         }
     }
 }
@@ -1073,6 +1154,90 @@ mod tests {
         assert_eq!(s, "\"ed-attest\"");
         let parsed: BenchBackendKind = serde_json::from_str("\"mock\"").unwrap();
         assert_eq!(parsed, BenchBackendKind::Mock);
+    }
+
+    // ---- Phase 24 Wave 5.1 — BackendStrength taxonomy ----
+
+    #[test]
+    fn backend_strength_orders_monotonically() {
+        // None < Cryptographic < InputOutputBound < ComputeBound.
+        // Agents rely on this ordering to pick the strongest peer.
+        assert!(BackendStrength::None < BackendStrength::Cryptographic);
+        assert!(BackendStrength::Cryptographic < BackendStrength::InputOutputBound);
+        assert!(BackendStrength::InputOutputBound < BackendStrength::ComputeBound);
+    }
+
+    #[test]
+    fn backend_strength_as_str_is_stable_kebab_case() {
+        assert_eq!(BackendStrength::None.as_str(), "none");
+        assert_eq!(BackendStrength::Cryptographic.as_str(), "cryptographic");
+        assert_eq!(BackendStrength::InputOutputBound.as_str(), "input-output-bound");
+        assert_eq!(BackendStrength::ComputeBound.as_str(), "compute-bound");
+    }
+
+    #[test]
+    fn backend_strength_serializes_as_kebab_case_for_wire() {
+        let s = serde_json::to_string(&BackendStrength::InputOutputBound).unwrap();
+        assert_eq!(s, "\"input-output-bound\"");
+        let parsed: BackendStrength = serde_json::from_str("\"cryptographic\"").unwrap();
+        assert_eq!(parsed, BackendStrength::Cryptographic);
+    }
+
+    #[test]
+    fn mock_backend_strength_is_none() {
+        assert_eq!(MockBackend.strength(), BackendStrength::None);
+    }
+
+    #[test]
+    fn ed_attest_backend_strength_is_cryptographic() {
+        let b = EdAttestBackend::generate();
+        assert_eq!(b.strength(), BackendStrength::Cryptographic);
+    }
+
+    #[test]
+    fn backend_kind_strength_agrees_with_backend_instance() {
+        // The enum's strength() and the trait's strength() must
+        // never disagree — the manifest reads from the enum, the
+        // pipeline calls into the trait.
+        assert_eq!(BenchBackendKind::Mock.strength(), MockBackend.strength());
+        let ed = EdAttestBackend::generate();
+        assert_eq!(BenchBackendKind::EdAttest.strength(), ed.strength());
+    }
+
+    #[test]
+    fn backend_kind_strength_matches_tirami_core_taxonomy() {
+        // The `tirami_core::zkml_backend_strength_tag` function is
+        // the wire-format equivalent of `BenchBackendKind::strength`.
+        // They MUST agree for every named backend, otherwise the
+        // discovery manifest disagrees with the local trait dispatch.
+        for kind in [
+            BenchBackendKind::Mock,
+            BenchBackendKind::EdAttest,
+            BenchBackendKind::Ezkl,
+            BenchBackendKind::Risc0,
+            BenchBackendKind::Halo2,
+        ] {
+            assert_eq!(
+                kind.strength().as_str(),
+                tirami_core::zkml_backend_strength_tag(kind.name()),
+                "kind {:?} disagrees: trait says {} but core says {}",
+                kind,
+                kind.strength().as_str(),
+                tirami_core::zkml_backend_strength_tag(kind.name()),
+            );
+        }
+    }
+
+    #[test]
+    fn scaffold_backends_strength_is_none_until_wave_5_1_lands() {
+        // Sentinel test: when Wave 5.1+ wires real risc0-zkvm,
+        // this test will need updating to assert InputOutputBound
+        // (and Wave 5.3+ may bump to ComputeBound). The test
+        // breaking is the signal to update docs + manifest
+        // promises in lockstep with the implementation.
+        assert_eq!(BenchBackendKind::Risc0.strength(), BackendStrength::None);
+        assert_eq!(BenchBackendKind::Ezkl.strength(), BackendStrength::None);
+        assert_eq!(BenchBackendKind::Halo2.strength(), BackendStrength::None);
     }
 
     // ---- Phase 24 Wave 2 — TradeAttestation conversion + verifier ----

@@ -81,6 +81,9 @@ pub(crate) struct AppState {
     /// In-memory only; cross-mesh gossip + on-disk persistence
     /// follow in Wave 2.5.
     pub data_offers: crate::handlers::data_offer::DataOfferState,
+    /// Phase 20 Wave 3 — physical-world purchase intents
+    /// (`/v1/tirami/agent/purchase-intent[s]`). In-memory only.
+    pub purchase_intents: crate::handlers::purchase_intent::PurchaseIntentState,
 }
 
 /// Simple rate limiter for authentication failures.
@@ -235,6 +238,9 @@ pub fn create_router_with_services(
         agent_loop_stats,
         data_offers: Arc::new(Mutex::new(
             crate::handlers::data_offer::DataOfferRegistry::new(),
+        )),
+        purchase_intents: Arc::new(Mutex::new(
+            crate::handlers::purchase_intent::PurchaseIntentRegistry::new(),
         )),
     };
     let api_max_request_body_bytes = state.config.api_max_request_body_bytes;
@@ -444,6 +450,19 @@ pub fn create_router_with_services(
         .route(
             "/v1/tirami/data/purchase",
             post(crate::handlers::data_offer::purchase_offer),
+        )
+        // Phase 20 Wave 3 — physical-world purchase intent (Lightning bridge).
+        .route(
+            "/v1/tirami/agent/purchase-intent",
+            post(crate::handlers::purchase_intent::create_purchase_intent),
+        )
+        .route(
+            "/v1/tirami/agent/purchase-intents",
+            get(crate::handlers::purchase_intent::list_purchase_intents),
+        )
+        .route(
+            "/v1/tirami/agent/purchase-intent/{intent_id}/confirm",
+            post(crate::handlers::purchase_intent::confirm_purchase_intent),
         )
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
@@ -5522,6 +5541,307 @@ mod tests {
             .map(|a| a["name"].as_str().unwrap_or("").to_string())
             .collect();
         for expected in &["data_offer_publish", "data_offer_list", "data_offer_purchase"] {
+            assert!(
+                names.iter().any(|n| n == expected),
+                "manifest missing {expected}, actions={names:?}"
+            );
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Phase 20 Wave 3 — physical-world purchase intent (Lightning bridge)
+    // ------------------------------------------------------------------
+
+    async fn post_create_intent(
+        app: Router,
+        buyer_hex: &str,
+        body: serde_json::Value,
+    ) -> (StatusCode, serde_json::Value) {
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/tirami/agent/purchase-intent")
+                    .header("content-type", "application/json")
+                    .header("X-Tirami-Node-Id", buyer_hex)
+                    .body(Body::from(body.to_string()))
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap_or_default();
+        (status, json)
+    }
+
+    async fn get_list_intents(app: Router) -> (StatusCode, serde_json::Value) {
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/v1/tirami/agent/purchase-intents")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        (status, serde_json::from_slice(&bytes).unwrap_or_default())
+    }
+
+    async fn post_confirm_intent(
+        app: Router,
+        intent_id: &str,
+        outcome: &str,
+        reason: Option<&str>,
+    ) -> (StatusCode, serde_json::Value) {
+        let mut body = serde_json::json!({ "outcome": outcome });
+        if let Some(r) = reason {
+            body["failure_reason"] = serde_json::Value::String(r.to_string());
+        }
+        let uri = format!("/v1/tirami/agent/purchase-intent/{intent_id}/confirm");
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(uri)
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        (status, serde_json::from_slice(&bytes).unwrap_or_default())
+    }
+
+    /// Helper: out-of-band purchase intent body (no BOLT-11).
+    fn oob_intent(amount_sats: u64, max_trm: u64, external_ref: &str) -> serde_json::Value {
+        serde_json::json!({
+            "description": "domain.com registration",
+            "max_trm": max_trm,
+            "amount_sats": amount_sats,
+            "external_ref": external_ref,
+        })
+    }
+
+    #[tokio::test]
+    async fn purchase_intent_create_then_list_then_confirm_roundtrip() {
+        let app = test_router_with_agent(Config::default(), None);
+        let buyer = "aa".repeat(32);
+
+        // Create — note: at the default bridge rate (10 msat per CU)
+        // 10_000 sats → 10_000 × 1000 ÷ 10 = 1_000_000 TRM, so the
+        // request's max_trm ceiling has to be sized accordingly.
+        let (status, body) = post_create_intent(
+            app.clone(),
+            &buyer,
+            oob_intent(10_000, 2_000_000, "stripe:ch_1"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "create failed: {body}");
+        let intent_id = body["intent_id"].as_str().expect("intent_id").to_string();
+        assert_eq!(body["status"], "pending_external_settle");
+        assert_eq!(body["amount_sats"], 10_000);
+        assert!(body["amount_trm"].as_u64().unwrap_or(0) > 0);
+
+        // List should include it
+        let (status, list) = get_list_intents(app.clone()).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(list["count"], 1);
+
+        // Confirm
+        let (status, confirmed) = post_confirm_intent(app, &intent_id, "confirmed", None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(confirmed["status"], "confirmed");
+        assert!(confirmed["settled_at_ms"].as_u64().unwrap_or(0) > 0);
+    }
+
+    #[tokio::test]
+    async fn purchase_intent_rejects_when_amount_exceeds_max_trm() {
+        let app = test_router_with_agent(Config::default(), None);
+        let buyer = "aa".repeat(32);
+        // Massive amount, tiny max_trm — must fail.
+        let (status, body) = post_create_intent(
+            app,
+            &buyer,
+            oob_intent(1_000_000_000, 1, "stripe:ch_huge"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let msg = body["error"]["message"].as_str().unwrap_or("");
+        assert!(msg.contains("exceeds caller's max_trm"), "msg: {msg}");
+    }
+
+    #[tokio::test]
+    async fn purchase_intent_rejects_when_neither_invoice_nor_amount_provided() {
+        let app = test_router_with_agent(Config::default(), None);
+        let buyer = "aa".repeat(32);
+        let body = serde_json::json!({
+            "description": "missing fields",
+            "max_trm": 100,
+        });
+        let (status, resp) = post_create_intent(app, &buyer, body).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let msg = resp["error"]["message"].as_str().unwrap_or("");
+        assert!(
+            msg.contains("must provide invoice_bolt11 or"),
+            "msg: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn purchase_intent_rejects_bad_bolt11() {
+        let app = test_router_with_agent(Config::default(), None);
+        let buyer = "aa".repeat(32);
+        let body = serde_json::json!({
+            "description": "bad invoice",
+            "max_trm": 1_000_000,
+            "invoice_bolt11": "lnbc-this-is-not-valid",
+        });
+        let (status, resp) = post_create_intent(app, &buyer, body).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let msg = resp["error"]["message"].as_str().unwrap_or("");
+        assert!(msg.contains("invoice decode failed"), "msg: {msg}");
+    }
+
+    #[tokio::test]
+    async fn purchase_intent_rejects_zero_amount_sats() {
+        let app = test_router_with_agent(Config::default(), None);
+        let buyer = "aa".repeat(32);
+        let (status, body) =
+            post_create_intent(app, &buyer, oob_intent(0, 100, "ref:zero")).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let msg = body["error"]["message"].as_str().unwrap_or("");
+        assert!(msg.contains("amount_sats must be > 0"), "msg: {msg}");
+    }
+
+    #[tokio::test]
+    async fn purchase_intent_settles_a_physical_trade_on_the_ledger() {
+        let app = test_router_with_agent(Config::default(), None);
+        let buyer = "aa".repeat(32);
+        // 50_000 sats → 5_000_000 TRM at the default bridge rate.
+        let (status, body) = post_create_intent(
+            app.clone(),
+            &buyer,
+            oob_intent(50_000, 10_000_000, "stripe:test"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "create: {body}");
+        // Trade should now appear at /v1/tirami/trades. Use the
+        // forge_trades GET path the existing test infrastructure
+        // already exercises.
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/v1/tirami/trades")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let json: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
+        let trades = json["trades"].as_array().expect("trades");
+        assert!(
+            trades.iter().any(|t| t["model_id"]
+                .as_str()
+                .unwrap_or("")
+                .starts_with("physical:")),
+            "no physical trade found in {trades:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn purchase_intent_blocked_by_personal_agent_daily_limit() {
+        // Build agent with a 5-TRM daily limit; attempt a purchase that
+        // would push amount_trm above that ceiling.
+        let mut agent = agent_at(NodeId([0xAAu8; 32]));
+        agent.preferences.daily_spend_limit_trm = 5;
+        agent.preferences.per_task_budget_trm = 100;
+        let app = test_router_with_agent(Config::default(), Some(agent));
+        let buyer = "aa".repeat(32);
+        // 1_000_000 sats * 1000 msat/sat * (1 / DEFAULT_MSATS_PER_CU) ≈ many TRM
+        // 1_000 sats → 100_000 TRM at the default rate. The request's
+        // own max_trm is set generously so the failure we observe is
+        // strictly the agent-level daily-limit gate.
+        let (status, body) = post_create_intent(
+            app,
+            &buyer,
+            oob_intent(1_000, 1_000_000_000, "stripe:over-limit"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "got {body}");
+        let msg = body["error"]["message"].as_str().unwrap_or("");
+        assert!(msg.contains("daily limit"), "msg: {msg}");
+    }
+
+    #[tokio::test]
+    async fn purchase_intent_confirm_rejects_invalid_outcome() {
+        let app = test_router_with_agent(Config::default(), None);
+        let buyer = "aa".repeat(32);
+        let (status, body) =
+            post_create_intent(app.clone(), &buyer, oob_intent(10_000, 2_000_000, "ref:x"))
+                .await;
+        assert_eq!(status, StatusCode::OK);
+        let intent_id = body["intent_id"].as_str().expect("intent_id").to_string();
+        let (status, resp) = post_confirm_intent(app, &intent_id, "weirdvalue", None).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let msg = resp["error"]["message"].as_str().unwrap_or("");
+        assert!(msg.contains("outcome must be"), "msg: {msg}");
+    }
+
+    #[tokio::test]
+    async fn purchase_intent_confirm_404_for_unknown() {
+        let app = test_router_with_agent(Config::default(), None);
+        let (status, body) = post_confirm_intent(app, "no-such-id", "confirmed", None).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        let msg = body["error"]["message"].as_str().unwrap_or("");
+        assert!(msg.contains("intent_id not found"), "msg: {msg}");
+    }
+
+    #[tokio::test]
+    async fn well_known_manifest_lists_wave_3_purchase_actions() {
+        let app = test_router_with_agent(Config::default(), None);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/.well-known/tirami-agent.json")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let json: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
+        let names: Vec<String> = json["actions"]
+            .as_array()
+            .expect("array")
+            .iter()
+            .map(|a| a["name"].as_str().unwrap_or("").to_string())
+            .collect();
+        for expected in &[
+            "purchase_intent_create",
+            "purchase_intent_list",
+            "purchase_intent_confirm",
+        ] {
             assert!(
                 names.iter().any(|n| n == expected),
                 "manifest missing {expected}, actions={names:?}"

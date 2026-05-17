@@ -7,4 +7,5 @@ pub mod data_offer;
 pub mod governance;
 pub mod metrics;
 pub mod mind;
+pub mod purchase_intent;
 pub mod tokenomics;

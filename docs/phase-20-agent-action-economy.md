@@ -201,17 +201,53 @@ agent action class.
   for internal trades). Adding `secp256k1` as a workspace dep is its
   own scoping decision and lands as a follow-up.
 
-### Wave 3 — Physical-world bridge
+### Wave 3 — Physical-world bridge ✅ shipped
 
-- **`POST /v1/tirami/agent/purchase-intent`** — agent expresses intent
-  to pay a Lightning invoice. PersonalAgent budget gate decides if the
-  amount is within `daily_spend_limit_trm`; if yes, auto-pays via the
-  bridged BTC. New `category: "physical"` trade record retains the
-  pre-image hash as proof of delivery.
-- **Auto-discovery of BIP21 / Lightning addresses on the open web**
-  (deferred — needs a clean way to verify the seller is not a phishing
-  target. Probably wraps an LLM judgment + a human-curated allowlist
-  for the v1 surface).
+- **`POST /v1/tirami/agent/purchase-intent`** — record an external-rail
+  purchase. Two input modes:
+  - BOLT-11 invoice (`invoice_bolt11`) — decoded via
+    `tirami_lightning::payment::decode_bolt11` for amount + payment_hash.
+  - Out-of-band fields (`amount_sats` + `external_ref`) — for purchases
+    settling on rails other than Lightning (Stripe, bank wire, etc).
+  Settlement records a `TradeRecord` with
+    `provider = PHYSICAL_BRIDGE_NODE_ID` (`[0xFE; 32]`, distinct from
+    the existing self-trade sentinel `[0xFF; 32]`),
+    `consumer = buyer`, `trm_amount = msats_to_cu(amount_sats * 1000)`,
+    `model_id = "physical:<external_ref_short>"`,
+    `tokens_processed = 0`, `flops_estimated = 0`. Buyer's
+    PersonalAgent (when present) has `spent_today_trm` incremented.
+- **`GET /v1/tirami/agent/purchase-intents`** — list all intents,
+  including their status.
+- **`POST /v1/tirami/agent/purchase-intent/{id}/confirm`** — operator
+  declares the external-rail outcome: `{ "outcome": "confirmed" }` or
+  `{ "outcome": "failed", "failure_reason": "..." }`. The TRM trade
+  itself is **not** unwound on failure — accounting is unidirectional;
+  refunds are a future primitive.
+
+**Budget gating** layered as: (1) caller's request-level `max_trm`
+ceiling, (2) PersonalAgent's `daily_spend_limit_trm`,
+(3) PersonalAgent's `per_task_budget_trm`. Headless mode
+(no PersonalAgent) trusts only (1).
+
+**Wave 3 follow-ups**:
+
+- **Actual Lightning payment** via `ForgeWallet::pay_invoice` — Wave 3
+  ships the *intent* primitive; the live payment requires the operator
+  to start an LDK node and configure `--funded-wallet`. Out of scope
+  here because LN node setup is a per-operator concern.
+- **Bridge-rate calibration** — at the default `msats_per_cu` rate
+  (10), even a tiny Lightning payment converts to far more TRM than
+  the default `PersonalAgent.daily_spend_limit_trm = 20`. Either the
+  default rate, the default limit, or a separate
+  `daily_physical_spend_limit_trm` field should be reconsidered when
+  Wave 3 sees real operator use.
+- **Auto-discovery of BIP21 / Lightning addresses on the open web** —
+  deferred behind a phishing-verification problem (LLM judgment +
+  allowlist).
+- **Refund primitive** — currently a failed external rail leaves the
+  TRM trade on the ledger. A "compensation" primitive (matching the
+  failed-trade with a reverse-direction `TradeRecord`) is the obvious
+  follow-up but needs care to keep audit trails sound.
 
 ### Wave 4 — Identity portability
 

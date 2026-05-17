@@ -243,6 +243,12 @@ impl Nip90Publisher {
     /// `relay_url` defaults to `agora_relay::DEFAULT_RELAY_URL` if `None`.
     /// Returns `Ok(())` on relay acceptance, or `Err(AgoraError::RelayError(...))` on
     /// connection failure, timeout, or relay rejection.
+    ///
+    /// ⚠️ Wave-1 caveat: this path historically built the event
+    /// **unsigned** — a real Nostr relay rejects unsigned events.
+    /// Use [`Self::publish_signed_advertisement`] (Phase 22 Wave 1)
+    /// to produce a BIP-340-signed event that a public relay will
+    /// accept.
     pub async fn publish_advertisement(
         &self,
         advertisement: &ProviderAdvertisement,
@@ -252,6 +258,31 @@ impl Nip90Publisher {
         let event = self.build_advertisement_event(advertisement)?;
         let url = relay_url.unwrap_or(crate::agora_relay::DEFAULT_RELAY_URL);
         crate::agora_relay::publish_event(url, &event, timeout_sec).await
+    }
+
+    /// Phase 22 Wave 1 — build, **sign**, and publish a NIP-90
+    /// kind-31990 advertisement.
+    ///
+    /// `signer` is a [`crate::nostr::NostrIdentity`] — the secp256k1
+    /// keypair scoped to Nostr publishing. The signer's x-only
+    /// pubkey overrides whatever was supplied in
+    /// `advertisement.node_pubkey_hex` so the event id and signature
+    /// chain match the wire format relays expect.
+    ///
+    /// Returns `Ok(())` on relay acceptance.
+    pub async fn publish_signed_advertisement(
+        &self,
+        advertisement: &ProviderAdvertisement,
+        signer: &crate::nostr::NostrIdentity,
+        relay_url: Option<&str>,
+        timeout_sec: u64,
+    ) -> Result<(), AgoraError> {
+        let unsigned = self.build_advertisement_event(advertisement)?;
+        let signed = signer
+            .sign_event(unsigned)
+            .map_err(|e| AgoraError::Serialization(format!("nostr sign: {e}")))?;
+        let url = relay_url.unwrap_or(crate::agora_relay::DEFAULT_RELAY_URL);
+        crate::agora_relay::publish_event(url, &signed, timeout_sec).await
     }
 
     /// Build a NIP-90 kind 5050 job request event.
@@ -412,5 +443,41 @@ mod tests {
         assert_eq!(tier_label(ModelTier::Medium), "medium");
         assert_eq!(tier_label(ModelTier::Large), "large");
         assert_eq!(tier_label(ModelTier::Frontier), "frontier");
+    }
+
+    // -------------------------------------------------------------
+    // Phase 22 Wave 1 — Schnorr-signed advertisement integration
+    // -------------------------------------------------------------
+
+    #[test]
+    fn signed_advertisement_event_passes_nostr_verification() {
+        use crate::nostr::{verify_event, NostrIdentity};
+        let publisher = Nip90Publisher;
+        let signer = NostrIdentity::generate();
+        let ad = ProviderAdvertisement {
+            node_pubkey_hex: example_pubkey(),
+            models: vec!["qwen3-8b".into()],
+            tier: ModelTier::Medium,
+            trm_per_token: 3,
+            reputation: 0.85,
+            accepted_payment: vec!["cu".into()],
+            relays: vec!["wss://relay.test".into()],
+        };
+        // Build the unsigned event (this is what
+        // `publish_signed_advertisement` does internally) and sign it.
+        let event = publisher.build_advertisement_event(&ad).expect("build");
+        let signed = signer.sign_event(event).expect("sign");
+        // The signed event must round-trip through the verifier — that
+        // proves the same payload that hits the wire is BIP-340 valid.
+        verify_event(&signed).expect("verify must pass");
+        // The signer's pubkey is now the `pubkey` field, not the
+        // advertisement's `node_pubkey_hex` (which is the agent's
+        // Ed25519 identity).
+        let obj = signed.as_object().expect("obj");
+        assert_eq!(obj["pubkey"].as_str().unwrap(), signer.pubkey_hex());
+        assert_eq!(
+            obj["kind"].as_u64().unwrap(),
+            u64::from(kinds::HANDLER_ADVERTISEMENT)
+        );
     }
 }

@@ -8,7 +8,7 @@
 > forgeable" to "production-grade proof of inference" without a
 > single multi-week commit.
 
-Status: Wave 1 + Wave 2 + Wave 2.5 shipped.
+Status: Wave 1 + Wave 2 + Wave 2.5 + Wave 3 shipped.
 
 ## The trajectory
 
@@ -194,21 +194,65 @@ unchanged). `tirami-node::pipeline` +8: `build_bench_spec_*` (2) +
 `produce_ed_attest_*` (6). Workspace passes **1,413** tests
 (Wave 1 1,380 → Wave 2 1,397 → Wave 2.5 1,413).
 
-### Wave 3 (next) — gossip wire + full crypto verify
+### Wave 3 ✅ shipped — gossip wire + full crypto verify
 
-Wave 2.5 leaves two surfaces still TODO:
+Wave 3 widens the wire format and runs the full cryptographic
+verifier at gossip-receive time.
 
-1. **Gossip transport.** `TradeGossip` proto messages do not yet
-   carry `attestation`. Wave 3 widens the wire format (in a
-   serde-default-compatible way) so attestations propagate.
-2. **Full crypto verify.** Today the receiver only verifies
-   *signer ↔ provider* equality. Wave 3 carries `prompt_hash`,
-   `output_hash`, `model_hash`, `token_count`, `flops` along
-   with the trade so receivers can rebuild the BenchSpec and
-   call `verify_trade_attestation` for the actual signature
-   check. Alternatively (and preferably), pick a real zk
-   backend (`risc0` or `ezkl`) so the attestation itself proves
-   computation correctness, not just signer identity.
+- ✅ `tirami-proto::TradeGossip` gains two `#[serde(default)]`
+  fields:
+  - `attestation: Option<TradeAttestationWire>` — wire-mirror of
+    `tirami_ledger::ledger::TradeAttestation`. Conversions live
+    in tirami-ledger (proto < ledger, so the impls have to be
+    on the ledger side).
+  - `bench_spec_hint: Option<BenchSpecHint>` — the minimum
+    information a receiver needs to rebuild the producer's
+    `BenchSpec`: `model_hash`, `prompt_hash`, `output_hash`,
+    and `flops`. `token_count` already rides on `tokens_processed`.
+- ✅ `tirami_net::gossip::broadcast_trade(transport, gossip, signed, bench_spec_hint)` —
+  signature widened (breaking-change for the single caller in
+  `tirami-node::pipeline`, kept the no-cost convention for tests).
+  Pipeline ships the hint when (and only when) `signed.attestation`
+  is `Some`.
+- ✅ `tirami_net::gossip::handle_trade_gossip` — when both
+  `attestation` and `bench_spec_hint` are present, the receiver
+  rebuilds `BenchSpec` from the hint and calls
+  `tirami_zkml_bench::verify_trade_attestation`. Failure → drop
+  the trade. Attestation present but hint missing → fall through
+  to the dual-signature check only (degraded but not rejected).
+
+#### Tests added
+
+`tirami-net::gossip` +6:
+- `handle_gossip_accepts_attested_trade_with_valid_hint`
+- `handle_gossip_rejects_attestation_with_wrong_hint`
+- `handle_gossip_skips_crypto_when_hint_absent`
+- `handle_gossip_rejects_attestation_signed_by_non_provider`
+- `handle_gossip_rejects_tampered_attestation_bytes`
+- `trade_attestation_wire_round_trips_through_ledger_conversion`
+
+Workspace passes **1,419** tests (Wave 2.5 1,413 → +6).
+
+### Wave 4 (next) — real zk backend OR governance ratchet
+
+With Wave 3 done, the protocol has end-to-end cryptographic
+verifiability of "*the listed provider attested to this exact
+inference*." The remaining work splits cleanly:
+
+1. **Real zk backend** (week-scale): pick `risc0` or `ezkl` and
+   wire it into `BenchBackend`. The on-trade `TradeAttestation`
+   format already accommodates any backend (it's just a backend
+   name + bytes), and the wire path doesn't change. What
+   changes is the strength of the claim — from "I attested with
+   my key" to "I attest that I correctly computed Y on X."
+2. **Governance ratchet activation** (bounded): introduce the
+   proposal flow that bumps `ProofPolicy` `Optional` →
+   `Recommended` → `Required`. The
+   `IMMUTABLE_CONSTITUTIONAL_PARAMETERS::PROOF_POLICY_RATCHET`
+   constant already prevents downgrade; Wave 4 adds the upgrade
+   path.
+
+These are independent; either can ship first.
 
 ## Wave 3 — risc0 or ezkl integration
 

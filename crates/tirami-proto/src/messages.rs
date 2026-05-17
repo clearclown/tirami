@@ -365,6 +365,41 @@ pub struct TradeGossip {
     /// signed `TradeRecord`. See `TradeProposal::nonce`.
     #[serde(default)]
     pub nonce: [u8; 16],
+    /// Phase 24 Wave 3 — optional zkML attestation produced by the
+    /// provider. Wire-mirror of `tirami_ledger::ledger::TradeAttestation`.
+    /// `None` for unattested trades (legacy / mock backend / no agent
+    /// identity).
+    #[serde(default)]
+    pub attestation: Option<TradeAttestationWire>,
+    /// Phase 24 Wave 3 — companion hint so a gossip *receiver* can
+    /// reconstruct the `BenchSpec` and cryptographically verify the
+    /// `attestation`. The receiver only sees the trade — it does not
+    /// see the original prompt/output, so the producer ships the
+    /// hashes alongside.
+    #[serde(default)]
+    pub bench_spec_hint: Option<BenchSpecHint>,
+}
+
+/// Phase 24 Wave 3 — wire-mirror of `tirami_ledger::ledger::TradeAttestation`.
+/// Kept here in `tirami-proto` so the dependency direction stays
+/// acyclic (proto < ledger). `tirami-ledger` ships
+/// `From<&TradeAttestation> for TradeAttestationWire` conversions.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TradeAttestationWire {
+    pub backend: String,
+    pub bytes: Vec<u8>,
+}
+
+/// Phase 24 Wave 3 — minimum information a gossip receiver needs to
+/// rebuild the producer's `BenchSpec` and cryptographically verify
+/// the attached attestation. `token_count` already lives on
+/// `TradeGossip.tokens_processed`, so we don't re-ship it here.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BenchSpecHint {
+    pub model_hash: [u8; 32],
+    pub prompt_hash: [u8; 32],
+    pub output_hash: [u8; 32],
+    pub flops: u64,
 }
 
 // --- Loan Signing (CU Lending — Phase 5.5) ---

@@ -513,6 +513,33 @@ impl TradeAttestation {
     }
 }
 
+// Phase 24 Wave 3 — wire <-> ledger conversions. tirami-proto's
+// `TradeAttestationWire` is a structural mirror; the dep direction
+// (proto < ledger) prevents us from defining the conversion there.
+impl From<&TradeAttestation> for tirami_proto::TradeAttestationWire {
+    fn from(t: &TradeAttestation) -> Self {
+        Self { backend: t.backend.clone(), bytes: t.bytes.clone() }
+    }
+}
+
+impl From<TradeAttestation> for tirami_proto::TradeAttestationWire {
+    fn from(t: TradeAttestation) -> Self {
+        Self { backend: t.backend, bytes: t.bytes }
+    }
+}
+
+impl From<&tirami_proto::TradeAttestationWire> for TradeAttestation {
+    fn from(w: &tirami_proto::TradeAttestationWire) -> Self {
+        Self { backend: w.backend.clone(), bytes: w.bytes.clone() }
+    }
+}
+
+impl From<tirami_proto::TradeAttestationWire> for TradeAttestation {
+    fn from(w: tirami_proto::TradeAttestationWire) -> Self {
+        Self { backend: w.backend, bytes: w.bytes }
+    }
+}
+
 impl SignedTradeRecord {
     /// Verify both signatures on this trade.
     /// Maximum age of a trade timestamp before rejection (1 hour).

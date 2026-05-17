@@ -57,6 +57,12 @@ pub struct TiramiNode {
     /// Defaults to `None` on construction so existing behaviour is
     /// preserved when no identity is loaded.
     pub agent_identity: Arc<Mutex<Option<tirami_mind::AgentIdentity>>>,
+    /// Phase 24 Wave 4.5 — runtime `ProofPolicy` shared with
+    /// `AppState.current_proof_policy`. The HTTP API ratchets this
+    /// upward via `POST /v1/tirami/governance/execute/:id`; the
+    /// pipeline reads it at trade-execute time so the gate honours
+    /// the latest governance decision.
+    pub current_proof_policy: Arc<tokio::sync::RwLock<tirami_ledger::zk::ProofPolicy>>,
     heartbeat_started: bool,
 }
 
@@ -143,6 +149,14 @@ impl TiramiNode {
         // passphrase env var is unset.
         let agent_identity = load_persisted_agent_identity(&config);
 
+        // Phase 24 Wave 4.5 — boot the runtime ProofPolicy from the
+        // boot Config string. Unknown / malformed strings fall back
+        // to the conservative `Disabled` so a misconfigured node
+        // doesn't silently start running an unintended policy.
+        let initial_proof_policy = tirami_ledger::zk::ProofPolicy::parse(&config.proof_policy)
+            .unwrap_or(tirami_ledger::zk::ProofPolicy::Disabled);
+        let current_proof_policy = Arc::new(tokio::sync::RwLock::new(initial_proof_policy));
+
         Self {
             config,
             engine: Arc::new(Mutex::new(CandleEngine::new())),
@@ -167,6 +181,7 @@ impl TiramiNode {
             // is missing so the in-memory-only path remains the
             // out-of-the-box default.
             agent_identity: Arc::new(Mutex::new(agent_identity)),
+            current_proof_policy,
             heartbeat_started: false,
         }
     }
@@ -225,6 +240,9 @@ impl TiramiNode {
             // with the pipeline. HTTP `agent/identity/init` now
             // populates the slot the signer reads.
             self.agent_identity.clone(),
+            // Phase 24 Wave 4.5 — share the same proof-policy Arc
+            // so HTTP `governance/execute/:id` reaches the pipeline.
+            self.current_proof_policy.clone(),
         );
         let addr = self.config.api_socket_addr();
         tracing::info!("API server listening on {}", addr);
@@ -259,6 +277,7 @@ impl TiramiNode {
         let personal_agent_api = self.personal_agent.clone();
         let agent_loop_stats_api = self.agent_loop_stats.clone();
         let agent_identity_api = self.agent_identity.clone();
+        let current_proof_policy_api = self.current_proof_policy.clone();
         let api_config = self.config.clone();
         tokio::spawn(async move {
             let app = crate::api::create_router_with_services(
@@ -281,6 +300,8 @@ impl TiramiNode {
                 agent_loop_stats_api,
                 // Phase 23 Wave 2.5 — shared Arc.
                 agent_identity_api,
+                // Phase 24 Wave 4.5 — shared ProofPolicy handle.
+                current_proof_policy_api,
             );
             let addr = api_config.api_socket_addr();
             if let Ok(listener) = tokio::net::TcpListener::bind(&addr).await {
@@ -527,6 +548,9 @@ impl TiramiNode {
                 // Phase 23 Wave 2 — propagate the AgentIdentity slot
                 // so trade signing follows the DID when one is loaded.
                 self.agent_identity.clone(),
+                // Phase 24 Wave 4.5 — share the runtime ProofPolicy
+                // handle so the pipeline respects governance ratchets.
+                self.current_proof_policy.clone(),
             )
             .await
             .map_err(|e| tirami_core::TiramiError::NetworkError(format!("seed: {e}")))?;

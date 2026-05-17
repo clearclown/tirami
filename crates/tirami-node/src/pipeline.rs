@@ -71,6 +71,12 @@ impl PipelineCoordinator {
         // node id. Pass `Arc::new(Mutex::new(None))` to keep the
         // pre-Wave-2 behaviour.
         agent_identity: Arc<Mutex<Option<tirami_mind::AgentIdentity>>>,
+        // Phase 24 Wave 4.5 — runtime ProofPolicy gate. Shared with
+        // `AppState.current_proof_policy` so governance ratchet
+        // upgrades take immediate effect on freshly-spawned tasks.
+        // Tasks read this once when they actually need to gate; the
+        // governance ratchet itself ensures monotonic upgrades.
+        current_proof_policy: Arc<tokio::sync::RwLock<tirami_ledger::zk::ProofPolicy>>,
     ) -> anyhow::Result<()> {
         let node_id = self.transport.tirami_node_id();
         tracing::info!("Pipeline seed running, waiting for requests...");
@@ -197,6 +203,12 @@ impl PipelineCoordinator {
                             let guard = agent_identity.lock().await;
                             guard.as_ref().cloned()
                         };
+                        // Phase 24 Wave 4.5 — snapshot the current
+                        // proof policy so the spawned task sees a
+                        // consistent value across its own lifetime,
+                        // even if governance ratchets mid-flight.
+                        let policy_snapshot =
+                            *current_proof_policy.read().await;
 
                         tokio::spawn(async move {
                             let _permit = permit;
@@ -213,6 +225,7 @@ impl PipelineCoordinator {
                                 gossip,
                                 dispatcher,
                                 agent_snapshot,
+                                policy_snapshot,
                             )
                             .await
                             {
@@ -417,6 +430,13 @@ impl PipelineCoordinator {
                         // it records a remote-originated trade.
                         let staking = staking_pool.clone();
                         let stake_gate_enabled = config.stake_gate_enabled;
+                        // Phase 24 Wave 4.5 — clone the proof-policy
+                        // handle so the spawned task can read the
+                        // current value at the moment it tries to
+                        // record. Reading inside the task picks up
+                        // a governance ratchet that completed
+                        // between gossip-receive and ledger-write.
+                        let policy_handle = current_proof_policy.clone();
                         tokio::spawn(async move {
                             if let Some(signed) =
                                 tirami_net::gossip::handle_trade_gossip(&gossip, &trade_gossip).await
@@ -460,7 +480,11 @@ impl PipelineCoordinator {
                                 // trades. The gossip helper already ran a
                                 // first-pass verify, but dedup is stateful
                                 // and must happen at the ledger layer.
-                                match ledger.execute_signed_trade(&signed) {
+                                // Phase 24 Wave 4.5 — read the *current*
+                                // ratcheted policy (not the boot-time
+                                // string) and use the gated execute path.
+                                let policy = *policy_handle.read().await;
+                                match ledger.execute_signed_trade_gated(&signed, policy) {
                                     Ok(()) => {
                                         if let Some(path) = ledger_path.as_ref() {
                                             let _ = ledger.save_to_path(path);
@@ -862,6 +886,10 @@ async fn handle_inference(
     // attribution AND signing key follow this identity rather than
     // the machine-level transport.
     agent_identity: Option<tirami_mind::AgentIdentity>,
+    // Phase 24 Wave 4.5 — current runtime ProofPolicy. Read once at
+    // execute_signed_trade time so a governance ratchet between
+    // dispatch and execute is honoured.
+    current_proof_policy: tirami_ledger::zk::ProofPolicy,
 ) -> anyhow::Result<()> {
     use tirami_infer::InferenceEngine;
 
@@ -1092,7 +1120,9 @@ async fn handle_inference(
             match signed.verify() {
                 Ok(()) => {
                     let mut ledger = ledger.lock().await;
-                    match ledger.execute_signed_trade(&signed) {
+                    // Phase 24 Wave 4.5 — gate on the runtime
+                    // ProofPolicy passed into handle_inference.
+                    match ledger.execute_signed_trade_gated(&signed, current_proof_policy) {
                         Ok(()) => {
                             if let Some(path) = ledger_path.as_ref() {
                                 ledger.save_to_path(path)?;
@@ -1771,6 +1801,7 @@ mod tests {
                         Arc::new(Mutex::new(GossipState::new())),
                         Arc::new(Mutex::new(tirami_ledger::StakingPool::new())),
                         Arc::new(Mutex::new(None)),
+                        Arc::new(tokio::sync::RwLock::new(tirami_ledger::zk::ProofPolicy::Disabled)),
                     )
                     .await
                     .expect("seed loop");

@@ -624,6 +624,14 @@ pub enum SignatureError {
     /// attestation bytes are malformed (wrong backend / wrong length).
     #[error("attestation signer does not match trade provider")]
     AttestationSignerMismatch,
+    /// Phase 24 Wave 4.5 — the runtime `ProofPolicy` rejected the
+    /// trade. Today that means policy=Required AND the trade has no
+    /// attestation attached.
+    #[error("trade rejected by proof policy {policy}: {reason}")]
+    TradeRejectedByProofPolicy {
+        policy: &'static str,
+        reason: &'static str,
+    },
 }
 
 /// Errors raised when creating a new loan via [`ComputeLedger::create_loan`].
@@ -1337,6 +1345,32 @@ impl ComputeLedger {
     ///   when the provider has already spent this exact nonce.
     /// * Accepted v2 nonces are inserted into [`Self::seen_nonces`],
     ///   which is ephemeral but rebuilt from `trade_log` on load.
+    /// Phase 24 Wave 4.5 — execute_signed_trade with an explicit
+    /// runtime `ProofPolicy` gate. When `policy` requires a proof
+    /// and the trade carries none, the trade is rejected with
+    /// `SignatureError::TradeRejectedByProofPolicy`. All other
+    /// policies fall through to the standard `execute_signed_trade`
+    /// path. Use this from runtime callers that hold the
+    /// governance-ratcheted policy (e.g. `AppState.current_proof_policy`);
+    /// the unparameterised `execute_signed_trade` remains for tests
+    /// and back-compat callers that haven't been updated yet —
+    /// behaviour there is equivalent to passing `ProofPolicy::Disabled`.
+    pub fn execute_signed_trade_gated(
+        &mut self,
+        signed: &SignedTradeRecord,
+        policy: crate::zk::ProofPolicy,
+    ) -> Result<(), SignatureError> {
+        let (allowed, reason) =
+            crate::zk::policy_allows_trade(policy, signed.attestation.is_some());
+        if !allowed {
+            return Err(SignatureError::TradeRejectedByProofPolicy {
+                policy: policy.as_str(),
+                reason,
+            });
+        }
+        self.execute_signed_trade(signed)
+    }
+
     pub fn execute_signed_trade(
         &mut self,
         signed: &SignedTradeRecord,
@@ -3116,6 +3150,148 @@ mod tests {
             ledger.get_balance(&signed.trade.provider).unwrap().contributed,
             signed.trade.trm_amount
         );
+    }
+
+    // -----------------------------------------------------------------
+    // Phase 24 Wave 4.5 — execute_signed_trade_gated
+    // -----------------------------------------------------------------
+
+    use crate::zk::ProofPolicy;
+
+    fn build_attested_trade_with_self_signed_attestation()
+        -> (SignedTradeRecord, ed25519_dalek::SigningKey)
+    {
+        let (mut signed, provider_key) = build_attested_trade(None);
+        let mut bytes = vec![0u8; 96];
+        bytes[..32].copy_from_slice(&provider_key.verifying_key().to_bytes());
+        signed.attestation = Some(TradeAttestation::new("ed-attest".into(), bytes));
+        (signed, provider_key)
+    }
+
+    #[test]
+    fn gated_disabled_accepts_unattested_trade() {
+        let (signed, _) = build_attested_trade(None);
+        let mut ledger = ComputeLedger::new();
+        assert!(ledger
+            .execute_signed_trade_gated(&signed, ProofPolicy::Disabled)
+            .is_ok());
+    }
+
+    #[test]
+    fn gated_optional_accepts_unattested_trade() {
+        let (signed, _) = build_attested_trade(None);
+        let mut ledger = ComputeLedger::new();
+        assert!(ledger
+            .execute_signed_trade_gated(&signed, ProofPolicy::Optional)
+            .is_ok());
+    }
+
+    #[test]
+    fn gated_recommended_accepts_unattested_trade() {
+        // Recommended is informational; the gate still accepts.
+        let (signed, _) = build_attested_trade(None);
+        let mut ledger = ComputeLedger::new();
+        assert!(ledger
+            .execute_signed_trade_gated(&signed, ProofPolicy::Recommended)
+            .is_ok());
+    }
+
+    #[test]
+    fn gated_required_rejects_unattested_trade() {
+        let (signed, _) = build_attested_trade(None);
+        let mut ledger = ComputeLedger::new();
+        let err = ledger
+            .execute_signed_trade_gated(&signed, ProofPolicy::Required)
+            .unwrap_err();
+        assert!(matches!(err, SignatureError::TradeRejectedByProofPolicy { policy, .. } if policy == "required"));
+        // Trade must NOT have landed on the ledger.
+        assert!(ledger.get_balance(&signed.trade.provider).is_none());
+    }
+
+    #[test]
+    fn gated_required_accepts_well_attested_trade() {
+        let (signed, _) = build_attested_trade_with_self_signed_attestation();
+        let mut ledger = ComputeLedger::new();
+        assert!(ledger
+            .execute_signed_trade_gated(&signed, ProofPolicy::Required)
+            .is_ok());
+        // Trade landed.
+        assert_eq!(
+            ledger.get_balance(&signed.trade.provider).unwrap().contributed,
+            signed.trade.trm_amount
+        );
+    }
+
+    #[test]
+    fn gated_still_enforces_attestation_signer_match() {
+        // policy=Disabled doesn't bypass attestation-signer check —
+        // signer mismatch is a structural defect, not a policy gate.
+        let (mut signed, _) = build_attested_trade(None);
+        let mut bytes = vec![0u8; 96];
+        bytes[0] = 0xCD; // wrong pubkey
+        signed.attestation = Some(TradeAttestation::new("ed-attest".into(), bytes));
+        let mut ledger = ComputeLedger::new();
+        let err = ledger
+            .execute_signed_trade_gated(&signed, ProofPolicy::Disabled)
+            .unwrap_err();
+        assert!(matches!(err, SignatureError::AttestationSignerMismatch));
+    }
+
+    #[test]
+    fn gated_still_enforces_nonce_dedup() {
+        let (signed, _) = build_attested_trade_with_self_signed_attestation();
+        let mut ledger = ComputeLedger::new();
+        ledger
+            .execute_signed_trade_gated(&signed, ProofPolicy::Required)
+            .unwrap();
+        let err = ledger
+            .execute_signed_trade_gated(&signed, ProofPolicy::Required)
+            .unwrap_err();
+        assert!(matches!(err, SignatureError::ReplayedNonce { .. }));
+    }
+
+    #[test]
+    fn gated_required_with_optional_attestation_present_still_accepts() {
+        // Just because Required *requires* an attestation doesn't mean
+        // a non-Required policy MUST have one absent.
+        let (signed, _) = build_attested_trade_with_self_signed_attestation();
+        let mut ledger = ComputeLedger::new();
+        assert!(ledger
+            .execute_signed_trade_gated(&signed, ProofPolicy::Optional)
+            .is_ok());
+    }
+
+    #[test]
+    fn gated_rejection_does_not_consume_nonce_slot() {
+        // If Required rejects an unattested trade, the nonce should
+        // remain unconsumed so the consumer can retry with a freshly-
+        // produced attestation under the same nonce.
+        let (signed, _) = build_attested_trade(None);
+        let mut ledger = ComputeLedger::new();
+        let _ = ledger.execute_signed_trade_gated(&signed, ProofPolicy::Required);
+        // Now retry the *same* nonce with an attested record. Build a
+        // fresh attestation onto the same trade (same provider key)
+        // — note we re-use the same SignedTradeRecord with a now
+        // attached attestation.
+        let (mut retry, provider_key) = build_attested_trade(None);
+        retry.trade.nonce = signed.trade.nonce;
+        retry.trade.provider = signed.trade.provider.clone();
+        retry.trade.consumer = signed.trade.consumer.clone();
+        retry.trade.timestamp = signed.trade.timestamp;
+        retry.trade.trm_amount = signed.trade.trm_amount;
+        retry.trade.tokens_processed = signed.trade.tokens_processed;
+        retry.trade.model_id = signed.trade.model_id.clone();
+        // Re-sign with the same keys (provider_key is preserved via
+        // build_attested_trade's returned key) — but build_attested_trade
+        // generated new keys for `retry`; this property test relies
+        // on the policy gate being checked BEFORE nonce dedup. We
+        // verify only that the gated path doesn't burn the slot.
+        // (For a full retry-under-same-nonce semantic test we'd need
+        // a deterministic-key fixture.)
+        let _ = provider_key;
+        assert!(ledger.seen_nonces.get(&signed.trade.provider).is_none() ||
+            ledger.seen_nonces.get(&signed.trade.provider).map(|c| !c.contains(&signed.trade.nonce)).unwrap_or(true),
+            "policy rejection must not consume the nonce slot");
     }
 
     #[test]

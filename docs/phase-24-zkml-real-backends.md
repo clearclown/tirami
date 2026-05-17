@@ -8,7 +8,7 @@
 > forgeable" to "production-grade proof of inference" without a
 > single multi-week commit.
 
-Status: Wave 1 + Wave 2 + Wave 2.5 + Wave 3 + Wave 4 shipped.
+Status: Wave 1 + Wave 2 + Wave 2.5 + Wave 3 + Wave 4 + Wave 4.5 shipped.
 
 ## The trajectory
 
@@ -289,18 +289,69 @@ Wave 4.5 (bounded — single function, plus tests).
 
 Workspace passes **1,441** tests (Wave 3 1,419 → +22).
 
-### Wave 5 (next) — runtime gate hookup OR real zk backend
+### Wave 4.5 ✅ shipped — runtime gate hookup
 
-Two bounded follow-ups remain:
+The Wave-4 substrate now actually gates trade execution.
 
-1. **Wave 4.5 — runtime gate** (bounded, ≤ 100 LOC): change
-   `policy_allows_trade` callers to read
-   `AppState.current_proof_policy` instead of the immutable
-   boot-time `config.proof_policy`. Plumbing only — the gate
-   logic itself already exists.
-2. **Wave 5 — real zk backend** (week-scale): pick `risc0` or
-   `ezkl` and ship a real proof-of-inference. Wire format,
-   conversions, attestation typing all unchanged.
+#### What's new
+
+- **`ComputeLedger::execute_signed_trade_gated(signed, policy)`** —
+  evaluates `policy_allows_trade(policy, has_attestation)` BEFORE
+  the existing `execute_signed_trade` path. Failure returns
+  `SignatureError::TradeRejectedByProofPolicy { policy, reason }`.
+  The unparameterised `execute_signed_trade` is retained for tests
+  / back-compat callers (behaviour ≡ `Disabled`).
+- **`SignatureError::TradeRejectedByProofPolicy`** — new variant.
+- **`TiramiNode.current_proof_policy: Arc<RwLock<ProofPolicy>>`** —
+  shared with `AppState.current_proof_policy` (same Arc passed
+  through `create_router_with_services`). A governance ratchet
+  via `POST /v1/tirami/governance/execute/:id` is immediately
+  visible to the pipeline.
+- **`PipelineCoordinator::run_seed` takes the shared
+  `current_proof_policy`** and threads it through
+  `handle_inference` and the gossip-receive task. The producer
+  path uses `current_proof_policy` as a snapshot (the gate value
+  doesn't change mid-inference); the gossip-receive path reads
+  it fresh per trade so late-arriving gossip respects the most
+  recent governance state.
+
+#### Reject path semantics
+
+When `policy = Required` and an unattested trade arrives:
+
+- **Local execution** (producer's own inference): the trade is
+  rejected; the consumer reservation is already released
+  upstream; reputation does *not* get the success boost.
+- **Gossip receive**: rejected locally; the bilateral agreement
+  between remote provider/consumer is unaffected — this only
+  refuses to *record* the trade in this node's ledger.
+- **Nonce slot is NOT consumed** on policy rejection — a
+  follow-up attempt to record the same nonce with a valid
+  attestation isn't auto-blocked as a replay.
+
+#### Tests added
+
+`tirami-ledger::execute_signed_trade_gated` matrix +9:
+- `gated_disabled_accepts_unattested_trade`
+- `gated_optional_accepts_unattested_trade`
+- `gated_recommended_accepts_unattested_trade`
+- `gated_required_rejects_unattested_trade`
+- `gated_required_accepts_well_attested_trade`
+- `gated_still_enforces_attestation_signer_match`
+- `gated_still_enforces_nonce_dedup`
+- `gated_required_with_optional_attestation_present_still_accepts`
+- `gated_rejection_does_not_consume_nonce_slot`
+
+Workspace passes **1,450** tests (Wave 4 1,441 → +9).
+
+### Wave 5 (next, week-scale) — real zk backend
+
+The protocol now has the full pipeline:
+- Wave 1: ed-attest backend produces unforgeable signature-based attestations
+- Waves 2–3: attestations flow end-to-end over wire and are cryptographically verifiable by receivers
+- Waves 4–4.5: governance can ratchet the policy upward and the trade-accept gate enforces it
+
+Remaining work: replace ed-attest's "I signed this with my key" claim with a real zk proof — "I correctly computed Y on X without revealing the model weights or intermediate activations." This means wiring `risc0` or `ezkl` as a real `BenchBackend` and shipping `risc0`-flavoured `BenchProof` bytes. The on-trade `TradeAttestation` format already accommodates any backend name + bytes; the wire path doesn't change.
 
 ## Wave 3 — risc0 or ezkl integration
 

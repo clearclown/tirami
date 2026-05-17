@@ -8,7 +8,7 @@
 > forgeable" to "production-grade proof of inference" without a
 > single multi-week commit.
 
-Status: Wave 1 + Wave 2 + Wave 2.5 + Wave 3 shipped.
+Status: Wave 1 + Wave 2 + Wave 2.5 + Wave 3 + Wave 4 shipped.
 
 ## The trajectory
 
@@ -233,26 +233,74 @@ verifier at gossip-receive time.
 
 Workspace passes **1,419** tests (Wave 2.5 1,413 → +6).
 
-### Wave 4 (next) — real zk backend OR governance ratchet
+### Wave 4 ✅ shipped — governance ratchet activation
 
-With Wave 3 done, the protocol has end-to-end cryptographic
-verifiability of "*the listed provider attested to this exact
-inference*." The remaining work splits cleanly:
+Wave 4 wires the proposal-driven upgrade path for `ProofPolicy`,
+together with runtime state separate from the boot-time config
+string.
 
-1. **Real zk backend** (week-scale): pick `risc0` or `ezkl` and
-   wire it into `BenchBackend`. The on-trade `TradeAttestation`
-   format already accommodates any backend (it's just a backend
-   name + bytes), and the wire path doesn't change. What
-   changes is the strength of the claim — from "I attested with
-   my key" to "I attest that I correctly computed Y on X."
-2. **Governance ratchet activation** (bounded): introduce the
-   proposal flow that bumps `ProofPolicy` `Optional` →
-   `Recommended` → `Required`. The
-   `IMMUTABLE_CONSTITUTIONAL_PARAMETERS::PROOF_POLICY_RATCHET`
-   constant already prevents downgrade; Wave 4 adds the upgrade
-   path.
+#### What's new
 
-These are independent; either can ship first.
+- **`ProofPolicy::from_governance_value(v: f64) -> Option<Self>`** —
+  parses the `new_value` of a `ChangeParameter` proposal. Rounds
+  to nearest non-negative integer; rejects out-of-range and
+  non-finite floats.
+- **`GovernanceState::execute_proof_policy_proposal(id, current)`** —
+  takes a Passed `ChangeParameter { name: "PROOF_POLICY", ... }`,
+  applies `try_ratchet_proof_policy` (Constitutional no-downgrade),
+  marks the proposal as `Executed`, and returns the new policy.
+  Returns dedicated error variants for:
+  - `ProposalNotPassed` — execute called on Active/Rejected/Executed
+  - `UnsupportedExecution` — wrong parameter name / wrong proposal kind
+  - `InvalidProofPolicyValue` — `new_value` outside 0..=3
+  - `ProofPolicyDowngradeVetoed` — ratchet violated
+- **`AppState.current_proof_policy: Arc<RwLock<ProofPolicy>>`** —
+  the **runtime-enforced** policy, distinct from the boot-time
+  string in `config.proof_policy`. Future code that gates
+  trade-accept on policy reads this field.
+- **`POST /v1/tirami/governance/execute/:id`** — applies a Passed
+  PROOF_POLICY proposal. Status codes:
+  - `200 OK` → `{ ok, proposal_id, previous_policy, new_policy, ratchet }`
+  - `404` → proposal not found
+  - `409 Conflict` → downgrade vetoed OR proposal not in Passed status
+  - `400 Bad Request` → unsupported parameter / invalid value
+- **`GET /v1/tirami/governance/proof-policy`** — read current
+  policy: `{ policy, as_u8, ratchet }`.
+
+#### What's NOT in Wave 4
+
+The endpoints establish the **upgrade path**; they do not yet
+**enforce** the new policy at trade-accept time. The runtime
+`AppState.current_proof_policy` is the substrate; the gate at
+`execute_signed_trade` still reads `proof_policy` from the boot
+Config. Wiring the runtime substrate into the gate is a follow-up
+Wave 4.5 (bounded — single function, plus tests).
+
+#### Tests added
+
+- `tirami-ledger::zk` +4: `from_governance_value` round-trip,
+  rounding tolerance, out-of-range rejection, non-finite rejection
+- `tirami-ledger::governance` +12: ratchet upgrade matrix,
+  same-value idempotence, skip-steps allowed, downgrade vetoed,
+  invalid value, NaN, not-passed, wrong-name, wrong-kind,
+  unknown-id, execute-twice
+- `tirami-node::handlers::governance` +6: HTTP-level happy/error
+  paths for `/execute/:id` and `/proof-policy`
+
+Workspace passes **1,441** tests (Wave 3 1,419 → +22).
+
+### Wave 5 (next) — runtime gate hookup OR real zk backend
+
+Two bounded follow-ups remain:
+
+1. **Wave 4.5 — runtime gate** (bounded, ≤ 100 LOC): change
+   `policy_allows_trade` callers to read
+   `AppState.current_proof_policy` instead of the immutable
+   boot-time `config.proof_policy`. Plumbing only — the gate
+   logic itself already exists.
+2. **Wave 5 — real zk backend** (week-scale): pick `risc0` or
+   `ezkl` and ship a real proof-of-inference. Wire format,
+   conversions, attestation typing all unchanged.
 
 ## Wave 3 — risc0 or ezkl integration
 

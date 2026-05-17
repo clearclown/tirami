@@ -97,6 +97,14 @@ pub(crate) struct AppState {
     /// per-DID session tokens. In-memory only; persistence is a
     /// follow-up.
     pub nostr_identity: crate::handlers::nostr_publish::NostrIdentityState,
+    /// Phase 24 Wave 4 — the *currently enforced* `ProofPolicy`,
+    /// distinct from the string in `config.proof_policy` which is
+    /// the boot-time default. Governance can ratchet this upward
+    /// via `POST /v1/tirami/governance/execute/:id` for PROOF_POLICY
+    /// proposals. The no-downgrade Constitutional ratchet is
+    /// enforced inside
+    /// `GovernanceState::execute_proof_policy_proposal`.
+    pub current_proof_policy: Arc<tokio::sync::RwLock<tirami_ledger::zk::ProofPolicy>>,
 }
 
 /// Simple rate limiter for authentication failures.
@@ -236,6 +244,14 @@ pub fn create_router_with_services(
         .map(|c| c.local_capability().node_id.clone())
         .unwrap_or_else(|| NodeId([0u8; 32]));
 
+    // Phase 24 Wave 4 — boot-time proof_policy from Config; governance
+    // ratchets this upward. Unknown / malformed strings fall back to
+    // the conservative `Disabled` so a misconfigured node doesn't
+    // silently start running an unintended policy.
+    let initial_proof_policy = tirami_ledger::zk::ProofPolicy::parse(&config.proof_policy)
+        .unwrap_or(tirami_ledger::zk::ProofPolicy::Disabled);
+    let current_proof_policy = Arc::new(tokio::sync::RwLock::new(initial_proof_policy));
+
     let state = AppState {
         config,
         engine,
@@ -271,6 +287,7 @@ pub fn create_router_with_services(
             crate::handlers::auth_did::ChallengeStore::new(),
         )),
         nostr_identity: Arc::new(Mutex::new(None)),
+        current_proof_policy,
     };
     let api_max_request_body_bytes = state.config.api_max_request_body_bytes;
 
@@ -437,6 +454,15 @@ pub fn create_router_with_services(
         .route(
             "/v1/tirami/governance/tally/{id}",
             get(crate::handlers::governance::governance_tally),
+        )
+        // Phase 24 Wave 4 — governance ratchet apply + read
+        .route(
+            "/v1/tirami/governance/execute/{id}",
+            post(crate::handlers::governance::governance_execute),
+        )
+        .route(
+            "/v1/tirami/governance/proof-policy",
+            get(crate::handlers::governance::governance_proof_policy),
         )
         // Phase 10 P6 — Bitcoin OP_RETURN anchoring
         .route(

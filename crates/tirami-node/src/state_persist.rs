@@ -134,6 +134,71 @@ pub fn load_personal_agent(path: &Path) -> io::Result<Option<PersonalAgent>> {
 }
 
 // ---------------------------------------------------------------------------
+// Phase 23 Wave 3 — `AgentIdentity` on-disk persistence.
+//
+// The Wave-4 `AgentIdentityBundle` already encodes a passphrase-
+// encrypted JSON envelope (Argon2id + XChaCha20-Poly1305) suitable
+// for transport. We reuse exactly that envelope as the at-rest
+// format, so an exported bundle and a persisted-on-disk file are
+// byte-identical structures: the operator can roll their own backup
+// strategy without diverging on the format.
+// ---------------------------------------------------------------------------
+
+use tirami_mind::{AgentIdentity, AgentIdentityBundle};
+
+/// Persist an `AgentIdentity` to `path` as an encrypted bundle. The
+/// `passphrase` is fed straight to `AgentIdentity::export`, which
+/// runs Argon2id + XChaCha20-Poly1305 over the 32-byte seed.
+///
+/// Caller must supply a non-trivial passphrase (≥ 8 chars); the
+/// export path enforces this and propagates the error if not.
+pub fn save_agent_identity(
+    id: &AgentIdentity,
+    path: &Path,
+    passphrase: &str,
+) -> io::Result<()> {
+    let bundle = id
+        .export(passphrase)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e.to_string()))?;
+    let json = serde_json::to_string(&bundle)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    fs::write(path, json)?;
+    // Restrict permissions on Unix — the bundle is encrypted, but
+    // chmod 600 still adds defense in depth against accidental
+    // multi-user reads.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(path)?.permissions();
+        perms.set_mode(0o600);
+        fs::set_permissions(path, perms)?;
+    }
+    Ok(())
+}
+
+/// Load and decrypt an `AgentIdentity` from `path` using
+/// `passphrase`. Returns:
+///
+/// - `Ok(None)` if the file does not exist (clean first-boot state)
+/// - `Ok(Some(_))` if the file decrypts cleanly
+/// - `Err(_)` on I/O failure, malformed JSON, schema mismatch, or
+///   wrong passphrase (the AEAD authentication failure)
+pub fn load_agent_identity(
+    path: &Path,
+    passphrase: &str,
+) -> io::Result<Option<AgentIdentity>> {
+    if !path.exists() {
+        return Ok(None);
+    }
+    let raw = fs::read_to_string(path)?;
+    let bundle: AgentIdentityBundle = serde_json::from_str(&raw)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    let id = AgentIdentity::import(&bundle, passphrase)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e.to_string()))?;
+    Ok(Some(id))
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -449,5 +514,113 @@ mod tests {
             let roundtripped: StrategyKind = serde_json::from_str(&json).expect("must deserialize");
             assert_eq!(kind, roundtripped, "StrategyKind must roundtrip via JSON");
         }
+    }
+
+    // -------------------------------------------------------------
+    // Phase 23 Wave 3 — AgentIdentity on-disk persistence
+    // -------------------------------------------------------------
+
+    fn agent_id_tmp_path(suffix: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
+            "forge_agent_identity_test_{}_{}.json",
+            std::process::id(),
+            suffix
+        ))
+    }
+
+    #[test]
+    fn agent_identity_save_then_load_round_trip() {
+        let path = agent_id_tmp_path("rt");
+        let _ = std::fs::remove_file(&path);
+        let original = AgentIdentity::generate(1_000, Some("persist-test".into()));
+        save_agent_identity(&original, &path, "correct-horse-battery-staple")
+            .expect("save ok");
+        let loaded = load_agent_identity(&path, "correct-horse-battery-staple")
+            .expect("load ok")
+            .expect("must be Some");
+        assert_eq!(loaded.public_key_hex(), original.public_key_hex());
+        assert_eq!(loaded.display_name, original.display_name);
+        assert_eq!(loaded.created_at_ms, original.created_at_ms);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn agent_identity_load_missing_path_returns_none() {
+        let path = agent_id_tmp_path("missing-never-created");
+        let _ = std::fs::remove_file(&path);
+        let loaded = load_agent_identity(&path, "anything").expect("Ok");
+        assert!(loaded.is_none());
+    }
+
+    #[test]
+    fn agent_identity_load_wrong_passphrase_returns_err() {
+        let path = agent_id_tmp_path("wrong-pass");
+        let _ = std::fs::remove_file(&path);
+        let id = AgentIdentity::generate(0, None);
+        save_agent_identity(&id, &path, "right-passphrase-12345").expect("save");
+        let err = load_agent_identity(&path, "wrong-passphrase-12345").expect_err("must err");
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn agent_identity_save_rejects_short_passphrase() {
+        let path = agent_id_tmp_path("short-pass");
+        let _ = std::fs::remove_file(&path);
+        let id = AgentIdentity::generate(0, None);
+        let err = save_agent_identity(&id, &path, "short").expect_err("must err");
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+        // File must NOT have been created on the rejection path.
+        assert!(!path.exists(), "save should not write on validation failure");
+    }
+
+    #[test]
+    fn agent_identity_save_corruption_then_load_returns_err() {
+        let path = agent_id_tmp_path("corrupt");
+        let _ = std::fs::remove_file(&path);
+        let id = AgentIdentity::generate(0, None);
+        save_agent_identity(&id, &path, "correct-passphrase-1234").expect("save");
+        // Corrupt the file body.
+        std::fs::write(&path, "not-a-json-bundle").unwrap();
+        let err = load_agent_identity(&path, "correct-passphrase-1234")
+            .expect_err("must err on malformed JSON");
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn agent_identity_save_file_has_restrictive_permissions_on_unix() {
+        let path = agent_id_tmp_path("perm");
+        let _ = std::fs::remove_file(&path);
+        let id = AgentIdentity::generate(0, None);
+        save_agent_identity(&id, &path, "correct-passphrase-1234").expect("save");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600, "got mode {:o}", mode);
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn agent_identity_two_round_trips_preserve_seed_byte_for_byte() {
+        // Save → load → save → load must yield the exact same seed
+        // bytes. This catches any nondeterminism in the persistence
+        // path (e.g., re-keying or rotating salts on read).
+        let path = agent_id_tmp_path("two-rt");
+        let _ = std::fs::remove_file(&path);
+        let original = AgentIdentity::generate(0, None);
+        let original_seed = original.seed();
+        save_agent_identity(&original, &path, "pass-12345678").expect("save 1");
+        let loaded1 = load_agent_identity(&path, "pass-12345678")
+            .expect("load 1")
+            .expect("Some");
+        save_agent_identity(&loaded1, &path, "pass-12345678").expect("save 2");
+        let loaded2 = load_agent_identity(&path, "pass-12345678")
+            .expect("load 2")
+            .expect("Some");
+        assert_eq!(loaded2.seed(), original_seed);
+        let _ = std::fs::remove_file(&path);
     }
 }

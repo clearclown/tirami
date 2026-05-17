@@ -1,0 +1,41 @@
+# Phase 25 B / Wave 5.2.1 — risc0 guest program skeleton.
+#
+# This crate is INTENTIONALLY NOT in the workspace `members =` list:
+# it targets `riscv32im-risc0-zkvm-elf` and is built by
+# `cargo-risczero` separately from the host workspace. Adding it to
+# the host workspace would break `cargo build` on dev machines
+# without the Risc-V toolchain.
+#
+# Build (operator-side):
+#
+#   1. `cargo install cargo-risczero`
+#   2. `rzup install`
+#   3. `cd crates/tirami-zkml-bench-guest && cargo risczero build`
+#
+# The produced ELF + image ID drop into
+# `target/riscv-guest/riscv32im-risc0-zkvm-elf/release/bench-commit`.
+# Host-side wiring (Wave 5.2.2+) will `include_bytes!` that path.
+
+[package]
+name = "tirami-zkml-bench-guest"
+version = "0.1.0"
+edition = "2024"
+
+# Skeleton: when cargo-risczero is installed and the toolchain is
+# bootstrapped, uncomment the dependency below. Until then the
+# `[[bin]]` target compiles as a host-side stub that prints what
+# the guest WOULD do — handy for protocol-level tests that don't
+# need a real receipt.
+#
+# [dependencies]
+# risc0-zkvm = { version = "1.2", default-features = false, features = ["std"] }
+
+[[bin]]
+name = "bench-commit"
+path = "src/main.rs"
+
+[profile.release]
+opt-level = 3
+codegen-units = 1
+lto = true
+debug = false

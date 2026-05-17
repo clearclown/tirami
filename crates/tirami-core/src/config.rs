@@ -239,6 +239,15 @@ pub struct Config {
     /// scrapers without credentials.
     #[serde(default)]
     pub metrics_require_bearer: bool,
+
+    /// Phase 25 C9 — maximum number of `SlashEvent`s the
+    /// slashing engine is permitted to emit in a single tick.
+    /// Defends against a logic bug or false-positive cluster that
+    /// would otherwise drain the staking pool in one pass.
+    /// Default 100 trades plenty of room for honest collusion
+    /// detection while bounding worst-case damage per tick.
+    #[serde(default = "default_max_slashes_per_tick")]
+    pub max_slashes_per_tick: u32,
 }
 
 /// Phase 21 Wave 2 — stake gate is **on by default** so that fresh
@@ -300,6 +309,10 @@ fn default_agent_tick_interval_secs() -> u64 {
 
 fn default_zkml_backend() -> String {
     "mock".to_string()
+}
+
+fn default_max_slashes_per_tick() -> u32 {
+    100
 }
 
 fn default_personal_agent_enabled() -> bool {
@@ -422,6 +435,7 @@ impl Default for Config {
             personal_agent_enabled: true,
             zkml_backend: "mock".to_string(),
             metrics_require_bearer: false,
+            max_slashes_per_tick: 100,
         }
     }
 }

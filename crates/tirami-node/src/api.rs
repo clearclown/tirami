@@ -608,6 +608,10 @@ pub fn create_router_with_services(
         // envelope. Applied as the outermost layer so it runs AFTER
         // all other middleware and handler responses.
         .layer(middleware::from_fn(json_error_envelope))
+        // Phase 25 A8 — stamp every response with X-Tirami-Request-Id.
+        // Outer-most so the id ends up on the wire even when the
+        // envelope middleware reshapes the body.
+        .layer(middleware::from_fn(request_trace_id_layer))
         .layer(DefaultBodyLimit::max(api_max_request_body_bytes))
         .with_state(state)
 }
@@ -1371,6 +1375,40 @@ async fn health(State(state): State<AppState>) -> Json<HealthResponse> {
         status: "ok".to_string(),
         model_loaded: engine.is_loaded(),
     })
+}
+
+/// Phase 25 A8 — request-trace id middleware.
+///
+/// Stamps an `X-Tirami-Request-Id` header into every response so
+/// operators can correlate a single client request across log
+/// lines, traces, and gossip events. If the client supplied its
+/// own request id we echo it back so the chain is transitive;
+/// otherwise we generate a fresh `req-` id (separate prefix from
+/// `chatcmpl-` so the two namespaces don't collide).
+async fn request_trace_id_layer(
+    mut request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    use rand::Rng;
+    let header_name = axum::http::HeaderName::from_static("x-tirami-request-id");
+    let incoming = request
+        .headers()
+        .get(&header_name)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string());
+    let request_id = incoming.unwrap_or_else(|| {
+        let id: u64 = rand::thread_rng().r#gen();
+        format!("req-{:016x}", id)
+    });
+    // Stamp the id onto the request so downstream handlers can
+    // grab it from extensions if they want to include it in their
+    // own structured logging.
+    request.extensions_mut().insert(request_id.clone());
+    let mut response = next.run(request).await;
+    if let Ok(value) = axum::http::HeaderValue::from_str(&request_id) {
+        response.headers_mut().insert(header_name, value);
+    }
+    response
 }
 
 /// Phase 25 A2 — structured 503 envelope for the inference path.
@@ -4869,6 +4907,76 @@ mod tests {
         assert_ne!(h1, h2);
         assert_ne!(h2, h3);
         assert_ne!(h1, h3);
+    }
+
+    // -----------------------------------------------------------------
+    // Phase 25 A8 — request-trace id middleware
+    // -----------------------------------------------------------------
+
+    #[tokio::test]
+    async fn request_trace_id_is_stamped_on_response_when_not_supplied() {
+        let app = test_router(Config::default());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/healthz")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let id = resp
+            .headers()
+            .get("x-tirami-request-id")
+            .and_then(|v| v.to_str().ok())
+            .expect("x-tirami-request-id must be present");
+        assert!(id.starts_with("req-"), "generated id should be req- prefix, got {id}");
+        assert!(id.len() >= 8);
+    }
+
+    #[tokio::test]
+    async fn request_trace_id_is_echoed_when_client_supplies_one() {
+        let app = test_router(Config::default());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/healthz")
+                    .header("x-tirami-request-id", "trace-abc-123")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let echoed = resp
+            .headers()
+            .get("x-tirami-request-id")
+            .and_then(|v| v.to_str().ok())
+            .expect("must echo");
+        assert_eq!(echoed, "trace-abc-123");
+    }
+
+    #[tokio::test]
+    async fn request_trace_id_persists_through_error_envelope() {
+        // 404 still gets a request id stamped (middleware runs
+        // after json_error_envelope so the id survives the rewrap).
+        let app = test_router(Config::default());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/v1/tirami/nonexistent-route")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert!(resp
+            .headers()
+            .get("x-tirami-request-id")
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|v| !v.is_empty()));
     }
 
     #[tokio::test]

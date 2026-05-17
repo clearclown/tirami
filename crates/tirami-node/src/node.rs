@@ -778,6 +778,9 @@ impl TiramiNode {
         let staking = self.staking_pool.clone();
         let ledger_path = self.config.ledger_path.clone();
         let interval_secs = self.config.slashing_interval_secs.max(60);
+        // Phase 25 C9 — per-tick cap so a logic bug or false-positive
+        // cluster can't drain the staking pool in one sweep.
+        let max_slashes_per_tick = self.config.max_slashes_per_tick;
 
         tokio::spawn(async move {
             let mut ticker = tokio::time::interval(std::time::Duration::from_secs(interval_secs));
@@ -795,7 +798,7 @@ impl TiramiNode {
                 let events = {
                     let mut l = ledger.lock().await;
                     let mut s = staking.lock().await;
-                    l.update_trust_penalties(&mut s, now_ms)
+                    l.update_trust_penalties_capped(&mut s, now_ms, max_slashes_per_tick)
                 };
 
                 if !events.is_empty() {
@@ -958,6 +961,10 @@ impl TiramiNode {
                 tirami_core::NodeId([0u8; 32])
             }
         };
+        // Phase 25 C6 — operators can dial this down to 10 sec for
+        // global-scale fresh anchoring; the hard floor stays at 10 s
+        // so a misconfigured `0` doesn't spin the loop into a tight
+        // CPU burn.
         let interval_secs = self.config.anchor_interval_secs.max(10);
 
         tokio::spawn(async move {

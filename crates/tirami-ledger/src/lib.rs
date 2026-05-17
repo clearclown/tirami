@@ -15,6 +15,7 @@ pub mod fork;
 pub mod kani_proofs;
 pub mod sybil;
 pub mod metrics;
+pub mod nostr;
 pub mod peer_registry;
 pub mod referral;
 pub mod safety;
@@ -71,3 +72,4 @@ pub use sybil::{
     WelcomeLoanLimiter, WelcomeLoanLimiterConfig, DEFAULT_MAX_PER_BUCKET_PER_WINDOW,
     DEFAULT_WELCOME_WINDOW_MS, STAKED_THRESHOLD_MULTIPLIER,
 };
+pub use nostr::{verify_event as verify_nostr_event, NostrError, NostrIdentity};

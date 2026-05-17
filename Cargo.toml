@@ -88,6 +88,10 @@ sha2 = "0.10"
 # stable. Pinned to the latest stable line.
 chacha20poly1305 = "0.10"
 argon2 = "0.5"
+# Phase 22 Wave 1 — BIP-340 Schnorr signatures for NIP-01 Nostr event
+# signing. Pinned to 0.29 to match the version `ldk-node` already
+# pulls in transitively (avoids two copies of the native libsecp256k1).
+secp256k1 = { version = "0.29", features = ["rand", "global-context"] }
 
 # Bitcoin Lightning
 ldk-node = "0.4"

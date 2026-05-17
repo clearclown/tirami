@@ -185,6 +185,10 @@ pub fn create_router(
     cluster: Option<Arc<ClusterManager>>,
     gossip: Arc<Mutex<GossipState>>,
 ) -> Router {
+    // Compute before `config` moves into the call below.
+    let initial_proof_policy = tirami_ledger::zk::ProofPolicy::parse(&config.proof_policy)
+        .unwrap_or(tirami_ledger::zk::ProofPolicy::Disabled);
+    let proof_policy_handle = Arc::new(tokio::sync::RwLock::new(initial_proof_policy));
     create_router_with_services(
         config,
         engine,
@@ -208,6 +212,8 @@ pub fn create_router(
         // calls `create_router_with_services` directly with the
         // node's own shared Arc.
         Arc::new(Mutex::new(None)),
+        // Phase 24 Wave 4.5 — runtime policy handle, computed above.
+        proof_policy_handle,
     )
 }
 
@@ -237,20 +243,19 @@ pub fn create_router_with_services(
     // `run_seed` so an HTTP `agent/identity/init` immediately
     // updates the signer the pipeline reads.
     agent_identity: Arc<Mutex<Option<tirami_mind::AgentIdentity>>>,
+    // Phase 24 Wave 4.5 — shared `current_proof_policy` handle.
+    // Same `Arc<RwLock<ProofPolicy>>` is held by `AppState` (this
+    // function's HTTP layer) and `TiramiNode` (which passes it to
+    // `run_seed`) so a governance ratchet via
+    // `POST /v1/tirami/governance/execute/:id` is immediately
+    // visible to the pipeline.
+    current_proof_policy: Arc<tokio::sync::RwLock<tirami_ledger::zk::ProofPolicy>>,
 ) -> Router {
     // Derive local node ID from cluster or generate a deterministic one.
     let local_node_id = cluster
         .as_ref()
         .map(|c| c.local_capability().node_id.clone())
         .unwrap_or_else(|| NodeId([0u8; 32]));
-
-    // Phase 24 Wave 4 — boot-time proof_policy from Config; governance
-    // ratchets this upward. Unknown / malformed strings fall back to
-    // the conservative `Disabled` so a misconfigured node doesn't
-    // silently start running an unintended policy.
-    let initial_proof_policy = tirami_ledger::zk::ProofPolicy::parse(&config.proof_policy)
-        .unwrap_or(tirami_ledger::zk::ProofPolicy::Disabled);
-    let current_proof_policy = Arc::new(tokio::sync::RwLock::new(initial_proof_policy));
 
     let state = AppState {
         config,
@@ -4441,6 +4446,9 @@ fn now_secs() -> u64 {
 /// Used by handler unit tests in `handlers/bank.rs`, `handlers/agora.rs`, and `handlers/mind.rs`.
 pub(crate) fn test_router_default(config: Config) -> Router {
     use crate::bank_adapter::BankServices;
+    let initial_policy = tirami_ledger::zk::ProofPolicy::parse(&config.proof_policy)
+        .unwrap_or(tirami_ledger::zk::ProofPolicy::Disabled);
+    let policy_handle = Arc::new(tokio::sync::RwLock::new(initial_policy));
     create_router_with_services(
         config,
         Arc::new(Mutex::new(CandleEngine::new())),
@@ -4461,6 +4469,8 @@ pub(crate) fn test_router_default(config: Config) -> Router {
         Arc::new(Mutex::new(crate::agent_loop::AgentLoopStats::new())),
         // Phase 23 Wave 2.5 — test helper builds an unshared slot.
         Arc::new(Mutex::new(None)),
+        // Phase 24 Wave 4.5 — runtime policy handle.
+        policy_handle,
     )
 }
 
@@ -5235,6 +5245,7 @@ mod tests {
             Arc::new(Mutex::new(agent)),
             Arc::new(Mutex::new(crate::agent_loop::AgentLoopStats::new())),
             Arc::new(Mutex::new(None)),
+            Arc::new(tokio::sync::RwLock::new(tirami_ledger::zk::ProofPolicy::Disabled)),
         )
     }
 
@@ -7547,6 +7558,7 @@ mod tests {
             Arc::new(Mutex::new(None::<tirami_mind::PersonalAgent>)),
             Arc::new(Mutex::new(crate::agent_loop::AgentLoopStats::new())),
             shared.clone(), // ← the Arc we will observe externally
+            Arc::new(tokio::sync::RwLock::new(tirami_ledger::zk::ProofPolicy::Disabled)),
         );
 
         // Externally observed slot is empty before init.
@@ -7596,6 +7608,7 @@ mod tests {
             Arc::new(Mutex::new(None::<tirami_mind::PersonalAgent>)),
             Arc::new(Mutex::new(crate::agent_loop::AgentLoopStats::new())),
             shared.clone(),
+            Arc::new(tokio::sync::RwLock::new(tirami_ledger::zk::ProofPolicy::Disabled)),
         );
         // First identity via init.
         let (_, init_a) = post_identity_init(app_a.clone(), None).await;
@@ -7625,6 +7638,7 @@ mod tests {
             Arc::new(Mutex::new(None::<tirami_mind::PersonalAgent>)),
             Arc::new(Mutex::new(crate::agent_loop::AgentLoopStats::new())),
             shared_b.clone(),
+            Arc::new(tokio::sync::RwLock::new(tirami_ledger::zk::ProofPolicy::Disabled)),
         );
         let (_status, _view) =
             post_identity_import(app_b, "passphrase-1234567", bundle).await;

@@ -1561,10 +1561,27 @@ impl ComputeLedger {
     /// * Nodes that have already been slashed in the last 5 minutes
     ///   are skipped too, so repeated runs don't zero the same stake
     ///   to dust over one bad streak.
+    /// Phase 25 C9 — back-compat wrapper that delegates to
+    /// [`update_trust_penalties_capped`] with `cap = u32::MAX`,
+    /// preserving the pre-Phase-25 unbounded behaviour for tests
+    /// and tooling that hasn't been migrated yet.
     pub fn update_trust_penalties(
         &mut self,
         staking: &mut crate::StakingPool,
         now_ms: u64,
+    ) -> Vec<SlashEvent> {
+        self.update_trust_penalties_capped(staking, now_ms, u32::MAX)
+    }
+
+    /// Phase 25 C9 — rate-limited slashing. Same semantics as
+    /// `update_trust_penalties` except the engine stops once
+    /// `max_slashes_per_tick` events have been emitted in a
+    /// single call. The remainder is left for the next tick.
+    pub fn update_trust_penalties_capped(
+        &mut self,
+        staking: &mut crate::StakingPool,
+        now_ms: u64,
+        max_slashes_per_tick: u32,
     ) -> Vec<SlashEvent> {
         let candidates: Vec<NodeId> = {
             let mut seen: std::collections::HashSet<NodeId> =
@@ -1588,6 +1605,13 @@ impl ComputeLedger {
 
         let mut new_events = Vec::new();
         for node_id in candidates {
+            if (new_events.len() as u32) >= max_slashes_per_tick {
+                // Phase 25 C9 — cap reached; remaining candidates
+                // wait until the next slashing tick. Bounds worst-
+                // case damage from a logic bug / false-positive
+                // cluster to `max_slashes_per_tick` per interval.
+                break;
+            }
             if recently_slashed.contains(&node_id) {
                 continue;
             }
@@ -3442,6 +3466,84 @@ mod tests {
         inject_tight_cluster(&mut ledger, subject, counterparty, 20, now);
         let events = ledger.update_trust_penalties(&mut staking, now);
         assert!(events.is_empty(), "stakeless nodes must not spam audit log");
+    }
+
+    // -----------------------------------------------------------------
+    // Phase 25 C9 — slashing rate-limiter
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn update_trust_penalties_capped_at_zero_yields_no_events() {
+        // Cap = 0 → engine emits nothing even when conditions match.
+        use crate::StakingPool;
+        let subject = NodeId([0xAA; 32]);
+        let counterparty = NodeId([0xBB; 32]);
+        let now = now_millis();
+        let mut staking = StakingPool::new();
+        staking
+            .stake(subject.clone(), 10_000, crate::staking::StakeDuration::Days7, now)
+            .expect("stake fixture");
+        let mut ledger = ComputeLedger::new();
+        inject_tight_cluster(&mut ledger, subject, counterparty, 20, now);
+        let events = ledger.update_trust_penalties_capped(&mut staking, now, 0);
+        assert!(events.is_empty());
+    }
+
+    #[test]
+    fn update_trust_penalties_capped_respects_max() {
+        // Build a ledger with many slashable nodes and assert the
+        // engine stops at the requested cap. The "remainder" is
+        // left for the next tick.
+        use crate::StakingPool;
+        let now = now_millis();
+        let mut staking = StakingPool::new();
+        let mut ledger = ComputeLedger::new();
+        // Create 5 slashable subjects with distinct ids.
+        let subjects: Vec<NodeId> = (0..5).map(|i| NodeId([0xC0 + i as u8; 32])).collect();
+        let counterparty = NodeId([0xEE; 32]);
+        for subject in &subjects {
+            staking
+            .stake(subject.clone(), 10_000, crate::staking::StakeDuration::Days7, now)
+            .expect("stake fixture");
+            inject_tight_cluster(&mut ledger, subject.clone(), counterparty.clone(), 20, now);
+        }
+        // Cap = 2 → engine emits at most 2 events.
+        let events = ledger.update_trust_penalties_capped(&mut staking, now, 2);
+        assert!(events.len() <= 2, "got {} events, cap was 2", events.len());
+    }
+
+    #[test]
+    fn update_trust_penalties_back_compat_unbounded() {
+        // The unparameterised method matches the old semantics
+        // (no cap, all eligible nodes processed in one call).
+        use crate::StakingPool;
+        let now = now_millis();
+        let mut staking = StakingPool::new();
+        let mut ledger = ComputeLedger::new();
+        for i in 0..3 {
+            let subject = NodeId([0xD0 + i as u8; 32]);
+            let counterparty = NodeId([0xEF + i as u8; 32]);
+            staking
+            .stake(subject.clone(), 10_000, crate::staking::StakeDuration::Days7, now)
+            .expect("stake fixture");
+            inject_tight_cluster(&mut ledger, subject, counterparty, 20, now);
+        }
+        let bounded = ledger.update_trust_penalties_capped(&mut staking, now, u32::MAX);
+        // Same wrapper at any large cap should match the
+        // unparameterised call on a fresh ledger (separate scope
+        // since the first call already consumed the candidates).
+        let mut staking2 = StakingPool::new();
+        let mut ledger2 = ComputeLedger::new();
+        for i in 0..3 {
+            let subject = NodeId([0xD0 + i as u8; 32]);
+            let counterparty = NodeId([0xEF + i as u8; 32]);
+            staking2
+                .stake(subject.clone(), 10_000, crate::staking::StakeDuration::Days7, now)
+                .expect("stake fixture");
+            inject_tight_cluster(&mut ledger2, subject, counterparty, 20, now);
+        }
+        let unbounded = ledger2.update_trust_penalties(&mut staking2, now);
+        assert_eq!(bounded.len(), unbounded.len());
     }
 
     #[test]

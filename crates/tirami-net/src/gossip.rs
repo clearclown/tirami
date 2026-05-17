@@ -228,6 +228,7 @@ pub async fn handle_trade_gossip(
         trade,
         provider_sig: msg.provider_sig.clone(),
         consumer_sig: msg.consumer_sig.clone(),
+            attestation: None,
     };
 
     // Verify both signatures
@@ -621,6 +622,7 @@ mod tests {
             trade,
             provider_sig: provider_key.sign(&canonical).to_bytes().to_vec(),
             consumer_sig: consumer_key.sign(&canonical).to_bytes().to_vec(),
+            attestation: None,
         }
     }
 
@@ -859,6 +861,7 @@ mod tests {
                 trade,
                 provider_sig: provider_key.sign(&canonical).to_bytes().to_vec(),
                 consumer_sig: consumer_key.sign(&canonical).to_bytes().to_vec(),
+            attestation: None,
             };
             state.mark_seen(&signed);
         }

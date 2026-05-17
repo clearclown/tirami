@@ -8,7 +8,7 @@
 > forgeable" to "production-grade proof of inference" without a
 > single multi-week commit.
 
-Status: Wave 1 shipped.
+Status: Wave 1 + Wave 2 (data-plane) shipped.
 
 ## The trajectory
 
@@ -128,26 +128,58 @@ doesn't match the trade's `provider` is rejected.
 
 Workspace: **1,380 passed, 0 failed** (was 1,363 → +17 new).
 
-## Wave 2 (next) — protocol integration
+## Wave 2 — data-plane integration ✅ shipped
 
-Stack on Wave 1:
+This wave makes the protocol *able to carry* attestations end-to-end
+without yet wiring the producer/verifier into `handle_inference`
+(that is Wave 2.5, bounded follow-up). Specifically:
 
-- New `Config.zkml_backend: BenchBackendKind` (default
-  `Mock` for backwards-compat; operators flip to `EdAttest` to
-  enable attested trades).
-- `SignedTradeRecord` extended with an optional
-  `attestation: Option<BenchProof>` field (`#[serde(default)]`
-  so legacy snapshots stay loadable).
-- `pipeline.rs::handle_inference` produces a proof using the
-  `AgentIdentity` SigningKey when an identity is loaded AND the
-  config selects `EdAttest`.
-- `pipeline.rs::TradeGossip` receiver verifies the attached
-  proof against the trade's `provider` field (via
-  `verify_ed_attest_proof_by_signer`). Mismatched signer →
-  reject the gossip trade (the existing local-policy stake gate
-  is the precedent for this defense-in-depth pattern).
-- Manifest exposes `policy.zkml_backend` so agents know which
-  proof strength the local node enforces.
+- ✅ `SignedTradeRecord` extended with optional
+  `attestation: Option<TradeAttestation>` (`#[serde(default)]` —
+  legacy pre-Wave-2 snapshots load unchanged).
+- ✅ New on-trade `TradeAttestation { backend: String, bytes:
+  Vec<u8> }` defined in `tirami-ledger` (workspace dependency
+  direction kept acyclic — zkml-bench depends on ledger, not the
+  reverse).
+- ✅ `tirami-zkml-bench` ships `From<&BenchProof> for
+  TradeAttestation` (and the inverse) plus
+  `verify_trade_attestation(spec, &TradeAttestation,
+  expected_signer)` which dispatches by `backend` name. For
+  `ed-attest` it delegates to `verify_ed_attest_proof_by_signer`.
+- ✅ `Config.zkml_backend: String` (default `"mock"`). Stored as
+  a kebab-case string so `tirami-core` stays free of a
+  `tirami-zkml-bench` dependency.
+- ✅ Manifest exposes `zkml_backend` (top-level field on
+  `/v1/tirami/protocol`) and the feature vector adds
+  `zkml-backend:<name>` so agents can route on it.
+- ✅ Backend-aware
+  `tirami_core::advertised_protocol_features_with_backend(...)`.
+  Old `advertised_protocol_features(...)` is preserved as a thin
+  shim that defaults to `"mock"`.
+- Tests: `tirami-zkml-bench` +9, `tirami-core` +6. Workspace
+  passes 1,397 tests.
+
+### Wave 2.5 (next, bounded) — pipeline produce + verify
+
+The protocol now *carries* attestations but `pipeline.rs::handle_inference`
+does not yet *produce* them, and `TradeGossip` does not yet *verify*
+them. Wave 2.5 wires:
+
+- Provider side (`handle_inference`): when `config.zkml_backend ==
+  "ed-attest"` AND an `AgentIdentity` is loaded, construct a
+  `BenchSpec` over (model_id_hash, prompt_hash, output_hash,
+  total_tokens, flops_estimated), call
+  `EdAttestBackend::from_signing_key(agent_identity.signing_key())
+  .prove(spec)`, and attach the resulting `TradeAttestation` to
+  the `SignedTradeRecord` before `execute_signed_trade`.
+- Consumer/Gossip side: when receiving a `SignedTradeRecord` with
+  `attestation: Some(_)`, call `verify_trade_attestation(spec,
+  attestation, &trade.provider.0)`. Failure → reject the trade
+  (in `proof_policy = "required"` mode) or downgrade reputation
+  (in `recommended` mode).
+
+Wave 2.5 is bounded but touches the inference path so it ships as
+its own PR.
 
 ## Wave 3 — risc0 or ezkl integration
 

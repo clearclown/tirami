@@ -480,6 +480,37 @@ pub struct SignedTradeRecord {
     pub provider_sig: Vec<u8>,
     /// Ed25519 signature from the consumer (64 bytes).
     pub consumer_sig: Vec<u8>,
+    /// Phase 24 Wave 2 — optional zkML attestation. Additive metadata,
+    /// not part of `canonical_bytes`. `serde(default)` keeps pre-Wave-2
+    /// snapshots loadable.
+    #[serde(default)]
+    pub attestation: Option<TradeAttestation>,
+}
+
+/// On-trade form of a `tirami_zkml_bench::BenchProof`. Defined here
+/// (not in tirami-zkml-bench) so the workspace dependency direction
+/// stays acyclic — zkml-bench depends on ledger, not vice versa.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TradeAttestation {
+    pub backend: String,
+    pub bytes: Vec<u8>,
+}
+
+impl TradeAttestation {
+    pub fn new(backend: String, bytes: Vec<u8>) -> Self {
+        Self { backend, bytes }
+    }
+
+    /// For `"ed-attest"` backend, return the embedded signer pubkey.
+    /// Layout: `[pubkey(32) || signature(64)]`.
+    pub fn ed_attest_signer(&self) -> Option<[u8; 32]> {
+        if self.backend != "ed-attest" || self.bytes.len() != 96 {
+            return None;
+        }
+        let mut pk = [0u8; 32];
+        pk.copy_from_slice(&self.bytes[..32]);
+        Some(pk)
+    }
 }
 
 impl SignedTradeRecord {
@@ -2821,6 +2852,7 @@ mod tests {
             trade,
             provider_sig: provider_key.sign(&canonical).to_bytes().to_vec(),
             consumer_sig: consumer_key.sign(&canonical).to_bytes().to_vec(),
+            attestation: None,
         }
     }
 
@@ -2870,6 +2902,7 @@ mod tests {
                 trade,
                 provider_sig: provider_key.sign(&canonical).to_bytes().to_vec(),
                 consumer_sig: consumer_key.sign(&canonical).to_bytes().to_vec(),
+            attestation: None,
             }
         };
 
@@ -2908,6 +2941,7 @@ mod tests {
             trade,
             provider_sig: provider_key.sign(&canonical).to_bytes().to_vec(),
             consumer_sig: consumer_key.sign(&canonical).to_bytes().to_vec(),
+            attestation: None,
         };
         let mut ledger = ComputeLedger::new();
         assert!(ledger.execute_signed_trade(&signed).is_ok());
@@ -3738,6 +3772,7 @@ mod tests {
             trade,
             provider_sig,
             consumer_sig,
+            attestation: None,
         };
 
         // Verification should succeed
@@ -3775,6 +3810,7 @@ mod tests {
             trade,
             provider_sig,
             consumer_sig: fake_consumer_sig,
+            attestation: None,
         };
 
         // Verification should fail
@@ -3813,6 +3849,7 @@ mod tests {
             trade: trade.clone(),
             provider_sig,
             consumer_sig,
+            attestation: None,
         };
 
         let mut ledger = ComputeLedger::new();
@@ -5931,7 +5968,7 @@ mod tests {
         let provider_sig = pk.sign(&canonical).to_bytes().to_vec();
         let mut consumer_sig = ck.sign(&canonical).to_bytes().to_vec();
         consumer_sig[31] ^= 0x80; // flip MSB of byte 31
-        let signed = SignedTradeRecord { trade, provider_sig, consumer_sig };
+        let signed = SignedTradeRecord { trade, provider_sig, consumer_sig, attestation: None };
         assert!(signed.verify().is_err(), "flipped consumer sig bit must be rejected");
     }
 
@@ -5958,6 +5995,7 @@ mod tests {
             trade,
             provider_sig: vec![0xFFu8; 64], // all 0xFF
             consumer_sig,
+            attestation: None,
         };
         assert!(signed.verify().is_err(), "all-0xFF provider sig must be rejected");
     }
@@ -5989,6 +6027,7 @@ mod tests {
             trade,
             provider_sig: consumer_sig,
             consumer_sig: provider_sig,
+            attestation: None,
         };
         assert!(
             crossed.verify().is_err(),

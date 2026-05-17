@@ -564,9 +564,10 @@ impl TiramiNode {
         // `peer.url` override on the HTTP request.
         let http_endpoint =
             derive_public_http_endpoint(&self.config.api_bind_addr, self.config.api_port);
-        let features = tirami_core::advertised_protocol_features(
+        let features = tirami_core::advertised_protocol_features_with_backend(
             http_endpoint.is_some(),
             &self.config.proof_policy,
+            &self.config.zkml_backend,
         );
 
         tirami_core::PriceSignal {
@@ -956,9 +957,10 @@ impl TiramiNode {
         // auto-resolve NodeId → URL for forwarded chat requests.
         let http_endpoint =
             derive_public_http_endpoint(&self.config.api_bind_addr, self.config.api_port);
-        let features = tirami_core::advertised_protocol_features(
+        let features = tirami_core::advertised_protocol_features_with_backend(
             http_endpoint.is_some(),
             &self.config.proof_policy,
+            &self.config.zkml_backend,
         );
 
         tokio::spawn(async move {

@@ -2467,9 +2467,10 @@ fn local_protocol_features(state: &AppState) -> Vec<String> {
     let advertised_http_endpoint =
         crate::node::derive_public_http_endpoint(&state.config.api_bind_addr, state.config.api_port)
             .is_some();
-    tirami_core::advertised_protocol_features(
+    tirami_core::advertised_protocol_features_with_backend(
         advertised_http_endpoint,
         &state.config.proof_policy,
+        &state.config.zkml_backend,
     )
 }
 
@@ -2484,6 +2485,7 @@ async fn forge_protocol(
         "min_protocol_version": tirami_core::TIRAMI_MIN_PROTOCOL_VERSION,
         "features": local_protocol_features(&state),
         "proof_policy": state.config.proof_policy,
+        "zkml_backend": state.config.zkml_backend,
         "transport": "iroh-quic-noise",
         "wire_codec": "bincode",
         "price_signal": {

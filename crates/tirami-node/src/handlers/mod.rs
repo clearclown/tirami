@@ -9,6 +9,7 @@ pub mod data_offer;
 pub mod governance;
 pub mod metrics;
 pub mod mind;
+pub mod nostr_publish;
 pub mod purchase_intent;
 pub mod tokenomics;
 pub mod welcome_claim;

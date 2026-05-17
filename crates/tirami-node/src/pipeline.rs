@@ -1106,8 +1106,28 @@ async fn handle_inference(
                             // Reputation boost for successful signed trade
                             ledger.update_reputation(&trade.provider, 0.01);
                             drop(ledger);
-                            // Broadcast to mesh via gossip
-                            tirami_net::gossip::broadcast_trade(&transport, &gossip, &signed).await;
+                            // Broadcast to mesh via gossip.
+                            // Phase 24 Wave 3 — when the trade carries
+                            // an attestation, ship the BenchSpecHint
+                            // so receivers can do the full crypto verify.
+                            let bench_spec_hint = signed.attestation.as_ref().map(|_| {
+                                let spec = build_bench_spec(
+                                    &req.prompt_text,
+                                    &tokens,
+                                    &signed.trade.model_id,
+                                    signed.trade.tokens_processed,
+                                    signed.trade.flops_estimated,
+                                );
+                                tirami_proto::BenchSpecHint {
+                                    model_hash: spec.model_hash,
+                                    prompt_hash: spec.prompt_hash,
+                                    output_hash: spec.output_hash,
+                                    flops: spec.flops,
+                                }
+                            });
+                            tirami_net::gossip::broadcast_trade(
+                                &transport, &gossip, &signed, bench_spec_hint,
+                            ).await;
                         }
                         Err(e) => {
                             // Replay or (very unlikely) a second-pass sig

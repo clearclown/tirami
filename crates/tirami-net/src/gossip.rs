@@ -158,11 +158,17 @@ impl Default for GossipState {
     }
 }
 
-/// Broadcast a signed trade to all connected peers.
+/// Broadcast a signed trade to all connected peers. `bench_spec_hint`
+/// (Phase 24 Wave 3) is shipped alongside the trade when the provider
+/// has attached a zkML attestation; receivers use it to rebuild the
+/// `BenchSpec` and verify the proof. Pass `None` if no attestation
+/// was attached or no hint is available — the trade still propagates,
+/// just without verifiable computation evidence.
 pub async fn broadcast_trade(
     transport: &ForgeTransport,
     gossip: &Arc<Mutex<GossipState>>,
     signed: &SignedTradeRecord,
+    bench_spec_hint: Option<tirami_proto::BenchSpecHint>,
 ) {
     // Mark as seen locally first
     gossip.lock().await.mark_seen(signed);
@@ -173,6 +179,8 @@ pub async fn broadcast_trade(
     if peers.is_empty() {
         return;
     }
+
+    let attestation = signed.attestation.as_ref().map(Into::into);
 
     let msg = Envelope {
         msg_id: rand::random(),
@@ -188,6 +196,8 @@ pub async fn broadcast_trade(
             provider_sig: signed.provider_sig.clone(),
             consumer_sig: signed.consumer_sig.clone(),
             nonce: signed.trade.nonce,
+            attestation,
+            bench_spec_hint,
         }),
     };
 
@@ -224,17 +234,47 @@ pub async fn handle_trade_gossip(
         nonce: msg.nonce,
     };
 
+    // Phase 24 Wave 3 — reconstruct the on-trade attestation from the
+    // wire form, if the producer attached one.
+    let attestation: Option<tirami_ledger::ledger::TradeAttestation> =
+        msg.attestation.as_ref().map(Into::into);
+
     let signed = SignedTradeRecord {
         trade,
         provider_sig: msg.provider_sig.clone(),
         consumer_sig: msg.consumer_sig.clone(),
-            attestation: None,
+        attestation,
     };
 
     // Verify both signatures
     if let Err(e) = signed.verify() {
         tracing::warn!("Gossip trade failed verification: {}", e);
         return None;
+    }
+
+    // Phase 24 Wave 3 — full cryptographic verification of the
+    // attestation if both (a) an attestation is attached AND
+    // (b) the producer shipped a `BenchSpecHint`. We can rebuild
+    // the producer's `BenchSpec` and call the zkml-bench verifier.
+    // The cheap signer-match check already happens inside
+    // `ComputeLedger::execute_signed_trade`; this is the
+    // *cryptographic* layer above that.
+    if let (Some(att), Some(hint)) = (signed.attestation.as_ref(), msg.bench_spec_hint.as_ref()) {
+        let spec = tirami_zkml_bench::BenchSpec {
+            model_hash: hint.model_hash,
+            prompt_hash: hint.prompt_hash,
+            output_hash: hint.output_hash,
+            token_count: signed.trade.tokens_processed,
+            flops: hint.flops,
+        };
+        if let Err(e) = tirami_zkml_bench::verify_trade_attestation(
+            &spec,
+            att,
+            &signed.trade.provider.0,
+        ) {
+            tracing::warn!("Gossip trade attestation verify failed: {e:?}");
+            return None;
+        }
     }
 
     // Check if we've already seen this trade
@@ -649,6 +689,8 @@ mod tests {
             provider_sig: vec![0u8; 64], // invalid
             consumer_sig: vec![0u8; 64], // invalid
             nonce: [0u8; 16],
+            attestation: None,
+            bench_spec_hint: None,
         };
 
         let result = handle_trade_gossip(&gossip, &msg).await;
@@ -670,6 +712,8 @@ mod tests {
             provider_sig: signed.provider_sig.clone(),
             consumer_sig: signed.consumer_sig.clone(),
             nonce: signed.trade.nonce,
+            attestation: None,
+            bench_spec_hint: None,
         };
 
         let result = handle_trade_gossip(&gossip, &msg).await;
@@ -678,6 +722,260 @@ mod tests {
         // Second time should be deduplicated
         let result2 = handle_trade_gossip(&gossip, &msg).await;
         assert!(result2.is_none());
+    }
+
+    // ---------------------------------------------------------------
+    // Phase 24 Wave 3 — attestation propagation + cryptographic verify
+    // ---------------------------------------------------------------
+
+    /// Build a dual-signed trade whose provider keypair is exposed so
+    /// the test can additionally produce an ed-attest proof under the
+    /// same identity (so attestation.signer == trade.provider).
+    fn make_signed_trade_with_keys() -> (SignedTradeRecord, SigningKey) {
+        let mut rng = rand::thread_rng();
+        let provider_key = SigningKey::generate(&mut rng);
+        let consumer_key = SigningKey::generate(&mut rng);
+        let trade = tirami_ledger::TradeRecord {
+            provider: NodeId(provider_key.verifying_key().to_bytes()),
+            consumer: NodeId(consumer_key.verifying_key().to_bytes()),
+            trm_amount: 100,
+            tokens_processed: 5,
+            timestamp: now_millis(),
+            model_id: "wave3".to_string(),
+            flops_estimated: 0,
+            nonce: [1u8; 16],
+        };
+        let canonical = trade.canonical_bytes();
+        let provider_sig = provider_key.sign(&canonical).to_bytes().to_vec();
+        let consumer_sig = consumer_key.sign(&canonical).to_bytes().to_vec();
+        let signed = SignedTradeRecord {
+            trade,
+            provider_sig,
+            consumer_sig,
+            attestation: None,
+        };
+        (signed, provider_key)
+    }
+
+    /// Synthesise an ed-attest attestation + matching BenchSpecHint
+    /// over arbitrary prompt/output blobs. Used to put the gossip
+    /// receiver's full-crypto verify path under test.
+    fn ed_attest_for(
+        provider_key: &SigningKey,
+        prompt: &str,
+        outputs: &[&str],
+        model_id: &str,
+        token_count: u64,
+        flops: u64,
+    ) -> (tirami_proto::TradeAttestationWire, tirami_proto::BenchSpecHint) {
+        use sha2::{Digest, Sha256};
+        let model_hash: [u8; 32] = Sha256::digest(model_id.as_bytes()).into();
+        let prompt_hash: [u8; 32] = Sha256::digest(prompt.as_bytes()).into();
+        let output_hash: [u8; 32] = {
+            let mut h = Sha256::new();
+            for o in outputs {
+                h.update(o.as_bytes());
+            }
+            h.finalize().into()
+        };
+        let spec = tirami_zkml_bench::BenchSpec {
+            model_hash,
+            prompt_hash,
+            output_hash,
+            token_count,
+            flops,
+        };
+        let backend = tirami_zkml_bench::EdAttestBackend::from_signing_key(
+            SigningKey::from_bytes(&provider_key.to_bytes()),
+        );
+        use tirami_zkml_bench::BenchBackend;
+        let proof = backend.prove(&spec).expect("prove");
+        let att_wire = tirami_proto::TradeAttestationWire {
+            backend: proof.backend.clone(),
+            bytes: proof.bytes.clone(),
+        };
+        let hint = tirami_proto::BenchSpecHint { model_hash, prompt_hash, output_hash, flops };
+        (att_wire, hint)
+    }
+
+    #[tokio::test]
+    async fn handle_gossip_accepts_attested_trade_with_valid_hint() {
+        let gossip = Arc::new(Mutex::new(GossipState::new()));
+        let (signed, provider_key) = make_signed_trade_with_keys();
+        let (att, hint) = ed_attest_for(
+            &provider_key,
+            "p",
+            &["o"],
+            "wave3",
+            signed.trade.tokens_processed,
+            0,
+        );
+        let msg = TradeGossip {
+            provider: signed.trade.provider.clone(),
+            consumer: signed.trade.consumer.clone(),
+            trm_amount: signed.trade.trm_amount,
+            tokens_processed: signed.trade.tokens_processed,
+            timestamp: signed.trade.timestamp,
+            model_id: signed.trade.model_id.clone(),
+            provider_sig: signed.provider_sig.clone(),
+            consumer_sig: signed.consumer_sig.clone(),
+            nonce: signed.trade.nonce,
+            attestation: Some(att),
+            bench_spec_hint: Some(hint),
+        };
+        let result = handle_trade_gossip(&gossip, &msg).await;
+        assert!(result.is_some(), "valid attested trade must be accepted");
+        let recovered = result.unwrap();
+        assert!(recovered.attestation.is_some());
+    }
+
+    #[tokio::test]
+    async fn handle_gossip_rejects_attestation_with_wrong_hint() {
+        // Producer attested over prompt="p", outputs=["o"]. Receiver
+        // gets a hint over a *different* prompt → verify must fail.
+        let gossip = Arc::new(Mutex::new(GossipState::new()));
+        let (signed, provider_key) = make_signed_trade_with_keys();
+        let (att, _) = ed_attest_for(
+            &provider_key,
+            "p",
+            &["o"],
+            "wave3",
+            signed.trade.tokens_processed,
+            0,
+        );
+        // Build a hint that disagrees with what was signed.
+        use sha2::{Digest, Sha256};
+        let wrong_prompt_hash: [u8; 32] = Sha256::digest(b"different-prompt").into();
+        let wrong_hint = tirami_proto::BenchSpecHint {
+            model_hash: Sha256::digest(b"wave3").into(),
+            prompt_hash: wrong_prompt_hash,
+            output_hash: Sha256::digest(b"o").into(),
+            flops: 0,
+        };
+        let msg = TradeGossip {
+            provider: signed.trade.provider.clone(),
+            consumer: signed.trade.consumer.clone(),
+            trm_amount: signed.trade.trm_amount,
+            tokens_processed: signed.trade.tokens_processed,
+            timestamp: signed.trade.timestamp,
+            model_id: signed.trade.model_id.clone(),
+            provider_sig: signed.provider_sig.clone(),
+            consumer_sig: signed.consumer_sig.clone(),
+            nonce: signed.trade.nonce,
+            attestation: Some(att),
+            bench_spec_hint: Some(wrong_hint),
+        };
+        let result = handle_trade_gossip(&gossip, &msg).await;
+        assert!(result.is_none(), "mismatched hint must cause rejection");
+    }
+
+    #[tokio::test]
+    async fn handle_gossip_skips_crypto_when_hint_absent() {
+        // Attestation present but no hint → receiver can't crypto-
+        // verify, so it skips that layer. The trade is still
+        // accepted on dual-signature grounds.
+        let gossip = Arc::new(Mutex::new(GossipState::new()));
+        let (signed, provider_key) = make_signed_trade_with_keys();
+        let (att, _) = ed_attest_for(
+            &provider_key,
+            "p",
+            &["o"],
+            "wave3",
+            signed.trade.tokens_processed,
+            0,
+        );
+        let msg = TradeGossip {
+            provider: signed.trade.provider.clone(),
+            consumer: signed.trade.consumer.clone(),
+            trm_amount: signed.trade.trm_amount,
+            tokens_processed: signed.trade.tokens_processed,
+            timestamp: signed.trade.timestamp,
+            model_id: signed.trade.model_id.clone(),
+            provider_sig: signed.provider_sig.clone(),
+            consumer_sig: signed.consumer_sig.clone(),
+            nonce: signed.trade.nonce,
+            attestation: Some(att),
+            bench_spec_hint: None,
+        };
+        let result = handle_trade_gossip(&gossip, &msg).await;
+        assert!(result.is_some(), "trade without hint still accepted at the dual-sig layer");
+    }
+
+    #[tokio::test]
+    async fn handle_gossip_rejects_attestation_signed_by_non_provider() {
+        // Attacker signs an attestation for a trade between two
+        // honest parties — the embedded signer pubkey will not match
+        // `trade.provider`, so `verify_trade_attestation` fails.
+        let gossip = Arc::new(Mutex::new(GossipState::new()));
+        let (signed, _provider_key) = make_signed_trade_with_keys();
+        let mut rng = rand::thread_rng();
+        let attacker = SigningKey::generate(&mut rng);
+        let (att, hint) = ed_attest_for(
+            &attacker,
+            "p",
+            &["o"],
+            "wave3",
+            signed.trade.tokens_processed,
+            0,
+        );
+        let msg = TradeGossip {
+            provider: signed.trade.provider.clone(),
+            consumer: signed.trade.consumer.clone(),
+            trm_amount: signed.trade.trm_amount,
+            tokens_processed: signed.trade.tokens_processed,
+            timestamp: signed.trade.timestamp,
+            model_id: signed.trade.model_id.clone(),
+            provider_sig: signed.provider_sig.clone(),
+            consumer_sig: signed.consumer_sig.clone(),
+            nonce: signed.trade.nonce,
+            attestation: Some(att),
+            bench_spec_hint: Some(hint),
+        };
+        let result = handle_trade_gossip(&gossip, &msg).await;
+        assert!(result.is_none(), "non-provider signer must be rejected");
+    }
+
+    #[tokio::test]
+    async fn handle_gossip_rejects_tampered_attestation_bytes() {
+        let gossip = Arc::new(Mutex::new(GossipState::new()));
+        let (signed, provider_key) = make_signed_trade_with_keys();
+        let (mut att, hint) = ed_attest_for(
+            &provider_key,
+            "p",
+            &["o"],
+            "wave3",
+            signed.trade.tokens_processed,
+            0,
+        );
+        // Flip a byte in the signature half (offset 64..96).
+        att.bytes[80] ^= 0xFF;
+        let msg = TradeGossip {
+            provider: signed.trade.provider.clone(),
+            consumer: signed.trade.consumer.clone(),
+            trm_amount: signed.trade.trm_amount,
+            tokens_processed: signed.trade.tokens_processed,
+            timestamp: signed.trade.timestamp,
+            model_id: signed.trade.model_id.clone(),
+            provider_sig: signed.provider_sig.clone(),
+            consumer_sig: signed.consumer_sig.clone(),
+            nonce: signed.trade.nonce,
+            attestation: Some(att),
+            bench_spec_hint: Some(hint),
+        };
+        let result = handle_trade_gossip(&gossip, &msg).await;
+        assert!(result.is_none(), "tampered signature bytes must be rejected");
+    }
+
+    #[test]
+    fn trade_attestation_wire_round_trips_through_ledger_conversion() {
+        let att = tirami_ledger::ledger::TradeAttestation::new(
+            "ed-attest".to_string(),
+            vec![0xAB; 96],
+        );
+        let wire: tirami_proto::TradeAttestationWire = (&att).into();
+        let back: tirami_ledger::ledger::TradeAttestation = (&wire).into();
+        assert_eq!(att.backend, back.backend);
+        assert_eq!(att.bytes, back.bytes);
     }
 
     #[test]
@@ -974,6 +1272,8 @@ mod tests {
             provider_sig: vec![0u8; 64], // all-zero → invalid
             consumer_sig: vec![0u8; 64],
             nonce: [0u8; 16],
+            attestation: None,
+            bench_spec_hint: None,
         };
         let result = handle_trade_gossip(&gossip, &msg).await;
         assert!(
@@ -1024,6 +1324,8 @@ mod tests {
             provider_sig,
             consumer_sig: vec![0xFFu8; 64], // all-0xFF → invalid
             nonce: [0u8; 16],
+            attestation: None,
+            bench_spec_hint: None,
         };
         let result = handle_trade_gossip(&gossip, &msg).await;
         assert!(result.is_none(), "all-0xFF consumer sig must be rejected by gossip handler");

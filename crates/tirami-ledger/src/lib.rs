@@ -27,7 +27,7 @@ pub use collusion::{CollusionDetector, CollusionReport};
 pub use ledger::{
     ComputeLedger, InferenceEligibility, InferenceIneligible, MarketPrice, NetworkStats,
     SettlementNode, SettlementStatement, SignatureError, SignedTradeRecord, TradeRecord,
-    WelcomeLoanError, WelcomeLoanGrant,
+    WelcomeLoanError, WelcomeLoanGrant, WelcomeLoanSettlementReport,
 };
 pub use lending::{
     LoanRecord, LoanSignatureError, LoanStatus, ModelTier, SignedLoanRecord,

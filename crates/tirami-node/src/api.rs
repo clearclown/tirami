@@ -570,6 +570,17 @@ pub fn create_router_with_services(
 
     Router::new()
         .route("/health", get(health))
+        // Phase 25 A1 — Kubernetes-standard probe separation.
+        // `/healthz` is liveness: the process is responsive. Takes
+        // no locks, never blocks; returning anything but 200 means
+        // the orchestrator should restart the pod.
+        .route("/healthz", get(healthz))
+        // `/readyz` is readiness: the process can serve traffic
+        // RIGHT NOW. If a critical mutex is starved (long inference
+        // hog, ledger persistence loop holding the write lock) we
+        // return 503 so the load balancer pulls this replica out of
+        // rotation without killing it.
+        .route("/readyz", get(readyz))
         // Phase 10 P5 — Prometheus /metrics endpoint (no auth — Prometheus scrapes without tokens)
         .route("/metrics", get(crate::handlers::metrics::metrics_handler))
         // Phase 20 Wave 1 — public agent-discovery manifest (no auth).
@@ -1360,6 +1371,55 @@ async fn health(State(state): State<AppState>) -> Json<HealthResponse> {
         status: "ok".to_string(),
         model_loaded: engine.is_loaded(),
     })
+}
+
+/// Phase 25 A1 — Kubernetes-style liveness probe.
+///
+/// MUST be lock-free and side-effect-free. If this handler ever
+/// stops responding, the orchestrator concludes the process is
+/// wedged and restarts the pod. We deliberately do NOT touch
+/// ledger / engine state here — those go through `/readyz`.
+async fn healthz() -> (StatusCode, &'static str) {
+    (StatusCode::OK, "ok")
+}
+
+/// Phase 25 A1 — Kubernetes-style readiness probe.
+///
+/// Returns 200 + JSON when the node is ready to serve traffic.
+/// Returns 503 + JSON when at least one critical subsystem is
+/// not currently servable (e.g. ledger lock is held by a long
+/// write, engine is mid-load). The body always carries a
+/// per-component breakdown so dashboards can plot subsystem
+/// availability over time.
+async fn readyz(
+    State(state): State<AppState>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    // try_lock returns Err if the mutex is currently held;
+    // we treat that as "not ready" rather than blocking — the
+    // whole point of the readiness probe is to avoid blocking.
+    let ledger_ready = state.ledger.try_lock().is_ok();
+    let engine_ready = state.engine.try_lock().is_ok();
+    let governance_ready = state.governance.try_lock().is_ok();
+    let staking_ready = state.staking_pool.try_lock().is_ok();
+    let ready = ledger_ready && engine_ready && governance_ready && staking_ready;
+    let code = if ready {
+        StatusCode::OK
+    } else {
+        StatusCode::SERVICE_UNAVAILABLE
+    };
+    (
+        code,
+        Json(serde_json::json!({
+            "ready": ready,
+            "components": {
+                "ledger": ledger_ready,
+                "engine": engine_ready,
+                "governance": governance_ready,
+                "staking_pool": staking_ready,
+            },
+            "protocol_version": tirami_core::TIRAMI_PROTOCOL_VERSION,
+        })),
+    )
 }
 
 async fn status(State(state): State<AppState>) -> Json<StatusResponse> {
@@ -4504,6 +4564,151 @@ mod tests {
             .expect("response");
 
         assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    // -----------------------------------------------------------------
+    // Phase 25 A1 — Kubernetes readiness/liveness probes
+    // -----------------------------------------------------------------
+
+    #[tokio::test]
+    async fn healthz_returns_200_without_auth() {
+        // Liveness probe must be open even when an API token is
+        // configured — orchestrators do not have the token.
+        let mut config = Config::default();
+        config.api_bearer_token = Some("secret".to_string());
+        let app = test_router(config);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/healthz")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn healthz_body_is_plain_ok() {
+        let app = test_router(Config::default());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/healthz")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        let bytes = axum::body::to_bytes(resp.into_body(), 10_000).await.unwrap();
+        assert_eq!(&bytes[..], b"ok");
+    }
+
+    #[tokio::test]
+    async fn readyz_returns_200_with_components_when_unblocked() {
+        let app = test_router(Config::default());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/readyz")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(resp.into_body(), 10_000).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(json["ready"].as_bool().unwrap(), true);
+        for component in ["ledger", "engine", "governance", "staking_pool"] {
+            assert_eq!(
+                json["components"][component].as_bool().unwrap(),
+                true,
+                "expected component {component} ready",
+            );
+        }
+        // Protocol version stamped into the response so a dashboard
+        // can detect heterogeneous-version fleets.
+        assert!(json["protocol_version"].as_u64().is_some());
+    }
+
+    #[tokio::test]
+    async fn readyz_returns_503_when_critical_lock_held() {
+        // Build state once, then hold the ledger lock while probing.
+        // The readyz path must refuse to block — it uses try_lock,
+        // sees the contention, and reports 503.
+        use crate::api_tokens::TokenStore;
+        use tirami_anchor::MockChainClient;
+        use tirami_ledger::{GovernanceState, ReferralTracker, StakingPool};
+        let config = Config::default();
+        let initial_proof_policy =
+            tirami_ledger::zk::ProofPolicy::parse(&config.proof_policy)
+                .unwrap_or(tirami_ledger::zk::ProofPolicy::Disabled);
+        let proof_policy_handle =
+            Arc::new(tokio::sync::RwLock::new(initial_proof_policy));
+        let ledger = Arc::new(Mutex::new(ComputeLedger::new()));
+        let app = create_router_with_services(
+            config,
+            Arc::new(Mutex::new(CandleEngine::new())),
+            ledger.clone(),
+            Arc::new(Mutex::new(None)),
+            Arc::new(Mutex::new(None)),
+            None,
+            Arc::new(Mutex::new(GossipState::new())),
+            Arc::new(Mutex::new(crate::bank_adapter::BankServices::new_default())),
+            Arc::new(Mutex::new(Marketplace::new())),
+            Arc::new(Mutex::new(0usize)),
+            Arc::new(Mutex::new(None::<tirami_mind::TiramiMindAgent>)),
+            Arc::new(Mutex::new(StakingPool::new())),
+            Arc::new(Mutex::new(ReferralTracker::new())),
+            Arc::new(Mutex::new(GovernanceState::new(0))),
+            Arc::new(MockChainClient::new()),
+            Arc::new(Mutex::new(None::<tirami_mind::PersonalAgent>)),
+            Arc::new(Mutex::new(crate::agent_loop::AgentLoopStats::new())),
+            Arc::new(Mutex::new(None)),
+            proof_policy_handle,
+        );
+        let _ = TokenStore::new(); // unused
+        // Hold the ledger lock for the duration of the probe.
+        let _guard = ledger.lock().await;
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/readyz")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let bytes = axum::body::to_bytes(resp.into_body(), 10_000).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(json["ready"].as_bool().unwrap(), false);
+        assert_eq!(json["components"]["ledger"].as_bool().unwrap(), false);
+        // Other subsystems remain ready — the response is granular
+        // enough that operators can localise the contended subsystem.
+        assert_eq!(json["components"]["engine"].as_bool().unwrap(), true);
+        assert_eq!(json["components"]["governance"].as_bool().unwrap(), true);
+    }
+
+    #[tokio::test]
+    async fn readyz_is_open_under_bearer_auth() {
+        // Same rule as healthz: orchestrators don't have tokens.
+        let mut config = Config::default();
+        config.api_bearer_token = Some("supersecret".to_string());
+        let app = test_router(config);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/readyz")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        // Must not be 401/403 — open even when bearer is configured.
+        assert_eq!(resp.status(), StatusCode::OK);
     }
 
     #[tokio::test]

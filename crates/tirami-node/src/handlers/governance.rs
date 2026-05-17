@@ -265,6 +265,71 @@ pub(crate) async fn governance_tally(
     }
 }
 
+/// Phase 24 Wave 4 — POST /v1/tirami/governance/execute/:id
+///
+/// Executes a Passed PROOF_POLICY proposal: parses the proposal's
+/// `new_value` to a `ProofPolicy`, applies the no-downgrade ratchet,
+/// updates `AppState.current_proof_policy`, and marks the proposal
+/// as Executed.
+///
+/// Today only PROOF_POLICY execution is wired; other Passed
+/// proposals will return 400 UnsupportedExecution. Future waves can
+/// dispatch by `name` to other parameter slots.
+pub(crate) async fn governance_execute(
+    State(state): State<AppState>,
+    Path(id): Path<u64>,
+) -> impl IntoResponse {
+    if let Err(e) = check_forge_rate_limit(&state).await {
+        return e.into_response();
+    }
+    let current = *state.current_proof_policy.read().await;
+    let mut gov = state.governance.lock().await;
+    match gov.execute_proof_policy_proposal(id, current) {
+        Ok(new_policy) => {
+            drop(gov);
+            *state.current_proof_policy.write().await = new_policy;
+            Json(json!({
+                "ok": true,
+                "proposal_id": id,
+                "previous_policy": current.as_str(),
+                "new_policy": new_policy.as_str(),
+                "ratchet": "no-downgrade",
+            }))
+            .into_response()
+        }
+        Err(e) => {
+            use tirami_ledger::GovernanceError;
+            let code = match &e {
+                GovernanceError::ProposalNotFound { .. } => StatusCode::NOT_FOUND,
+                GovernanceError::ProofPolicyDowngradeVetoed { .. } => StatusCode::CONFLICT,
+                GovernanceError::ProposalNotPassed { .. } => StatusCode::CONFLICT,
+                _ => StatusCode::BAD_REQUEST,
+            };
+            (code, Json(json!({ "error": e.to_string() }))).into_response()
+        }
+    }
+}
+
+/// Phase 24 Wave 4 — GET /v1/tirami/governance/proof-policy
+///
+/// Returns the currently *enforced* proof policy (separate from the
+/// boot-time string in `config.proof_policy`). Agents read this to
+/// decide whether to attach an attestation to their trades.
+pub(crate) async fn governance_proof_policy(
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    if let Err(e) = check_forge_rate_limit(&state).await {
+        return e.into_response();
+    }
+    let current = *state.current_proof_policy.read().await;
+    Json(json!({
+        "policy": current.as_str(),
+        "as_u8": current.as_u8(),
+        "ratchet": "monotonic upward; downgrades constitutionally vetoed",
+    }))
+    .into_response()
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -711,5 +776,294 @@ mod tests {
         let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(json["status"].as_str().unwrap(), "Passed");
         assert_eq!(json["proposal_id"].as_u64().unwrap(), proposal_id);
+    }
+
+    // -----------------------------------------------------------------
+    // Phase 24 Wave 4 — governance_execute + governance_proof_policy
+    // -----------------------------------------------------------------
+
+    /// Pass a PROOF_POLICY change proposal and return its id. Helper
+    /// for the Wave-4 execute tests.
+    async fn pass_proof_policy_proposal(
+        app: &axum::Router,
+        new_value: f64,
+    ) -> u64 {
+        let propose_body = serde_json::json!({
+            "proposer": proposer_hex(),
+            "kind": "change_parameter",
+            "name": "PROOF_POLICY",
+            "new_value": new_value,
+            "deadline_ms": 9_999_999_999u64,
+        })
+        .to_string();
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/tirami/governance/propose")
+                    .header("content-type", "application/json")
+                    .body(Body::from(propose_body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(resp.into_body(), 10_000).await.unwrap();
+        let pjson: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let id = pjson["proposal_id"].as_u64().unwrap();
+        let vote_body = serde_json::json!({
+            "voter": voter_hex(),
+            "proposal_id": id,
+            "approve": true,
+            "stake": 5_000,
+            "reputation": 0.9,
+            "epochs_participated": 3,
+        })
+        .to_string();
+        app.clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/tirami/governance/vote")
+                    .header("content-type", "application/json")
+                    .body(Body::from(vote_body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        app.clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(&format!("/v1/tirami/governance/tally/{}", id))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        id
+    }
+
+    #[tokio::test]
+    async fn proof_policy_default_endpoint_returns_optional() {
+        let app = test_router_default(Config::default());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/v1/tirami/governance/proof-policy")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(resp.into_body(), 10_000).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(json["policy"].as_str().unwrap(), "optional");
+        assert_eq!(json["as_u8"].as_u64().unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn proof_policy_execute_advances_state() {
+        let app = test_router_default(Config::default());
+        let id = pass_proof_policy_proposal(&app, 2.0).await; // Recommended
+
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(&format!("/v1/tirami/governance/execute/{}", id))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(resp.into_body(), 10_000).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(json["new_policy"].as_str().unwrap(), "recommended");
+        assert_eq!(json["previous_policy"].as_str().unwrap(), "optional");
+
+        // GET should reflect the new policy.
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/v1/tirami/governance/proof-policy")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), 10_000).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(json["policy"].as_str().unwrap(), "recommended");
+    }
+
+    #[tokio::test]
+    async fn proof_policy_execute_rejects_downgrade_with_conflict() {
+        // Start at default Optional, ratchet UP to Required, then
+        // try to "downgrade" via a proposal that proposes Optional —
+        // the execute endpoint must 409.
+        let app = test_router_default(Config::default());
+        let id_up = pass_proof_policy_proposal(&app, 3.0).await;
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(&format!("/v1/tirami/governance/execute/{}", id_up))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let id_down = pass_proof_policy_proposal(&app, 1.0).await;
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(&format!("/v1/tirami/governance/execute/{}", id_down))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::CONFLICT);
+    }
+
+    #[tokio::test]
+    async fn proof_policy_execute_rejects_not_passed_with_conflict() {
+        let app = test_router_default(Config::default());
+        // Create proposal without voting/tallying → status Active.
+        let propose_body = serde_json::json!({
+            "proposer": proposer_hex(),
+            "kind": "change_parameter",
+            "name": "PROOF_POLICY",
+            "new_value": 2.0,
+            "deadline_ms": 9_999_999_999u64,
+        })
+        .to_string();
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/tirami/governance/propose")
+                    .header("content-type", "application/json")
+                    .body(Body::from(propose_body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), 10_000).await.unwrap();
+        let pjson: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let id = pjson["proposal_id"].as_u64().unwrap();
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(&format!("/v1/tirami/governance/execute/{}", id))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::CONFLICT);
+    }
+
+    #[tokio::test]
+    async fn proof_policy_execute_rejects_unknown_proposal_404() {
+        let app = test_router_default(Config::default());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/tirami/governance/execute/99999")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn proof_policy_execute_rejects_unsupported_param_400() {
+        // A Passed proposal for a non-PROOF_POLICY parameter is
+        // rejected by execute (only PROOF_POLICY is wired in Wave 4).
+        let app = test_router_default(Config::default());
+        let propose_body = serde_json::json!({
+            "proposer": proposer_hex(),
+            "kind": "change_parameter",
+            "name": "ANCHOR_INTERVAL_SECS",
+            "new_value": 900.0,
+            "deadline_ms": 9_999_999_999u64,
+        })
+        .to_string();
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/tirami/governance/propose")
+                    .header("content-type", "application/json")
+                    .body(Body::from(propose_body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), 10_000).await.unwrap();
+        let pjson: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let id = pjson["proposal_id"].as_u64().unwrap();
+        // Vote + tally → Passed.
+        let vote_body = serde_json::json!({
+            "voter": voter_hex(),
+            "proposal_id": id,
+            "approve": true,
+            "stake": 5_000,
+            "reputation": 0.9,
+            "epochs_participated": 3,
+        })
+        .to_string();
+        app.clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/tirami/governance/vote")
+                    .header("content-type", "application/json")
+                    .body(Body::from(vote_body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        app.clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(&format!("/v1/tirami/governance/tally/{}", id))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(&format!("/v1/tirami/governance/execute/{}", id))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     }
 }

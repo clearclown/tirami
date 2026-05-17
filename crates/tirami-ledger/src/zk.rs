@@ -132,6 +132,24 @@ impl ProofPolicy {
             _ => None,
         }
     }
+
+    /// Phase 24 Wave 4 — parse from the `new_value: f64` field of a
+    /// `ProposalKind::ChangeParameter { name: "PROOF_POLICY", ... }`
+    /// proposal. The float is rounded to the nearest non-negative
+    /// integer and matched against `as_u8()`. Returns `None` for
+    /// out-of-range values or NaN/Infinity.
+    pub fn from_governance_value(v: f64) -> Option<Self> {
+        if !v.is_finite() || v < -0.5 {
+            return None;
+        }
+        match v.round() as u64 {
+            0 => Some(Self::Disabled),
+            1 => Some(Self::Optional),
+            2 => Some(Self::Recommended),
+            3 => Some(Self::Required),
+            _ => None,
+        }
+    }
 }
 
 /// Phase 18.3 — is a trade *allowed* to settle under the current
@@ -1033,5 +1051,50 @@ mod tests {
             matches!(err, ZkError::VerificationFailed(_)),
             "tampered generated_at_ms must cause VerificationFailed, got {err:?}"
         );
+    }
+
+    // ---------------------------------------------------------------
+    // Phase 24 Wave 4 — ProofPolicy::from_governance_value
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn from_governance_value_round_trips_for_each_policy() {
+        for p in [
+            ProofPolicy::Disabled,
+            ProofPolicy::Optional,
+            ProofPolicy::Recommended,
+            ProofPolicy::Required,
+        ] {
+            let v = p.as_u8() as f64;
+            assert_eq!(ProofPolicy::from_governance_value(v), Some(p));
+        }
+    }
+
+    #[test]
+    fn from_governance_value_rounds_to_nearest() {
+        // Float reprs in ChangeParameter proposals may carry tiny
+        // rounding error from human input; the parser must absorb it.
+        assert_eq!(
+            ProofPolicy::from_governance_value(2.0000001),
+            Some(ProofPolicy::Recommended)
+        );
+        assert_eq!(
+            ProofPolicy::from_governance_value(1.9999999),
+            Some(ProofPolicy::Recommended)
+        );
+    }
+
+    #[test]
+    fn from_governance_value_rejects_out_of_range() {
+        assert!(ProofPolicy::from_governance_value(4.0).is_none());
+        assert!(ProofPolicy::from_governance_value(100.0).is_none());
+        assert!(ProofPolicy::from_governance_value(-1.0).is_none());
+    }
+
+    #[test]
+    fn from_governance_value_rejects_non_finite() {
+        assert!(ProofPolicy::from_governance_value(f64::NAN).is_none());
+        assert!(ProofPolicy::from_governance_value(f64::INFINITY).is_none());
+        assert!(ProofPolicy::from_governance_value(f64::NEG_INFINITY).is_none());
     }
 }

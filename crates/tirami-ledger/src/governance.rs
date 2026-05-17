@@ -224,6 +224,27 @@ pub enum GovernanceError {
          See docs/constitution.md"
     )]
     ConstitutionalParameter { name: String },
+    /// Phase 24 Wave 4 — execute called on a proposal that hasn't
+    /// passed the tally yet (status != Passed).
+    #[error("proposal {id} cannot execute: status is {status:?}, expected Passed")]
+    ProposalNotPassed { id: u64, status: ProposalStatus },
+    /// Phase 24 Wave 4 — execute called on a non-PROOF_POLICY
+    /// ChangeParameter, or a non-ChangeParameter proposal. PROOF_POLICY
+    /// execution is the only kind wired in Wave 4.
+    #[error("proposal {id} is not a PROOF_POLICY change: {kind_description}")]
+    UnsupportedExecution { id: u64, kind_description: String },
+    /// Phase 24 Wave 4 — the proposal's `new_value` did not parse to a
+    /// valid `ProofPolicy` (must be 0/1/2/3).
+    #[error("proposal {id} carries an invalid PROOF_POLICY value: {value}")]
+    InvalidProofPolicyValue { id: u64, value: f64 },
+    /// Phase 24 Wave 4 — execute attempted a downgrade, vetoed by the
+    /// Constitutional no-downgrade ratchet
+    /// (`tirami_ledger::zk::try_ratchet_proof_policy`).
+    #[error("proof policy downgrade vetoed: {current} → {proposed}")]
+    ProofPolicyDowngradeVetoed {
+        current: &'static str,
+        proposed: &'static str,
+    },
 }
 
 // ---------- Seniority ----------
@@ -400,6 +421,55 @@ impl GovernanceState {
             .iter()
             .filter(|p| p.status == ProposalStatus::Active)
             .collect()
+    }
+
+    /// Phase 24 Wave 4 — execute a Passed `ChangeParameter
+    /// { name: "PROOF_POLICY", new_value }` proposal. Applies the
+    /// no-downgrade ratchet, marks the proposal as `Executed`, and
+    /// returns the new policy on success. Caller is responsible for
+    /// writing the new policy into shared runtime state.
+    pub fn execute_proof_policy_proposal(
+        &mut self,
+        proposal_id: u64,
+        current: crate::zk::ProofPolicy,
+    ) -> Result<crate::zk::ProofPolicy, GovernanceError> {
+        // Find + verify status without holding a mutable borrow that
+        // would block the ratchet call.
+        let (kind, status) = {
+            let p = self
+                .proposals
+                .iter()
+                .find(|p| p.id == proposal_id)
+                .ok_or(GovernanceError::ProposalNotFound { id: proposal_id })?;
+            (p.kind.clone(), p.status)
+        };
+        if status != ProposalStatus::Passed {
+            return Err(GovernanceError::ProposalNotPassed { id: proposal_id, status });
+        }
+        let new_value = match kind {
+            ProposalKind::ChangeParameter { ref name, new_value } if name == "PROOF_POLICY" => {
+                new_value
+            }
+            other => {
+                return Err(GovernanceError::UnsupportedExecution {
+                    id: proposal_id,
+                    kind_description: format!("{other:?}"),
+                });
+            }
+        };
+        let proposed = crate::zk::ProofPolicy::from_governance_value(new_value)
+            .ok_or(GovernanceError::InvalidProofPolicyValue {
+                id: proposal_id,
+                value: new_value,
+            })?;
+        let new_policy = crate::zk::try_ratchet_proof_policy(current, proposed).map_err(|e| {
+            let crate::zk::ProofPolicyRatchetError::Downgrade { current, proposed } = e;
+            GovernanceError::ProofPolicyDowngradeVetoed { current, proposed }
+        })?;
+        if let Some(p) = self.proposals.iter_mut().find(|p| p.id == proposal_id) {
+            p.status = ProposalStatus::Executed;
+        }
+        Ok(new_policy)
     }
 
     /// Advance to a new epoch: close and tally any proposals whose deadline has passed.
@@ -1005,5 +1075,217 @@ mod tests {
         assert!(is_constitutional_parameter("TOTAL_TRM_SUPPLY"));
         assert!(is_constitutional_parameter("FLOPS_PER_CU"));
         assert!(!is_constitutional_parameter("WELCOME_LOAN_AMOUNT"));
+    }
+
+    // ---------------------------------------------------------------
+    // Phase 24 Wave 4 — execute_proof_policy_proposal
+    // ---------------------------------------------------------------
+
+    use crate::zk::ProofPolicy;
+
+    fn pass_proposal(gov: &mut GovernanceState, kind: ProposalKind) -> u64 {
+        let id = gov.create_proposal(node(1), kind, NOW, DEADLINE).unwrap();
+        // Cast a single approving vote so tally → Passed.
+        gov.cast_vote(node(2), id, true, 5_000, 0.9, 3).unwrap();
+        let status = gov.tally(id).unwrap();
+        assert_eq!(status, ProposalStatus::Passed);
+        id
+    }
+
+    #[test]
+    fn execute_proof_policy_upgrade_optional_to_recommended() {
+        let mut gov = GovernanceState::new(1);
+        let id = pass_proposal(
+            &mut gov,
+            ProposalKind::ChangeParameter {
+                name: "PROOF_POLICY".into(),
+                new_value: 2.0, // Recommended
+            },
+        );
+        let new_policy = gov
+            .execute_proof_policy_proposal(id, ProofPolicy::Optional)
+            .expect("upgrade allowed");
+        assert_eq!(new_policy, ProofPolicy::Recommended);
+        let p = gov.proposals.iter().find(|p| p.id == id).unwrap();
+        assert_eq!(p.status, ProposalStatus::Executed);
+    }
+
+    #[test]
+    fn execute_proof_policy_terminal_upgrade_to_required() {
+        let mut gov = GovernanceState::new(1);
+        let id = pass_proposal(
+            &mut gov,
+            ProposalKind::ChangeParameter {
+                name: "PROOF_POLICY".into(),
+                new_value: 3.0,
+            },
+        );
+        let new_policy = gov
+            .execute_proof_policy_proposal(id, ProofPolicy::Recommended)
+            .expect("upgrade allowed");
+        assert_eq!(new_policy, ProofPolicy::Required);
+    }
+
+    #[test]
+    fn execute_proof_policy_idempotent_when_same_value() {
+        // Re-proposing the same value is allowed (no-downgrade ratchet
+        // permits ≥, not strictly >).
+        let mut gov = GovernanceState::new(1);
+        let id = pass_proposal(
+            &mut gov,
+            ProposalKind::ChangeParameter {
+                name: "PROOF_POLICY".into(),
+                new_value: 1.0,
+            },
+        );
+        let new_policy = gov
+            .execute_proof_policy_proposal(id, ProofPolicy::Optional)
+            .expect("same-value allowed");
+        assert_eq!(new_policy, ProofPolicy::Optional);
+    }
+
+    #[test]
+    fn execute_proof_policy_downgrade_vetoed() {
+        let mut gov = GovernanceState::new(1);
+        let id = pass_proposal(
+            &mut gov,
+            ProposalKind::ChangeParameter {
+                name: "PROOF_POLICY".into(),
+                new_value: 1.0, // Optional
+            },
+        );
+        let err = gov
+            .execute_proof_policy_proposal(id, ProofPolicy::Required)
+            .unwrap_err();
+        assert!(matches!(err, GovernanceError::ProofPolicyDowngradeVetoed { .. }));
+        // Status stays Passed; the downgrade attempt does not "consume"
+        // the proposal. (Alternative semantics — mark as Rejected on
+        // ratchet veto — would surprise governance UI clients.)
+        let p = gov.proposals.iter().find(|p| p.id == id).unwrap();
+        assert_eq!(p.status, ProposalStatus::Passed);
+    }
+
+    #[test]
+    fn execute_proof_policy_skip_steps_allowed() {
+        // Skipping straight from Disabled to Required is allowed by
+        // the ratchet (monotonic, not single-step).
+        let mut gov = GovernanceState::new(1);
+        let id = pass_proposal(
+            &mut gov,
+            ProposalKind::ChangeParameter {
+                name: "PROOF_POLICY".into(),
+                new_value: 3.0,
+            },
+        );
+        let new_policy = gov
+            .execute_proof_policy_proposal(id, ProofPolicy::Disabled)
+            .expect("skip allowed");
+        assert_eq!(new_policy, ProofPolicy::Required);
+    }
+
+    #[test]
+    fn execute_proof_policy_rejects_invalid_value() {
+        let mut gov = GovernanceState::new(1);
+        let id = pass_proposal(
+            &mut gov,
+            ProposalKind::ChangeParameter {
+                name: "PROOF_POLICY".into(),
+                new_value: 99.0,
+            },
+        );
+        let err = gov
+            .execute_proof_policy_proposal(id, ProofPolicy::Optional)
+            .unwrap_err();
+        assert!(matches!(err, GovernanceError::InvalidProofPolicyValue { .. }));
+    }
+
+    #[test]
+    fn execute_proof_policy_rejects_nan_value() {
+        let mut gov = GovernanceState::new(1);
+        let id = pass_proposal(
+            &mut gov,
+            ProposalKind::ChangeParameter {
+                name: "PROOF_POLICY".into(),
+                new_value: f64::NAN,
+            },
+        );
+        let err = gov
+            .execute_proof_policy_proposal(id, ProofPolicy::Optional)
+            .unwrap_err();
+        assert!(matches!(err, GovernanceError::InvalidProofPolicyValue { .. }));
+    }
+
+    #[test]
+    fn execute_proof_policy_rejects_not_passed() {
+        let mut gov = GovernanceState::new(1);
+        let id = gov
+            .create_proposal(
+                node(1),
+                ProposalKind::ChangeParameter {
+                    name: "PROOF_POLICY".into(),
+                    new_value: 2.0,
+                },
+                NOW,
+                DEADLINE,
+            )
+            .unwrap();
+        // Active, not Passed.
+        let err = gov
+            .execute_proof_policy_proposal(id, ProofPolicy::Optional)
+            .unwrap_err();
+        assert!(matches!(err, GovernanceError::ProposalNotPassed { .. }));
+    }
+
+    #[test]
+    fn execute_proof_policy_rejects_wrong_param_name() {
+        let mut gov = GovernanceState::new(1);
+        let id = pass_proposal(
+            &mut gov,
+            ProposalKind::ChangeParameter {
+                name: "WELCOME_LOAN_AMOUNT".into(),
+                new_value: 500.0,
+            },
+        );
+        let err = gov
+            .execute_proof_policy_proposal(id, ProofPolicy::Optional)
+            .unwrap_err();
+        assert!(matches!(err, GovernanceError::UnsupportedExecution { .. }));
+    }
+
+    #[test]
+    fn execute_proof_policy_rejects_non_change_parameter_kind() {
+        let mut gov = GovernanceState::new(1);
+        let id = pass_proposal(&mut gov, ProposalKind::EmergencyPause);
+        let err = gov
+            .execute_proof_policy_proposal(id, ProofPolicy::Optional)
+            .unwrap_err();
+        assert!(matches!(err, GovernanceError::UnsupportedExecution { .. }));
+    }
+
+    #[test]
+    fn execute_proof_policy_unknown_proposal_id() {
+        let mut gov = GovernanceState::new(1);
+        let err = gov
+            .execute_proof_policy_proposal(9999, ProofPolicy::Optional)
+            .unwrap_err();
+        assert!(matches!(err, GovernanceError::ProposalNotFound { .. }));
+    }
+
+    #[test]
+    fn execute_proof_policy_cannot_execute_twice() {
+        let mut gov = GovernanceState::new(1);
+        let id = pass_proposal(
+            &mut gov,
+            ProposalKind::ChangeParameter {
+                name: "PROOF_POLICY".into(),
+                new_value: 2.0,
+            },
+        );
+        gov.execute_proof_policy_proposal(id, ProofPolicy::Optional).unwrap();
+        let err = gov
+            .execute_proof_policy_proposal(id, ProofPolicy::Recommended)
+            .unwrap_err();
+        // After first execute, status = Executed → NotPassed.
+        assert!(matches!(err, GovernanceError::ProposalNotPassed { .. }));
     }
 }

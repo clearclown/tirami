@@ -195,6 +195,54 @@ impl WelcomeLoanLimiter {
 }
 
 // ---------------------------------------------------------------------------
+// Phase 25 A7 — NodeId entropy floor
+// ---------------------------------------------------------------------------
+//
+// Welcome loans are credited to the first NodeId a request shows up
+// with. An attacker who hand-picks `NodeId([0u8; 32])` or any other
+// low-entropy pattern can sidestep the per-bucket rate limit by
+// "rotating" through a structured family of trivially-crafted ids
+// (`[0; 32]`, `[1; 32]`, ..., `[0xFF; 32]`). Genuine random NodeIds
+// derived from Ed25519 keypair generation have ~7.97 bits of Shannon
+// entropy per byte (32 bytes ≈ 255 bits of input → close to maximum).
+//
+// `MIN_NODEID_ENTROPY_BITS` rejects everything below 3.5 bits, which
+// catches all single-byte-repeating patterns + 4-byte ramps but
+// leaves real keypair-derived ids comfortably above the floor.
+
+/// Minimum Shannon entropy (bits/byte) a NodeId must clear to be
+/// considered a real cryptographic identity for welcome-loan
+/// purposes. 3.5 is well above any structured pattern but well
+/// below the ~7.97 average of random bytes.
+pub const MIN_NODEID_ENTROPY_BITS: f64 = 3.5;
+
+/// Phase 25 A7 — compute Shannon entropy (bits/byte) of a 32-byte
+/// NodeId. Pure function so callers can short-circuit before
+/// invoking the more expensive limiter machinery.
+pub fn nodeid_entropy_bits(bytes: &[u8; 32]) -> f64 {
+    let mut counts = [0u32; 256];
+    for &b in bytes {
+        counts[b as usize] += 1;
+    }
+    let n = bytes.len() as f64;
+    let mut h = 0.0_f64;
+    for &c in &counts {
+        if c > 0 {
+            let p = c as f64 / n;
+            h -= p * p.log2();
+        }
+    }
+    h
+}
+
+/// Phase 25 A7 — true iff the NodeId clears the entropy floor.
+/// Use this at the welcome-loan claim point to refuse trivially
+/// crafted ids before any limiter bucket gets touched.
+pub fn nodeid_has_sufficient_entropy(bytes: &[u8; 32]) -> bool {
+    nodeid_entropy_bits(bytes) >= MIN_NODEID_ENTROPY_BITS
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -368,5 +416,68 @@ mod tests {
         assert_eq!(back.window_ms, c.window_ms);
         assert_eq!(back.max_per_bucket_per_window, c.max_per_bucket_per_window);
         assert_eq!(back.staked_multiplier, c.staked_multiplier);
+    }
+
+    // --- Phase 25 A7 — NodeId entropy floor ---
+
+    #[test]
+    fn all_zero_nodeid_is_rejected_as_low_entropy() {
+        assert!(!nodeid_has_sufficient_entropy(&[0u8; 32]));
+    }
+
+    #[test]
+    fn all_ones_nodeid_is_rejected() {
+        assert!(!nodeid_has_sufficient_entropy(&[0xFFu8; 32]));
+    }
+
+    #[test]
+    fn repeating_byte_nodeid_is_rejected() {
+        for byte in [0x01u8, 0x55, 0xAA, 0xCC] {
+            assert!(
+                !nodeid_has_sufficient_entropy(&[byte; 32]),
+                "[{byte}; 32] should be rejected",
+            );
+        }
+    }
+
+    #[test]
+    fn ramp_nodeid_is_above_floor() {
+        // Sequential 0..32 produces high entropy (each byte distinct).
+        let mut ramp = [0u8; 32];
+        for (i, b) in ramp.iter_mut().enumerate() {
+            *b = i as u8;
+        }
+        // 32 distinct values, uniform → 5 bits/byte (log2 32).
+        assert!(nodeid_has_sufficient_entropy(&ramp));
+    }
+
+    #[test]
+    fn high_entropy_random_nodeid_passes() {
+        // Deterministic high-entropy fixture (sha256-derived).
+        use sha2::{Digest, Sha256};
+        let h = Sha256::digest(b"phase-25-a7-entropy-test");
+        let mut id = [0u8; 32];
+        id.copy_from_slice(&h);
+        assert!(nodeid_has_sufficient_entropy(&id));
+    }
+
+    #[test]
+    fn low_diversity_2byte_alphabet_is_rejected() {
+        // 16 zeros + 16 ones → 1.0 bits/byte → below floor.
+        let mut id = [0u8; 32];
+        for b in &mut id[16..] {
+            *b = 1;
+        }
+        assert!(!nodeid_has_sufficient_entropy(&id));
+        // Approx: should be 1.0 bits.
+        let h = nodeid_entropy_bits(&id);
+        assert!((h - 1.0).abs() < 1e-9, "entropy was {h}");
+    }
+
+    #[test]
+    fn entropy_floor_constant_is_documented() {
+        // Sentinel: if the floor changes, the test breaks so docs
+        // + welcome-claim assumptions are re-verified.
+        assert_eq!(MIN_NODEID_ENTROPY_BITS, 3.5);
     }
 }

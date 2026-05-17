@@ -85,6 +85,29 @@ pub(crate) async fn claim_welcome_loan(
 ) -> Result<Json<ClaimWelcomeResponse>, (StatusCode, String)> {
     check_forge_rate_limit(&state).await?;
     let node_id = parse_sender(&headers)?;
+    // Phase 25 A7 — NodeId entropy floor. Hand-crafted ids
+    // (all-zero, all-FF, single-byte repeats) bypass the per-bucket
+    // sybil limiter by rotating through structured "families".
+    // Reject them at the claim point so they never reach the
+    // limiter.
+    if !tirami_ledger::sybil::nodeid_has_sufficient_entropy(&node_id.0) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            serde_json::json!({
+                "error": {
+                    "type": "welcome_loan_denied",
+                    "code": "low_entropy_nodeid",
+                    "message": format!(
+                        "NodeId entropy {:.2} bits/byte is below the {:.1} floor — \
+                         use a real Ed25519 keypair-derived id",
+                        tirami_ledger::sybil::nodeid_entropy_bits(&node_id.0),
+                        tirami_ledger::sybil::MIN_NODEID_ENTROPY_BITS,
+                    ),
+                }
+            })
+            .to_string(),
+        ));
+    }
     let now = now_millis_pub();
     let mut ledger = state.ledger.lock().await;
     let grant = ledger

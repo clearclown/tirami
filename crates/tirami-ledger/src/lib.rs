@@ -15,6 +15,7 @@ pub mod fork;
 pub mod kani_proofs;
 pub mod bootstrap_discovery;
 pub mod peer_qos;
+pub mod pq_hybrid;
 pub mod sybil;
 pub mod wal;
 pub mod metrics;

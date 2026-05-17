@@ -138,6 +138,11 @@ impl TiramiNode {
         // for a snapshot file and calls agent.restore_from_snapshot()).
         let mind_agent: Option<tirami_mind::TiramiMindAgent> = None;
 
+        // Phase 23 Wave 3 — compute BEFORE `config` is moved into
+        // `self`. Best-effort load; returns `None` if path or
+        // passphrase env var is unset.
+        let agent_identity = load_persisted_agent_identity(&config);
+
         Self {
             config,
             engine: Arc::new(Mutex::new(CandleEngine::new())),
@@ -156,10 +161,12 @@ impl TiramiNode {
             chain_client: Arc::new(tirami_anchor::MockChainClient::new()),
             personal_agent: Arc::new(Mutex::new(None)),
             agent_loop_stats: Arc::new(Mutex::new(AgentLoopStats::new())),
-            // Phase 23 Wave 2 — empty by default; populated by the
-            // HTTP `agent/identity/init` or `…/import` flow once
-            // Wave 2.5 wires the shared handle into AppState.
-            agent_identity: Arc::new(Mutex::new(None)),
+            // Phase 23 Wave 3 — auto-load the persisted identity if
+            // BOTH `agent_identity_path` AND the passphrase env var
+            // are configured. Silent fallback to None when either
+            // is missing so the in-memory-only path remains the
+            // out-of-the-box default.
+            agent_identity: Arc::new(Mutex::new(agent_identity)),
             heartbeat_started: false,
         }
     }
@@ -1217,6 +1224,56 @@ impl TiramiNode {
         }
 
         tracing::info!("Tirami node shut down");
+    }
+}
+
+/// Phase 23 Wave 3 — best-effort load of the persisted
+/// `AgentIdentity` at startup.
+///
+/// Returns `None` (and logs at `info`/`warn`) on any of: path
+/// unconfigured, passphrase env var unset, file missing, file
+/// malformed, or wrong passphrase. The semantics are deliberately
+/// permissive — a missing file is the common first-boot case and
+/// must not abort startup. A wrong passphrase logs at `warn` so
+/// the operator notices but the node still comes up (with a fresh
+/// in-memory-only identity slot).
+fn load_persisted_agent_identity(
+    config: &tirami_core::Config,
+) -> Option<tirami_mind::AgentIdentity> {
+    let Some(path) = config.agent_identity_path.as_ref() else {
+        return None;
+    };
+    let Ok(passphrase) = std::env::var(&config.agent_identity_passphrase_env) else {
+        tracing::info!(
+            "agent_identity_path is set but env var {} is unset — identity stays in-memory",
+            config.agent_identity_passphrase_env
+        );
+        return None;
+    };
+    match state_persist::load_agent_identity(path, &passphrase) {
+        Ok(Some(id)) => {
+            tracing::info!(
+                "Loaded persisted AgentIdentity from {} (did:tirami:{}…)",
+                path.display(),
+                &id.public_key_hex()[..12]
+            );
+            Some(id)
+        }
+        Ok(None) => {
+            tracing::debug!(
+                "No persisted AgentIdentity at {} — starting fresh",
+                path.display()
+            );
+            None
+        }
+        Err(err) => {
+            tracing::warn!(
+                "Failed to load AgentIdentity from {}: {} — starting fresh",
+                path.display(),
+                err
+            );
+            None
+        }
     }
 }
 

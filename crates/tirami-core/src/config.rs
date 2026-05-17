@@ -29,6 +29,24 @@ pub struct Config {
     /// Optional path to the persisted user-facing PersonalAgent state.
     pub personal_agent_state_path: Option<PathBuf>,
 
+    /// Phase 23 Wave 3 — optional path for the encrypted
+    /// `AgentIdentity` bundle on disk. When `Some(_)` AND the env
+    /// var named by [`Self::agent_identity_passphrase_env`] is set,
+    /// `TiramiNode::new` auto-loads the identity at startup and
+    /// `agent/identity/init` / `/import` write back to the same
+    /// path after each mutation. When either side is missing the
+    /// identity stays ephemeral (in-memory only).
+    #[serde(default)]
+    pub agent_identity_path: Option<PathBuf>,
+
+    /// Phase 23 Wave 3 — name of the environment variable that
+    /// carries the Argon2id passphrase for the persisted identity.
+    /// Default: `"TIRAMI_AGENT_IDENTITY_PASSPHRASE"`. Operators
+    /// who run multiple nodes on the same host can rebind this to
+    /// per-node names.
+    #[serde(default = "default_agent_identity_passphrase_env")]
+    pub agent_identity_passphrase_env: String,
+
     /// Whether to share compute with the network.
     pub share_compute: bool,
 
@@ -226,6 +244,12 @@ fn default_welcome_settle_interval_secs() -> u64 {
     300
 }
 
+/// Phase 23 Wave 3 — environment-variable name carrying the
+/// Argon2id passphrase for the persisted `AgentIdentity` bundle.
+fn default_agent_identity_passphrase_env() -> String {
+    "TIRAMI_AGENT_IDENTITY_PASSPHRASE".to_string()
+}
+
 fn default_slashing_interval_secs() -> u64 {
     300
 }
@@ -346,6 +370,8 @@ impl Default for Config {
             marketplace_state_path: None,
             mind_state_path: None,
             personal_agent_state_path: None,
+            agent_identity_path: None,
+            agent_identity_passphrase_env: default_agent_identity_passphrase_env(),
             share_compute: false,
             max_memory_gb: 4.0,
             api_port: 3000,

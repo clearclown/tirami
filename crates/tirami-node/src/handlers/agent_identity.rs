@@ -136,12 +136,20 @@ pub(crate) async fn init_identity(
     let id = AgentIdentity::generate(now_millis_pub(), req.display_name);
     let view = IdentityPublicView::from(&id);
     let pk = id.public_key_bytes();
+    // Phase 23 Wave 3 — clone for the persist path BEFORE moving
+    // the original into the slot (`Some(id)` consumes `id`).
+    let id_for_persist = id.clone();
     *guard = Some(id);
     drop(guard);
     // Phase 23 Wave 1 — propagate the new identity to the
     // PersonalAgent wallet so trade attribution follows the DID,
     // not the machine key.
     rebind_personal_agent_wallet(&state, pk).await;
+    // Phase 23 Wave 3 — write the encrypted bundle to disk if a
+    // path + passphrase are configured. Best-effort: a write
+    // failure logs at warn but does NOT fail the HTTP request,
+    // since the in-memory identity is still valid.
+    persist_agent_identity_if_configured(&state, &id_for_persist);
     Ok(Json(view))
 }
 
@@ -175,12 +183,50 @@ pub(crate) async fn import_identity(
     let imported = AgentIdentity::import(&req.bundle, &req.passphrase).map_err(map_err)?;
     let pk = imported.public_key_bytes();
     let view = IdentityPublicView::from(&imported);
+    let imported_clone = imported.clone();
     let mut guard = state.agent_identity.lock().await;
     *guard = Some(imported);
     drop(guard);
     // Phase 23 Wave 1 — same rebind hook as `init_identity`.
     rebind_personal_agent_wallet(&state, pk).await;
+    // Phase 23 Wave 3 — persist the imported identity so a restart
+    // doesn't drop it. Same best-effort semantics as init.
+    persist_agent_identity_if_configured(&state, &imported_clone);
     Ok(Json(view))
+}
+
+/// Phase 23 Wave 3 — best-effort save to the configured path.
+///
+/// Returns silently when path or passphrase env var is unset; logs at
+/// `warn` on any I/O / serialization / encryption error. The in-memory
+/// identity remains valid regardless.
+fn persist_agent_identity_if_configured(
+    state: &AppState,
+    id: &AgentIdentity,
+) {
+    let Some(path) = state.config.agent_identity_path.as_ref() else {
+        return;
+    };
+    let Ok(passphrase) = std::env::var(&state.config.agent_identity_passphrase_env) else {
+        tracing::debug!(
+            "agent_identity_path set but env var {} unset — skipping persist",
+            state.config.agent_identity_passphrase_env
+        );
+        return;
+    };
+    if let Err(err) = crate::state_persist::save_agent_identity(id, path, &passphrase) {
+        tracing::warn!(
+            "Failed to persist AgentIdentity to {}: {}",
+            path.display(),
+            err
+        );
+    } else {
+        tracing::info!(
+            "Persisted AgentIdentity to {} (did:tirami:{}…)",
+            path.display(),
+            &id.public_key_hex()[..12]
+        );
+    }
 }
 
 /// Phase 23 Wave 1 — propagate a fresh agent pubkey down to the

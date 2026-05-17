@@ -84,6 +84,10 @@ pub(crate) struct AppState {
     /// Phase 20 Wave 3 — physical-world purchase intents
     /// (`/v1/tirami/agent/purchase-intent[s]`). In-memory only.
     pub purchase_intents: crate::handlers::purchase_intent::PurchaseIntentState,
+    /// Phase 20 Wave 4 — portable agent identity slot. `None` until
+    /// `POST /v1/tirami/agent/identity/init` or `/import` is called.
+    /// In-memory only; persistence is a follow-up.
+    pub agent_identity: crate::handlers::agent_identity::AgentIdentityState,
 }
 
 /// Simple rate limiter for authentication failures.
@@ -242,6 +246,7 @@ pub fn create_router_with_services(
         purchase_intents: Arc::new(Mutex::new(
             crate::handlers::purchase_intent::PurchaseIntentRegistry::new(),
         )),
+        agent_identity: Arc::new(Mutex::new(None)),
     };
     let api_max_request_body_bytes = state.config.api_max_request_body_bytes;
 
@@ -463,6 +468,23 @@ pub fn create_router_with_services(
         .route(
             "/v1/tirami/agent/purchase-intent/{intent_id}/confirm",
             post(crate::handlers::purchase_intent::confirm_purchase_intent),
+        )
+        // Phase 20 Wave 4 — portable agent identity (did:tirami).
+        .route(
+            "/v1/tirami/agent/identity",
+            get(crate::handlers::agent_identity::get_identity),
+        )
+        .route(
+            "/v1/tirami/agent/identity/init",
+            post(crate::handlers::agent_identity::init_identity),
+        )
+        .route(
+            "/v1/tirami/agent/identity/export",
+            post(crate::handlers::agent_identity::export_identity),
+        )
+        .route(
+            "/v1/tirami/agent/identity/import",
+            post(crate::handlers::agent_identity::import_identity),
         )
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
@@ -5841,6 +5863,255 @@ mod tests {
             "purchase_intent_create",
             "purchase_intent_list",
             "purchase_intent_confirm",
+        ] {
+            assert!(
+                names.iter().any(|n| n == expected),
+                "manifest missing {expected}, actions={names:?}"
+            );
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Phase 20 Wave 4 — portable agent identity (did:tirami)
+    // ------------------------------------------------------------------
+
+    async fn post_identity_init(
+        app: Router,
+        display_name: Option<&str>,
+    ) -> (StatusCode, serde_json::Value) {
+        let body = match display_name {
+            Some(n) => serde_json::json!({ "display_name": n }),
+            None => serde_json::json!({}),
+        };
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/tirami/agent/identity/init")
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap_or_default();
+        (status, json)
+    }
+
+    async fn get_identity_response(app: Router) -> (StatusCode, serde_json::Value) {
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/v1/tirami/agent/identity")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        (status, serde_json::from_slice(&bytes).unwrap_or_default())
+    }
+
+    async fn post_identity_export(
+        app: Router,
+        passphrase: &str,
+    ) -> (StatusCode, serde_json::Value) {
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/tirami/agent/identity/export")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({ "passphrase": passphrase }).to_string(),
+                    ))
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        (status, serde_json::from_slice(&bytes).unwrap_or_default())
+    }
+
+    async fn post_identity_import(
+        app: Router,
+        passphrase: &str,
+        bundle: serde_json::Value,
+    ) -> (StatusCode, serde_json::Value) {
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/tirami/agent/identity/import")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({
+                            "passphrase": passphrase,
+                            "bundle": bundle,
+                        })
+                        .to_string(),
+                    ))
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        (status, serde_json::from_slice(&bytes).unwrap_or_default())
+    }
+
+    #[tokio::test]
+    async fn agent_identity_init_then_get_round_trip() {
+        let app = test_router_with_agent(Config::default(), None);
+        // Before init: GET returns 404.
+        let (status, _) = get_identity_response(app.clone()).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+
+        // Init.
+        let (status, body) = post_identity_init(app.clone(), Some("MyAgent")).await;
+        assert_eq!(status, StatusCode::OK, "init: {body}");
+        let did = body["did"].as_str().expect("did").to_string();
+        assert!(did.starts_with("did:tirami:"), "unexpected did: {did}");
+        assert_eq!(body["display_name"], "MyAgent");
+
+        // GET now returns the same DID.
+        let (status, view) = get_identity_response(app).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(view["did"], did);
+    }
+
+    #[tokio::test]
+    async fn agent_identity_init_is_idempotent() {
+        let app = test_router_with_agent(Config::default(), None);
+        let (_, a) = post_identity_init(app.clone(), Some("Alpha")).await;
+        let (status, b) = post_identity_init(app, Some("Beta")).await;
+        // Second init returns the original, name unchanged.
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(b["did"], a["did"]);
+        assert_eq!(b["display_name"], "Alpha");
+    }
+
+    #[tokio::test]
+    async fn agent_identity_export_then_import_preserves_did() {
+        let app_a = test_router_with_agent(Config::default(), None);
+        let (_, init_body) = post_identity_init(app_a.clone(), Some("Portable")).await;
+        let did_a = init_body["did"].as_str().expect("did").to_string();
+        let (status, bundle) =
+            post_identity_export(app_a, "correct-horse-battery-staple").await;
+        assert_eq!(status, StatusCode::OK, "export: {bundle}");
+        // Bundle structure sanity.
+        assert_eq!(bundle["schema_version"], 1);
+        assert_eq!(bundle["kdf"], "argon2id");
+        assert_eq!(bundle["aead"], "xchacha20poly1305");
+
+        // Move to a fresh second node and import.
+        let app_b = test_router_with_agent(Config::default(), None);
+        let (status, view) =
+            post_identity_import(app_b.clone(), "correct-horse-battery-staple", bundle.clone())
+                .await;
+        assert_eq!(status, StatusCode::OK, "import: {view}");
+        assert_eq!(view["did"], did_a);
+        // GET on the second node now reflects the imported identity.
+        let (_, get_view) = get_identity_response(app_b).await;
+        assert_eq!(get_view["did"], did_a);
+    }
+
+    #[tokio::test]
+    async fn agent_identity_import_rejects_wrong_passphrase() {
+        let app_a = test_router_with_agent(Config::default(), None);
+        let (_, _) = post_identity_init(app_a.clone(), None).await;
+        let (_, bundle) = post_identity_export(app_a, "the-right-one").await;
+        let app_b = test_router_with_agent(Config::default(), None);
+        let (status, body) =
+            post_identity_import(app_b, "wrong-passphrase", bundle).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let msg = body["error"]["message"].as_str().unwrap_or("");
+        assert!(msg.contains("AEAD"), "msg: {msg}");
+    }
+
+    #[tokio::test]
+    async fn agent_identity_export_rejects_short_passphrase() {
+        let app = test_router_with_agent(Config::default(), None);
+        let (_, _) = post_identity_init(app.clone(), None).await;
+        let (status, body) = post_identity_export(app, "short").await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let msg = body["error"]["message"].as_str().unwrap_or("");
+        assert!(msg.contains("passphrase too short"), "msg: {msg}");
+    }
+
+    #[tokio::test]
+    async fn agent_identity_export_404_when_no_identity_bootstrapped() {
+        let app = test_router_with_agent(Config::default(), None);
+        let (status, body) = post_identity_export(app, "this-is-long-enough").await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        let msg = body["error"]["message"].as_str().unwrap_or("");
+        assert!(msg.contains("no agent identity to export"), "msg: {msg}");
+    }
+
+    #[tokio::test]
+    async fn well_known_manifest_exposes_did_after_init() {
+        let app = test_router_with_agent(Config::default(), None);
+        // Before init — manifest agent_did is null.
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/.well-known/tirami-agent.json")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let json: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
+        assert!(json["agent_did"].is_null(), "should be null before init");
+
+        // After init — manifest exposes the DID.
+        let (_, init_body) = post_identity_init(app.clone(), Some("ManifestTest")).await;
+        let expected_did = init_body["did"].as_str().expect("did").to_string();
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/.well-known/tirami-agent.json")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let json: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
+        assert_eq!(json["agent_did"].as_str(), Some(expected_did.as_str()));
+        // The four Wave 4 actions should also be listed.
+        let names: Vec<String> = json["actions"]
+            .as_array()
+            .expect("array")
+            .iter()
+            .map(|a| a["name"].as_str().unwrap_or("").to_string())
+            .collect();
+        for expected in &[
+            "agent_identity_get",
+            "agent_identity_init",
+            "agent_identity_export",
+            "agent_identity_import",
         ] {
             assert!(
                 names.iter().any(|n| n == expected),

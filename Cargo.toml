@@ -83,6 +83,11 @@ rand = "0.8"
 hex = "0.4"
 hmac = "0.12"
 sha2 = "0.10"
+# Phase 20 Wave 4 — agent-identity portable export uses Argon2id KDF +
+# ChaCha20-Poly1305 AEAD. Both are RustCrypto-maintained, audited, and
+# stable. Pinned to the latest stable line.
+chacha20poly1305 = "0.10"
+argon2 = "0.5"
 
 # Bitcoin Lightning
 ldk-node = "0.4"

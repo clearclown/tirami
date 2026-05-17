@@ -13,6 +13,7 @@ pub mod checkpoint;
 pub mod fork;
 #[cfg(kani)]
 pub mod kani_proofs;
+pub mod bootstrap_discovery;
 pub mod peer_qos;
 pub mod sybil;
 pub mod wal;

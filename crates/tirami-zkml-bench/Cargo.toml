@@ -23,6 +23,9 @@ tirami-ledger = { workspace = true }
 ed25519-dalek = { workspace = true }
 hex = { workspace = true }
 rand = { workspace = true }
+# Phase 24 Wave 5.2 — wire-format codec for risc0 receipts (only
+# referenced under `risc0-host` feature; the dep itself is small).
+bincode = { workspace = true }
 
 # Phase 18.3 — zkML backends are BEHIND features so the default
 # workspace build stays lean. Enable explicitly for benchmarks.
@@ -33,15 +36,24 @@ rand = { workspace = true }
 # The MockBackend is always available so the harness compiles
 # (and has tests) without any real zk dep.
 #
-# Phase 24 Wave 5.0 — the `risc0` / `ezkl` / `halo2` features now
-# wire up a *scaffold* implementation that is structurally honest:
-# it produces a deterministic commitment with a backend-specific
-# version prefix so receivers know which proof family to expect,
-# but the commitment is NOT zero-knowledge yet. Real risc0-zkvm /
-# ezkl crates land in Wave 5.1+ (see
-# `docs/phase-24-wave-5-zk-backends.md`).
+# Phase 24 Wave 5.0 — the `risc0` feature ships a scaffold backend.
+# Phase 24 Wave 5.2 adds the `risc0-host` opt-in feature that
+# additionally pulls in the real `risc0-zkvm` crate (verifier
+# only — guest ELF + prover are Wave 5.2.1+ once the Risc-V
+# toolchain is bootstrapped). See
+# `docs/phase-24-wave-5-zk-backends.md`.
 [features]
 default = []
-risc0 = []  # Wave 5.0: scaffold commitment; Wave 5.1+ wires risc0-zkvm
+risc0 = []  # Wave 5.0: scaffold commitment
+# Wave 5.2 — host-side risc0-zkvm crate (verifier-only). Pulls in
+# the dep so receipt deserialisation + journal extraction can be
+# unit-tested without a guest binary.
+risc0-host = ["dep:risc0-zkvm"]
 halo2 = []  # same shape; real halo2 lands separately
 ezkl = []   # same shape; ezkl is git-vendored, landing separately
+
+[dependencies.risc0-zkvm]
+version = "1.2"
+default-features = false
+optional = true
+features = ["std"]

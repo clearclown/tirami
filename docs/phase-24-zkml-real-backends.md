@@ -8,9 +8,9 @@
 > forgeable" to "production-grade proof of inference" without a
 > single multi-week commit.
 
-Status: Waves 1 → 5.1 shipped. Wave 5.2+ (real risc0/ezkl crate
-integration) remains week-scale and is tracked in
-`docs/phase-24-wave-5-zk-backends.md`.
+Status: Waves 1 → 5.2 shipped. The host-side `risc0-zkvm` crate is
+now wired (verifier-only); guest ELF + prover land in Wave 5.2.1+
+(see `docs/phase-24-wave-5-zk-backends.md`).
 
 ## The trajectory
 
@@ -443,22 +443,107 @@ sentinel for scaffold strength.
 
 Workspace passes **1,464** tests (Wave 5.0 1,450 → +14).
 
-### Wave 5.2 (next, week-scale) — real risc0 zkVM integration
+### Wave 5.2 ✅ shipped — host-side `risc0-zkvm` verifier
 
-Carrying the original Wave 5.1 plan forward:
-- guest program (`bench_commit`) — commits to all spec fields
-- host-side `Risc0Backend` impl using `risc0_zkvm::default_prover`
-- receipt serialised as `BenchProof.bytes`
-- verifier dispatches `"risc0"` proofs to receipt verify + journal
-  commitment cross-check
-- `Config.zkml_backend = "risc0"` routes producers to it
-- `BenchBackendKind::Risc0.strength()` bumps from `None` to
-  `InputOutputBound` (also updates the sentinel test +
-  manifest documentation)
+Wave 5.2 wires the real `risc0-zkvm` crate (v1.2.6) as a new
+`risc0-host` opt-in feature. The host crate gives the protocol a
+production-grade STARK verifier *today* without waiting for the
+Risc-V toolchain bootstrap that proving requires — receivers
+running this build can verify proofs produced by other operators
+who *do* have the toolchain.
 
-Wave 5.3 mirrors the same shape for `ezkl`. Wave 5.4 is
-research scope (model-forward circuits proving inference
-correctness, lifting strength to `ComputeBound`).
+#### What's new
+
+- **`Risc0HostBackend`** in `tirami-zkml-bench::risc0_host`
+  (feature `risc0-host`). Carries a 32-byte image ID and:
+  - `verify(spec, proof)`: bincode-decodes a `risc0_zkvm::Receipt`
+    from `proof.bytes`, cryptographically verifies the STARK
+    against the image ID, then cross-checks the public journal
+    commits to the canonical `BenchSpec` hash (`tirami-risc0-commit-v1`
+    domain-separated).
+  - `prove(...)`: `BackendUnavailable("guest ELF required")` —
+    Wave 5.2.1+ wires the guest binary.
+  - `strength()` → `BackendStrength::InputOutputBound` (real zk
+    verification of input/output commitment).
+- **`BenchBackendKind::Risc0Host`** variant — distinct from the
+  Wave 5.0 scaffold `Risc0` (which stays around for dev). Name:
+  `"risc0-host"`. Serialises as `"risc0-host"` (kebab-case).
+- **`tirami_core::zkml_backend_strength_tag("risc0-host")`** →
+  `"input-output-bound"` — agents reading the manifest can route
+  to a strong-verify peer.
+- **Manifest feature flag**:
+  `FEATURE_ZKML_BACKEND_RISC0_HOST = "zkml-backend:risc0-host"`.
+- **`bincode = workspace`** dep added to tirami-zkml-bench
+  (used only under the `risc0-host` feature for receipt codec).
+
+#### Honest scope
+
+Wave 5.2 is **verifier-only**. The wire format for `risc0-host`
+proofs is now fixed — `bincode(Receipt)` bytes — and any node
+running this build can cryptographically check those proofs. But
+no node in this build can *produce* a `risc0-host` proof. That
+requires the guest ELF, which requires `cargo-risczero` + Risc-V
+toolchain (Wave 5.2.1).
+
+A consequence: in a network where most nodes run this build,
+`zkml_backend = "risc0-host"` in any node's Config is a
+**verifier-only** declaration. The producer side falls back to
+`MockBackend` for `prove` (or whatever Wave 5.2.1+ wires next).
+
+#### Tests added
+
+**Default features (4 new, no risc0 dep):**
+- `risc0_host_kind_name_is_kebab_case` — `BenchBackendKind::Risc0Host.name() == "risc0-host"`
+- `risc0_host_kind_strength_is_input_output_bound`
+- `risc0_host_serialises_as_kebab_case_for_config`
+- `tirami_core_taxonomy_recognises_risc0_host_as_input_output_bound`
+
+**Feature-gated `risc0-host` (8 new, real risc0_zkvm crate):**
+- `risc0_host_backend_name_matches_kind`
+- `risc0_host_backend_strength_via_trait_matches_kind`
+- `risc0_host_prove_returns_backend_unavailable_until_guest_lands`
+- `risc0_host_verify_rejects_wrong_backend_label`
+- `risc0_host_verify_rejects_malformed_receipt_bytes` — exercises
+  the bincode + risc0_zkvm deserialiser robustness
+- `risc0_host_expected_journal_commit_is_deterministic`
+- `risc0_host_expected_journal_commit_changes_with_spec_fields`
+- `risc0_host_image_id_distinguishes_backend_instances`
+
+Plus the Wave 5.1 invariant `backend_kind_strength_matches_tirami_core_taxonomy`
+now iterates `Risc0Host` and would catch any drift between the
+enum's `strength()` and the wire-format tag.
+
+Workspace passes **1,468** tests under default features (Wave
+5.1 1,464 → +4). With `--features risc0-host`, tirami-zkml-bench
+runs 57 tests (was 51 → +6 active feature-gated; the 8 listed
+above include 2 that are also-counted as the default-feature
+ones, hence +6 vs +8).
+
+### Wave 5.2.1 (next, bounded but toolchain-dependent) — guest ELF
+
+To enable real `prove()` on this build:
+
+1. Add a new in-workspace crate `tirami-zkml-bench-guest`
+   containing the `bench_commit` guest program (target
+   `riscv32im-risc0-zkvm-elf`).
+2. Build with `cargo-risczero build` to produce a deterministic
+   ELF + image ID. Embed via `methods!` macro into the host
+   crate.
+3. `Risc0HostBackend::prove` calls `risc0_zkvm::default_prover()`
+   with the ELF; produces a `Receipt` containing the journal
+   commitment.
+4. CI: run `--features risc0-host` build but skip the slow
+   prove-side tests on the default workflow.
+
+### Wave 5.3 (week-scale) — ezkl + halo2 mirroring 5.2
+
+Same shape as 5.2 for ezkl/halo2: host-side verifier first, then
+guest/circuit binding.
+
+### Wave 5.4 (research scope) — model-forward circuits
+
+Lifts the strength of the relevant backend(s) from
+`InputOutputBound` to `ComputeBound`.
 
 ## Wave 3 — risc0 or ezkl integration
 

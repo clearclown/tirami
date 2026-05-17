@@ -3,6 +3,8 @@ use tirami_ledger::{
     ComputeLedger, InferenceIneligible, LoanRecord, LoanStatus, SignedTradeRecord, StakingPool,
     TradeRecord,
 };
+use tirami_ledger::ledger::TradeAttestation;
+use tirami_zkml_bench::{BenchSpec, EdAttestBackend, BenchBackend};
 use tirami_net::{ClusterManager, ForgeTransport, GossipState};
 use tirami_proto::{
     Envelope, ErrorCode, ErrorMsg, InferenceRequest, LoanAccept, Payload, PipelineTopologyMsg,
@@ -1011,6 +1013,20 @@ async fn handle_inference(
         agent_identity.as_ref(),
     );
 
+    // Phase 24 Wave 2.5 — produce a zkML attestation when the operator
+    // has selected `ed-attest` AND an AgentIdentity is loaded. The
+    // attestation rides on the SignedTradeRecord so receivers can
+    // verify it independently of the dual-signature.
+    let attestation = produce_ed_attest_attestation(
+        config,
+        agent_identity.as_ref(),
+        &req.prompt_text,
+        &tokens,
+        &trade.model_id,
+        total_tokens,
+        trade.flops_estimated,
+    );
+
     // Fix #80 — register the dispatcher slot BEFORE sending the
     // TradeProposal so we can't race a very-fast counter-sign.
     let (accept_tx, accept_rx) = oneshot::channel::<Vec<u8>>();
@@ -1066,7 +1082,7 @@ async fn handle_inference(
                 trade: trade.clone(),
                 provider_sig,
                 consumer_sig,
-            attestation: None,
+                attestation,
             };
             // Phase 17 Wave 1.2 — route through execute_signed_trade so the
             // ledger re-verifies signatures AND enforces nonce dedup. The
@@ -1175,6 +1191,69 @@ fn now_millis() -> u64 {
 ///
 /// Extracted as a free function so the per-trade logic is unit-
 /// testable without spinning up the whole pipeline.
+/// Phase 24 Wave 2.5 — build a `BenchSpec` from the inputs and
+/// outputs of an inference call. Pure function so it's trivially
+/// testable. `model_id`, `prompt`, and the concatenated
+/// `output_tokens` get hashed with SHA-256.
+pub(crate) fn build_bench_spec(
+    prompt: &str,
+    output_tokens: &[String],
+    model_id: &str,
+    token_count: u64,
+    flops: u64,
+) -> BenchSpec {
+    use sha2::{Digest, Sha256};
+    let model_hash: [u8; 32] = Sha256::digest(model_id.as_bytes()).into();
+    let prompt_hash: [u8; 32] = Sha256::digest(prompt.as_bytes()).into();
+    let output_hash: [u8; 32] = {
+        let mut h = Sha256::new();
+        for t in output_tokens {
+            h.update(t.as_bytes());
+        }
+        h.finalize().into()
+    };
+    BenchSpec {
+        model_hash,
+        prompt_hash,
+        output_hash,
+        token_count,
+        flops,
+    }
+}
+
+/// Phase 24 Wave 2.5 — produce an ed-attest attestation, but only
+/// when `config.zkml_backend == "ed-attest"` AND an `AgentIdentity`
+/// is loaded. Returns `None` otherwise so the trade goes out
+/// without an attestation (existing pre-Wave-2 behaviour).
+pub(crate) fn produce_ed_attest_attestation(
+    config: &Config,
+    agent_identity: Option<&tirami_mind::AgentIdentity>,
+    prompt: &str,
+    output_tokens: &[String],
+    model_id: &str,
+    token_count: u64,
+    flops: u64,
+) -> Option<TradeAttestation> {
+    if config.zkml_backend.trim().to_ascii_lowercase() != "ed-attest" {
+        return None;
+    }
+    let agent = agent_identity?;
+    if token_count == 0 {
+        // EdAttestBackend rejects token_count = 0; skip cleanly.
+        return None;
+    }
+    let spec = build_bench_spec(prompt, output_tokens, model_id, token_count, flops);
+    let signing_key = ed25519_dalek::SigningKey::from_bytes(&agent.seed());
+    let backend = EdAttestBackend::from_signing_key(signing_key);
+    match backend.prove(&spec) {
+        Ok(proof) => Some(proof.into()),
+        Err(e) => {
+            tracing::warn!("ed-attest proof generation failed: {e}");
+            None
+        }
+    }
+}
+
 pub(crate) fn resolve_outbound_trade_signing<F>(
     canonical: &[u8],
     machine_node_id: &NodeId,
@@ -1702,5 +1781,110 @@ mod tests {
         transport_worker.close().await;
         transport_seed.close().await;
         seed_task.await.expect("seed task");
+    }
+
+    // ---------------------------------------------------------------------
+    // Phase 24 Wave 2.5 — attestation produce path
+    // ---------------------------------------------------------------------
+
+    fn config_with_zkml_backend(backend: &str) -> Config {
+        Config {
+            zkml_backend: backend.to_string(),
+            ..Config::default()
+        }
+    }
+
+    #[test]
+    fn build_bench_spec_is_deterministic() {
+        let a = build_bench_spec("hello", &["world".to_string()], "m", 1, 0);
+        let b = build_bench_spec("hello", &["world".to_string()], "m", 1, 0);
+        assert_eq!(a.model_hash, b.model_hash);
+        assert_eq!(a.prompt_hash, b.prompt_hash);
+        assert_eq!(a.output_hash, b.output_hash);
+    }
+
+    #[test]
+    fn build_bench_spec_changes_with_any_input() {
+        let base = build_bench_spec("p", &["o".to_string()], "m", 1, 0);
+        assert_ne!(base.prompt_hash, build_bench_spec("p2", &["o".to_string()], "m", 1, 0).prompt_hash);
+        assert_ne!(base.output_hash, build_bench_spec("p", &["o2".to_string()], "m", 1, 0).output_hash);
+        assert_ne!(base.model_hash, build_bench_spec("p", &["o".to_string()], "m2", 1, 0).model_hash);
+        assert_eq!(base.token_count + 1, build_bench_spec("p", &["o".to_string()], "m", 2, 0).token_count);
+        assert_eq!(base.flops + 1, build_bench_spec("p", &["o".to_string()], "m", 1, 1).flops);
+    }
+
+    #[test]
+    fn produce_ed_attest_skips_when_backend_is_mock() {
+        let config = config_with_zkml_backend("mock");
+        let agent = tirami_mind::AgentIdentity::generate(0, None);
+        let att = produce_ed_attest_attestation(
+            &config, Some(&agent), "p", &["o".to_string()], "m", 1, 0,
+        );
+        assert!(att.is_none());
+    }
+
+    #[test]
+    fn produce_ed_attest_skips_without_agent_identity() {
+        let config = config_with_zkml_backend("ed-attest");
+        let att = produce_ed_attest_attestation(
+            &config, None, "p", &["o".to_string()], "m", 1, 0,
+        );
+        assert!(att.is_none());
+    }
+
+    #[test]
+    fn produce_ed_attest_skips_when_token_count_is_zero() {
+        let config = config_with_zkml_backend("ed-attest");
+        let agent = tirami_mind::AgentIdentity::generate(0, None);
+        let att = produce_ed_attest_attestation(
+            &config, Some(&agent), "p", &[], "m", 0, 0,
+        );
+        assert!(att.is_none());
+    }
+
+    #[test]
+    fn produce_ed_attest_emits_attestation_with_agent_pubkey() {
+        let config = config_with_zkml_backend("ed-attest");
+        let agent = tirami_mind::AgentIdentity::generate(0, None);
+        let att = produce_ed_attest_attestation(
+            &config, Some(&agent), "hello", &["world".to_string()], "m", 1, 0,
+        ).expect("must produce attestation");
+        assert_eq!(att.backend, "ed-attest");
+        let signer = att.ed_attest_signer().expect("96-byte ed-attest");
+        assert_eq!(signer, agent.public_key_bytes());
+    }
+
+    #[test]
+    fn produce_ed_attest_is_case_insensitive_on_backend_name() {
+        let config = config_with_zkml_backend("Ed-Attest");
+        let agent = tirami_mind::AgentIdentity::generate(0, None);
+        let att = produce_ed_attest_attestation(
+            &config, Some(&agent), "p", &["o".to_string()], "m", 1, 0,
+        );
+        assert!(att.is_some());
+    }
+
+    #[test]
+    fn produce_ed_attest_verifies_with_zkml_helper() {
+        // End-to-end: producer → verify_trade_attestation with the
+        // same BenchSpec succeeds; with the wrong signer fails.
+        let config = config_with_zkml_backend("ed-attest");
+        let agent = tirami_mind::AgentIdentity::generate(0, None);
+        let prompt = "p";
+        let outputs = vec!["o".to_string()];
+        let att = produce_ed_attest_attestation(
+            &config, Some(&agent), prompt, &outputs, "m", 1, 0,
+        ).expect("produce");
+        let spec = build_bench_spec(prompt, &outputs, "m", 1, 0);
+        // Correct signer passes.
+        tirami_zkml_bench::verify_trade_attestation(
+            &spec, &att, &agent.public_key_bytes(),
+        ).expect("correct signer");
+        // Wrong signer fails.
+        let other = tirami_mind::AgentIdentity::generate(0, None);
+        let err = tirami_zkml_bench::verify_trade_attestation(
+            &spec, &att, &other.public_key_bytes(),
+        );
+        assert!(err.is_err());
     }
 }

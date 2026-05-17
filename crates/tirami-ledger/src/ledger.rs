@@ -554,6 +554,24 @@ impl SignedTradeRecord {
 
         Ok(())
     }
+
+    /// Phase 24 Wave 2.5 — lightweight check on the optional zkML
+    /// attestation: if present, its embedded signer pubkey must
+    /// match the trade's `provider`. Does NOT verify the underlying
+    /// Ed25519 signature on the attestation (Wave 3 will wire that
+    /// once the wire format carries the prompt/output hashes
+    /// receivers need to reconstruct the BenchSpec).
+    ///
+    /// Returns `Ok(())` when there is no attestation (no constraint).
+    pub fn check_attestation_signer(&self) -> Result<(), SignatureError> {
+        let Some(att) = self.attestation.as_ref() else {
+            return Ok(());
+        };
+        match att.ed_attest_signer() {
+            Some(pk) if pk == self.trade.provider.0 => Ok(()),
+            _ => Err(SignatureError::AttestationSignerMismatch),
+        }
+    }
 }
 
 /// Errors during trade signature verification.
@@ -574,6 +592,11 @@ pub enum SignatureError {
     /// the trade would be a replay (double-bill the consumer).
     #[error("replayed nonce for provider {provider}")]
     ReplayedNonce { provider: String },
+    /// Phase 24 Wave 2.5 — the optional zkML attestation's embedded
+    /// signer pubkey did not match the trade's `provider`, OR the
+    /// attestation bytes are malformed (wrong backend / wrong length).
+    #[error("attestation signer does not match trade provider")]
+    AttestationSignerMismatch,
 }
 
 /// Errors raised when creating a new loan via [`ComputeLedger::create_loan`].
@@ -1292,6 +1315,11 @@ impl ComputeLedger {
         signed: &SignedTradeRecord,
     ) -> Result<(), SignatureError> {
         signed.verify()?;
+        // Phase 24 Wave 2.5 — if the trade carries a zkML attestation,
+        // the attestation's embedded signer pubkey must equal the
+        // trade's provider. Tampered/swapped attestations are rejected
+        // here regardless of `proof_policy`.
+        signed.check_attestation_signer()?;
         if signed.trade.has_nonce() {
             let cache = self
                 .seen_nonces
@@ -2947,6 +2975,120 @@ mod tests {
         assert!(ledger.execute_signed_trade(&signed).is_ok());
         // v1 path must NOT populate the nonce cache.
         assert!(ledger.seen_nonces.is_empty());
+    }
+
+    // ---------------------------------------------------------------------
+    // Phase 24 Wave 2.5 — attestation signer enforcement on
+    // execute_signed_trade
+    // ---------------------------------------------------------------------
+
+    fn build_attested_trade(
+        attestation: Option<TradeAttestation>,
+    ) -> (SignedTradeRecord, ed25519_dalek::SigningKey) {
+        use ed25519_dalek::{Signer, SigningKey};
+        let mut rng = rand::thread_rng();
+        let provider_key = SigningKey::generate(&mut rng);
+        let consumer_key = SigningKey::generate(&mut rng);
+        let trade = TradeRecord {
+            provider: NodeId(provider_key.verifying_key().to_bytes()),
+            consumer: NodeId(consumer_key.verifying_key().to_bytes()),
+            trm_amount: 100,
+            tokens_processed: 10,
+            timestamp: now_millis(),
+            model_id: "wave25".to_string(),
+            flops_estimated: 0,
+            nonce: TradeRecord::fresh_nonce(),
+        };
+        let canonical = trade.canonical_bytes();
+        let signed = SignedTradeRecord {
+            trade,
+            provider_sig: provider_key.sign(&canonical).to_bytes().to_vec(),
+            consumer_sig: consumer_key.sign(&canonical).to_bytes().to_vec(),
+            attestation,
+        };
+        (signed, provider_key)
+    }
+
+    #[test]
+    fn check_attestation_signer_passes_when_attestation_is_none() {
+        let (signed, _) = build_attested_trade(None);
+        assert!(signed.check_attestation_signer().is_ok());
+    }
+
+    #[test]
+    fn check_attestation_signer_passes_when_signer_matches_provider() {
+        // Build an ed-attest attestation with the provider's own pubkey
+        // embedded — the only configuration honest providers should
+        // produce.
+        let (mut signed, provider_key) = build_attested_trade(None);
+        let mut bytes = vec![0u8; 96];
+        bytes[..32].copy_from_slice(&provider_key.verifying_key().to_bytes());
+        signed.attestation = Some(TradeAttestation::new("ed-attest".into(), bytes));
+        signed.check_attestation_signer().expect("signer match");
+    }
+
+    #[test]
+    fn check_attestation_signer_rejects_signer_mismatch() {
+        let (mut signed, _) = build_attested_trade(None);
+        let mut bytes = vec![0u8; 96];
+        // Pubkey segment is a different random value (not provider).
+        bytes[0] = 0xAB;
+        signed.attestation = Some(TradeAttestation::new("ed-attest".into(), bytes));
+        let err = signed.check_attestation_signer().unwrap_err();
+        assert!(matches!(err, SignatureError::AttestationSignerMismatch));
+    }
+
+    #[test]
+    fn check_attestation_signer_rejects_wrong_backend_name() {
+        let (mut signed, provider_key) = build_attested_trade(None);
+        // Even with the right pubkey, the wrong backend label means
+        // ed_attest_signer() returns None → reject.
+        let mut bytes = vec![0u8; 96];
+        bytes[..32].copy_from_slice(&provider_key.verifying_key().to_bytes());
+        signed.attestation = Some(TradeAttestation::new("mock".into(), bytes));
+        let err = signed.check_attestation_signer().unwrap_err();
+        assert!(matches!(err, SignatureError::AttestationSignerMismatch));
+    }
+
+    #[test]
+    fn check_attestation_signer_rejects_short_attestation_bytes() {
+        let (mut signed, _) = build_attested_trade(None);
+        signed.attestation = Some(TradeAttestation::new("ed-attest".into(), vec![0u8; 64]));
+        let err = signed.check_attestation_signer().unwrap_err();
+        assert!(matches!(err, SignatureError::AttestationSignerMismatch));
+    }
+
+    #[test]
+    fn execute_signed_trade_accepts_valid_attestation() {
+        let (mut signed, provider_key) = build_attested_trade(None);
+        let mut bytes = vec![0u8; 96];
+        bytes[..32].copy_from_slice(&provider_key.verifying_key().to_bytes());
+        signed.attestation = Some(TradeAttestation::new("ed-attest".into(), bytes));
+        let mut ledger = ComputeLedger::new();
+        assert!(ledger.execute_signed_trade(&signed).is_ok());
+    }
+
+    #[test]
+    fn execute_signed_trade_rejects_tampered_attestation() {
+        let (mut signed, _) = build_attested_trade(None);
+        let mut bytes = vec![0u8; 96];
+        bytes[0] = 0xCD; // wrong pubkey, not the provider
+        signed.attestation = Some(TradeAttestation::new("ed-attest".into(), bytes));
+        let mut ledger = ComputeLedger::new();
+        let err = ledger.execute_signed_trade(&signed).unwrap_err();
+        assert!(matches!(err, SignatureError::AttestationSignerMismatch));
+    }
+
+    #[test]
+    fn execute_signed_trade_no_attestation_path_is_unchanged() {
+        let (signed, _) = build_attested_trade(None);
+        let mut ledger = ComputeLedger::new();
+        assert!(ledger.execute_signed_trade(&signed).is_ok());
+        // Confirm the trade landed by inspecting balances.
+        assert_eq!(
+            ledger.get_balance(&signed.trade.provider).unwrap().contributed,
+            signed.trade.trm_amount
+        );
     }
 
     #[test]

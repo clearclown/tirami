@@ -8,7 +8,7 @@
 > forgeable" to "production-grade proof of inference" without a
 > single multi-week commit.
 
-Status: Wave 1 + Wave 2 (data-plane) shipped.
+Status: Wave 1 + Wave 2 + Wave 2.5 shipped.
 
 ## The trajectory
 
@@ -159,27 +159,56 @@ without yet wiring the producer/verifier into `handle_inference`
 - Tests: `tirami-zkml-bench` +9, `tirami-core` +6. Workspace
   passes 1,397 tests.
 
-### Wave 2.5 (next, bounded) — pipeline produce + verify
+### Wave 2.5 ✅ shipped — pipeline produce + signer enforcement
 
-The protocol now *carries* attestations but `pipeline.rs::handle_inference`
-does not yet *produce* them, and `TradeGossip` does not yet *verify*
-them. Wave 2.5 wires:
+Wave 2.5 wires the producer path and the lightweight receiver-side
+enforcement onto the data-plane Wave 2 added.
 
-- Provider side (`handle_inference`): when `config.zkml_backend ==
-  "ed-attest"` AND an `AgentIdentity` is loaded, construct a
-  `BenchSpec` over (model_id_hash, prompt_hash, output_hash,
-  total_tokens, flops_estimated), call
-  `EdAttestBackend::from_signing_key(agent_identity.signing_key())
-  .prove(spec)`, and attach the resulting `TradeAttestation` to
-  the `SignedTradeRecord` before `execute_signed_trade`.
-- Consumer/Gossip side: when receiving a `SignedTradeRecord` with
-  `attestation: Some(_)`, call `verify_trade_attestation(spec,
-  attestation, &trade.provider.0)`. Failure → reject the trade
-  (in `proof_policy = "required"` mode) or downgrade reputation
-  (in `recommended` mode).
+- ✅ `pipeline.rs::handle_inference` produces an ed-attest
+  attestation when `config.zkml_backend == "ed-attest"` AND an
+  `AgentIdentity` is loaded. Helpers:
+  - `build_bench_spec(prompt, output_tokens, model_id,
+    token_count, flops)` — pure function, deterministic SHA-256
+    digest construction.
+  - `produce_ed_attest_attestation(config, agent_identity, ...)`
+    — returns `Some(TradeAttestation)` for the happy path,
+    `None` when the backend is not `ed-attest`, no agent is
+    loaded, or `token_count == 0`.
+- ✅ `SignedTradeRecord::check_attestation_signer()` —
+  lightweight check that the attestation's embedded signer
+  pubkey (bytes[0..32]) equals `trade.provider`. Does NOT
+  cryptographically verify the underlying Ed25519 signature
+  yet — Wave 3 (full crypto) requires the wire format to carry
+  prompt/output hashes so the receiver can rebuild the BenchSpec.
+- ✅ `ComputeLedger::execute_signed_trade` enforces
+  `check_attestation_signer` BEFORE recording the trade.
+  Tampered or swapped attestations are rejected with
+  `SignatureError::AttestationSignerMismatch` regardless of
+  `proof_policy`.
 
-Wave 2.5 is bounded but touches the inference path so it ships as
-its own PR.
+#### Tests added
+
+`tirami-ledger` +8: `check_attestation_signer_*` (5) + execute path
+(3 — accepts valid, rejects tampered, no-attestation path
+unchanged). `tirami-node::pipeline` +8: `build_bench_spec_*` (2) +
+`produce_ed_attest_*` (6). Workspace passes **1,413** tests
+(Wave 1 1,380 → Wave 2 1,397 → Wave 2.5 1,413).
+
+### Wave 3 (next) — gossip wire + full crypto verify
+
+Wave 2.5 leaves two surfaces still TODO:
+
+1. **Gossip transport.** `TradeGossip` proto messages do not yet
+   carry `attestation`. Wave 3 widens the wire format (in a
+   serde-default-compatible way) so attestations propagate.
+2. **Full crypto verify.** Today the receiver only verifies
+   *signer ↔ provider* equality. Wave 3 carries `prompt_hash`,
+   `output_hash`, `model_hash`, `token_count`, `flops` along
+   with the trade so receivers can rebuild the BenchSpec and
+   call `verify_trade_attestation` for the actual signature
+   check. Alternatively (and preferably), pick a real zk
+   backend (`risc0` or `ezkl`) so the attestation itself proves
+   computation correctness, not just signer identity.
 
 ## Wave 3 — risc0 or ezkl integration
 

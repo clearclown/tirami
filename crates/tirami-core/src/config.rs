@@ -222,6 +222,14 @@ pub struct Config {
     /// can set this to `false` (CLI: `tirami start --no-agent`).
     #[serde(default = "default_personal_agent_enabled")]
     pub personal_agent_enabled: bool,
+
+    /// Phase 24 Wave 2 — which zkML backend to use when producing
+    /// proofs for trade attestation. Stored as a kebab-case string
+    /// (`"mock"`, `"ed-attest"`, `"ezkl"`, `"risc0"`, `"halo2"`) to
+    /// keep tirami-core free of a tirami-zkml-bench dependency.
+    /// Default `"mock"` matches `BenchBackendKind::default()`.
+    #[serde(default = "default_zkml_backend")]
+    pub zkml_backend: String,
 }
 
 /// Phase 21 Wave 2 — stake gate is **on by default** so that fresh
@@ -279,6 +287,10 @@ fn default_proof_policy() -> String {
 
 fn default_agent_tick_interval_secs() -> u64 {
     30
+}
+
+fn default_zkml_backend() -> String {
+    "mock".to_string()
 }
 
 fn default_personal_agent_enabled() -> bool {
@@ -399,6 +411,7 @@ impl Default for Config {
             proof_policy: "optional".to_string(),
             agent_tick_interval_secs: 30,
             personal_agent_enabled: true,
+            zkml_backend: "mock".to_string(),
         }
     }
 }

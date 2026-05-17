@@ -385,6 +385,58 @@ pub fn verify_ed_attest_proof_by_signer(
 }
 
 // ---------------------------------------------------------------------------
+// Phase 24 Wave 2 — TradeAttestation <-> BenchProof conversion
+// ---------------------------------------------------------------------------
+
+use tirami_ledger::ledger::TradeAttestation;
+
+impl From<BenchProof> for TradeAttestation {
+    fn from(p: BenchProof) -> Self {
+        TradeAttestation::new(p.backend, p.bytes)
+    }
+}
+
+impl From<&BenchProof> for TradeAttestation {
+    fn from(p: &BenchProof) -> Self {
+        TradeAttestation::new(p.backend.clone(), p.bytes.clone())
+    }
+}
+
+impl From<TradeAttestation> for BenchProof {
+    fn from(t: TradeAttestation) -> Self {
+        BenchProof { backend: t.backend, bytes: t.bytes }
+    }
+}
+
+impl From<&TradeAttestation> for BenchProof {
+    fn from(t: &TradeAttestation) -> Self {
+        BenchProof { backend: t.backend.clone(), bytes: t.bytes.clone() }
+    }
+}
+
+/// Verify a `TradeAttestation` attached to a `SignedTradeRecord`.
+/// Dispatches by `backend` name. For `ed-attest`, verifies the
+/// Ed25519 signature and enforces signer == `expected_signer`
+/// (typically the trade's `provider`).
+pub fn verify_trade_attestation(
+    spec: &BenchSpec,
+    attestation: &TradeAttestation,
+    expected_signer: &[u8; 32],
+) -> Result<(), BenchError> {
+    let proof: BenchProof = attestation.into();
+    match attestation.backend.as_str() {
+        EdAttestBackend::NAME => {
+            verify_ed_attest_proof_by_signer(spec, &proof, expected_signer)
+        }
+        MockBackend::NAME => MockBackend.verify(spec, &proof),
+        _ => Err(BenchError::VerifyFailed(format!(
+            "unknown attestation backend: {}",
+            attestation.backend
+        ))),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Phase 24 Wave 1 — Backend selector
 // ---------------------------------------------------------------------------
 
@@ -826,5 +878,144 @@ mod tests {
         assert_eq!(s, "\"ed-attest\"");
         let parsed: BenchBackendKind = serde_json::from_str("\"mock\"").unwrap();
         assert_eq!(parsed, BenchBackendKind::Mock);
+    }
+
+    // ---- Phase 24 Wave 2 — TradeAttestation conversion + verifier ----
+
+    #[test]
+    fn bench_proof_to_trade_attestation_round_trip() {
+        let backend = EdAttestBackend::generate();
+        let proof = backend.prove(&spec()).expect("prove");
+        let att: TradeAttestation = (&proof).into();
+        assert_eq!(att.backend, proof.backend);
+        assert_eq!(att.bytes, proof.bytes);
+        let back: BenchProof = (&att).into();
+        assert_eq!(back.backend, proof.backend);
+        assert_eq!(back.bytes, proof.bytes);
+    }
+
+    #[test]
+    fn trade_attestation_signer_extraction_matches_pubkey() {
+        let backend = EdAttestBackend::generate();
+        let proof = backend.prove(&spec()).expect("prove");
+        let att: TradeAttestation = proof.into();
+        let extracted = att.ed_attest_signer().expect("signer");
+        assert_eq!(extracted, backend.public_key_bytes());
+    }
+
+    #[test]
+    fn trade_attestation_signer_none_for_wrong_backend() {
+        let att = TradeAttestation::new("mock-sha256".into(), vec![0u8; 96]);
+        assert!(att.ed_attest_signer().is_none());
+    }
+
+    #[test]
+    fn trade_attestation_signer_none_for_wrong_length() {
+        let att = TradeAttestation::new("ed-attest".into(), vec![0u8; 95]);
+        assert!(att.ed_attest_signer().is_none());
+    }
+
+    #[test]
+    fn verify_trade_attestation_ed_attest_succeeds_for_correct_signer() {
+        let backend = EdAttestBackend::generate();
+        let s = spec();
+        let proof = backend.prove(&s).expect("prove");
+        let att: TradeAttestation = proof.into();
+        verify_trade_attestation(&s, &att, &backend.public_key_bytes())
+            .expect("must verify");
+    }
+
+    #[test]
+    fn verify_trade_attestation_rejects_signer_mismatch() {
+        let alice = EdAttestBackend::generate();
+        let bob = EdAttestBackend::generate();
+        let s = spec();
+        let proof = alice.prove(&s).expect("prove");
+        let att: TradeAttestation = proof.into();
+        let err = verify_trade_attestation(&s, &att, &bob.public_key_bytes());
+        assert!(matches!(err, Err(BenchError::VerifyFailed(_))));
+    }
+
+    #[test]
+    fn verify_trade_attestation_rejects_tampered_bytes() {
+        let backend = EdAttestBackend::generate();
+        let s = spec();
+        let proof = backend.prove(&s).expect("prove");
+        let mut att: TradeAttestation = proof.into();
+        // Flip a byte in the signature segment.
+        att.bytes[64] ^= 0xFF;
+        let err = verify_trade_attestation(&s, &att, &backend.public_key_bytes());
+        assert!(matches!(err, Err(BenchError::VerifyFailed(_))));
+    }
+
+    #[test]
+    fn verify_trade_attestation_dispatches_mock() {
+        let s = spec();
+        let proof = MockBackend.prove(&s).expect("mock prove");
+        let att: TradeAttestation = proof.into();
+        // expected_signer is ignored for mock; pass an arbitrary key.
+        verify_trade_attestation(&s, &att, &[0u8; 32])
+            .expect("mock attestation must verify");
+    }
+
+    #[test]
+    fn verify_trade_attestation_rejects_unknown_backend() {
+        let s = spec();
+        let att = TradeAttestation::new("zerokitten".into(), vec![0u8; 32]);
+        let err = verify_trade_attestation(&s, &att, &[0u8; 32]);
+        assert!(matches!(err, Err(BenchError::VerifyFailed(msg)) if msg.contains("unknown")));
+    }
+
+    #[test]
+    fn signed_trade_record_attestation_field_defaults_to_none() {
+        // Pre-Wave-2 snapshots (without the attestation field) must
+        // still deserialize cleanly via `#[serde(default)]`.
+        use tirami_core::NodeId;
+        use tirami_ledger::ledger::TradeRecord;
+        let trade = TradeRecord {
+            provider: NodeId([0u8; 32]),
+            consumer: NodeId([1u8; 32]),
+            trm_amount: 100,
+            tokens_processed: 10,
+            timestamp: 1_700_000_000_000,
+            model_id: "m".to_string(),
+            flops_estimated: 0,
+            nonce: [0u8; 16],
+        };
+        let legacy = serde_json::json!({
+            "trade": trade,
+            "provider_sig": vec![0u8; 64],
+            "consumer_sig": vec![0u8; 64],
+        });
+        let signed: tirami_ledger::ledger::SignedTradeRecord =
+            serde_json::from_value(legacy).expect("legacy snapshot must load");
+        assert!(signed.attestation.is_none());
+    }
+
+    #[test]
+    fn signed_trade_record_round_trips_with_attestation() {
+        use tirami_core::NodeId;
+        use tirami_ledger::ledger::{SignedTradeRecord, TradeAttestation, TradeRecord};
+        let backend = EdAttestBackend::generate();
+        let proof = backend.prove(&spec()).expect("prove");
+        let att: TradeAttestation = proof.into();
+        let signed = SignedTradeRecord {
+            trade: TradeRecord {
+                provider: NodeId([0u8; 32]),
+                consumer: NodeId([1u8; 32]),
+                trm_amount: 50,
+                tokens_processed: 5,
+                timestamp: 1_700_000_000_000,
+                model_id: "wave2".to_string(),
+                flops_estimated: 0,
+                nonce: [0u8; 16],
+            },
+            provider_sig: vec![0u8; 64],
+            consumer_sig: vec![0u8; 64],
+            attestation: Some(att.clone()),
+        };
+        let json = serde_json::to_string(&signed).expect("ser");
+        let de: SignedTradeRecord = serde_json::from_str(&json).expect("de");
+        assert_eq!(de.attestation, Some(att));
     }
 }

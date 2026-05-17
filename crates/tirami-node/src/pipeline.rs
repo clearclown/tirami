@@ -1066,6 +1066,7 @@ async fn handle_inference(
                 trade: trade.clone(),
                 provider_sig,
                 consumer_sig,
+            attestation: None,
             };
             // Phase 17 Wave 1.2 — route through execute_signed_trade so the
             // ledger re-verifies signatures AND enforces nonce dedup. The
@@ -1510,6 +1511,7 @@ mod resolve_outbound_trade_signing_tests {
             trade: trade.clone(),
             provider_sig: provider_sig.clone(),
             consumer_sig,
+            attestation: None,
         };
         signed.verify().expect("dual-signed verify");
     }

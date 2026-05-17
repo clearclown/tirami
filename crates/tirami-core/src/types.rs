@@ -17,6 +17,15 @@ pub const FEATURE_API_BEARER_AUTH: &str = "api:bearer-auth";
 pub const FEATURE_ZK_PROOF_OPTIONAL: &str = "zk:proof-optional";
 pub const FEATURE_ZK_PROOF_RECOMMENDED: &str = "zk:proof-recommended";
 pub const FEATURE_ZK_PROOF_REQUIRED: &str = "zk:proof-required";
+// Phase 24 Wave 2 — backend identifier ad in the protocol feature
+// vector. Agents read this to learn which zkML backend a peer's
+// attestations will be produced with (and thus which proof
+// strength they get).
+pub const FEATURE_ZKML_BACKEND_MOCK: &str = "zkml-backend:mock";
+pub const FEATURE_ZKML_BACKEND_ED_ATTEST: &str = "zkml-backend:ed-attest";
+pub const FEATURE_ZKML_BACKEND_EZKL: &str = "zkml-backend:ezkl";
+pub const FEATURE_ZKML_BACKEND_RISC0: &str = "zkml-backend:risc0";
+pub const FEATURE_ZKML_BACKEND_HALO2: &str = "zkml-backend:halo2";
 
 pub fn default_protocol_version() -> u16 {
     TIRAMI_PROTOCOL_VERSION
@@ -38,6 +47,18 @@ pub fn advertised_protocol_features(
     http_endpoint_advertised: bool,
     proof_policy: &str,
 ) -> Vec<String> {
+    advertised_protocol_features_with_backend(http_endpoint_advertised, proof_policy, "mock")
+}
+
+/// Phase 24 Wave 2 — extended feature advertisement including the
+/// node's configured `zkml_backend`. Older callers (without backend
+/// awareness) keep using `advertised_protocol_features` which
+/// defaults the backend to `"mock"`.
+pub fn advertised_protocol_features_with_backend(
+    http_endpoint_advertised: bool,
+    proof_policy: &str,
+    zkml_backend: &str,
+) -> Vec<String> {
     let mut features = base_protocol_features();
     if http_endpoint_advertised {
         features.push(FEATURE_PRICE_SIGNAL_HTTP_ENDPOINT.to_string());
@@ -46,6 +67,14 @@ pub fn advertised_protocol_features(
         "optional" => features.push(FEATURE_ZK_PROOF_OPTIONAL.to_string()),
         "recommended" => features.push(FEATURE_ZK_PROOF_RECOMMENDED.to_string()),
         "required" => features.push(FEATURE_ZK_PROOF_REQUIRED.to_string()),
+        _ => {}
+    }
+    match zkml_backend.trim().to_ascii_lowercase().as_str() {
+        "mock" => features.push(FEATURE_ZKML_BACKEND_MOCK.to_string()),
+        "ed-attest" => features.push(FEATURE_ZKML_BACKEND_ED_ATTEST.to_string()),
+        "ezkl" => features.push(FEATURE_ZKML_BACKEND_EZKL.to_string()),
+        "risc0" => features.push(FEATURE_ZKML_BACKEND_RISC0.to_string()),
+        "halo2" => features.push(FEATURE_ZKML_BACKEND_HALO2.to_string()),
         _ => {}
     }
     features.sort();
@@ -632,6 +661,58 @@ mod tests {
         assert!(features.contains(&super::FEATURE_LEDGER_MIRROR_SETTLEMENT.to_string()));
         assert!(features.contains(&super::FEATURE_PRICE_SIGNAL_HTTP_ENDPOINT.to_string()));
         assert!(features.contains(&super::FEATURE_ZK_PROOF_OPTIONAL.to_string()));
+    }
+
+    // Phase 24 Wave 2 — backend-aware advertisement.
+    #[test]
+    fn advertised_protocol_features_with_backend_emits_mock_default() {
+        let features = super::advertised_protocol_features_with_backend(false, "optional", "mock");
+        assert!(features.contains(&super::FEATURE_ZKML_BACKEND_MOCK.to_string()));
+        assert!(!features.contains(&super::FEATURE_ZKML_BACKEND_ED_ATTEST.to_string()));
+    }
+
+    #[test]
+    fn advertised_protocol_features_with_backend_emits_ed_attest() {
+        let features =
+            super::advertised_protocol_features_with_backend(false, "optional", "ed-attest");
+        assert!(features.contains(&super::FEATURE_ZKML_BACKEND_ED_ATTEST.to_string()));
+        assert!(!features.contains(&super::FEATURE_ZKML_BACKEND_MOCK.to_string()));
+    }
+
+    #[test]
+    fn advertised_protocol_features_with_backend_unknown_emits_no_backend_feature() {
+        let features =
+            super::advertised_protocol_features_with_backend(false, "optional", "moonshot");
+        // None of the known backend features show up for an unknown name.
+        assert!(!features.iter().any(|f| f.starts_with("zkml-backend:")));
+    }
+
+    #[test]
+    fn advertised_protocol_features_with_backend_normalizes_case() {
+        let features =
+            super::advertised_protocol_features_with_backend(false, "optional", "Ed-Attest");
+        assert!(features.contains(&super::FEATURE_ZKML_BACKEND_ED_ATTEST.to_string()));
+    }
+
+    #[test]
+    fn advertised_protocol_features_with_backend_sorted_and_deduped() {
+        let features =
+            super::advertised_protocol_features_with_backend(true, "required", "ed-attest");
+        let mut sorted = features.clone();
+        sorted.sort();
+        assert_eq!(features, sorted, "features must be sorted");
+        let mut seen = std::collections::HashSet::new();
+        for f in &features {
+            assert!(seen.insert(f.clone()), "duplicate feature {f}");
+        }
+    }
+
+    #[test]
+    fn old_advertised_protocol_features_defaults_backend_to_mock() {
+        // The thin shim preserves backward-compat by inserting the
+        // mock backend feature implicitly.
+        let features = super::advertised_protocol_features(false, "optional");
+        assert!(features.contains(&super::FEATURE_ZKML_BACKEND_MOCK.to_string()));
     }
 
     // ------------------------------------------------------------------

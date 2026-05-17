@@ -389,6 +389,7 @@ mod tests {
             trade,
             provider_sig: provider.sign(&canonical).to_bytes().to_vec(),
             consumer_sig: consumer.sign(&canonical).to_bytes().to_vec(),
+            attestation: None,
         }
     }
 

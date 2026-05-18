@@ -227,11 +227,13 @@ pub fn decode_bolt11(invoice_str: &str) -> Result<DecodedInvoice, LightningError
 
     let amount_msat = inv.amount_milli_satoshis();
     let payment_hash_hex = hex::encode(inv.payment_hash().as_ref() as &[u8]);
+    // ldk-node 0.7 — Bolt11InvoiceDescription was renamed to
+    // Bolt11InvoiceDescriptionRef and now borrows from `inv`.
     let description = match inv.description() {
-        ldk_node::lightning_invoice::Bolt11InvoiceDescription::Direct(d) => {
+        ldk_node::lightning_invoice::Bolt11InvoiceDescriptionRef::Direct(d) => {
             Some(d.to_string())
         }
-        ldk_node::lightning_invoice::Bolt11InvoiceDescription::Hash(_) => None,
+        ldk_node::lightning_invoice::Bolt11InvoiceDescriptionRef::Hash(_) => None,
     };
     let expires_at_secs = inv
         .timestamp()

@@ -110,10 +110,20 @@ impl ForgeWallet {
         description: &str,
         expiry_secs: u32,
     ) -> anyhow::Result<String> {
+        // ldk-node 0.7 — `receive(...)` now takes a typed
+        // Bolt11InvoiceDescription. Wrap the &str into a Direct
+        // variant (the legacy 0.4 behaviour).
+        use ldk_node::lightning_invoice::{
+            Bolt11InvoiceDescription, Description,
+        };
+        let desc = Bolt11InvoiceDescription::Direct(
+            Description::new(description.to_string())
+                .map_err(|e| anyhow::anyhow!("invoice description: {e}"))?,
+        );
         let invoice = self
             .node
             .bolt11_payment()
-            .receive(amount_msats, description, expiry_secs)?;
+            .receive(amount_msats, &desc, expiry_secs)?;
         Ok(invoice.to_string())
     }
 

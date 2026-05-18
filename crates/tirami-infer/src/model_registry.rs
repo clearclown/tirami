@@ -84,8 +84,31 @@ pub struct ResolvedModel {
 }
 
 /// Download (or find in cache) model files from HuggingFace.
+///
+/// Phase 25 #138 — `hf-hub`'s sync API (`hf_hub::api::sync`) is
+/// gated to the `ureq + native-tls` features, which require
+/// libssl-dev on Linux. We use the tokio async surface with
+/// rustls-tls and bridge sync→async via an isolated runtime on
+/// a worker thread. The worker-thread isolation avoids "cannot
+/// start a runtime from within a runtime" panics when the caller
+/// is already inside a tokio context (e.g. `tirami node` boot).
 pub fn resolve_model(spec: &ModelSpec) -> Result<ResolvedModel, TiramiError> {
-    use hf_hub::api::sync::ApiBuilder;
+    let spec = spec.clone();
+    std::thread::scope(|s| {
+        s.spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|e| TiramiError::ModelLoadError(format!("tokio rt: {e}")))?;
+            rt.block_on(resolve_model_async(&spec))
+        })
+        .join()
+        .unwrap_or_else(|_| Err(TiramiError::ModelLoadError("worker thread panicked".into())))
+    })
+}
+
+async fn resolve_model_async(spec: &ModelSpec) -> Result<ResolvedModel, TiramiError> {
+    use hf_hub::api::tokio::ApiBuilder;
 
     let api = ApiBuilder::new()
         .with_progress(true)
@@ -97,11 +120,13 @@ pub fn resolve_model(spec: &ModelSpec) -> Result<ResolvedModel, TiramiError> {
     let model_path = api
         .model(spec.gguf_repo.clone())
         .get(&spec.gguf_file)
+        .await
         .map_err(|e| TiramiError::ModelLoadError(format!("download GGUF: {e}")))?;
 
     let tokenizer_path = api
         .model(spec.tokenizer_repo.clone())
         .get(&spec.tokenizer_file)
+        .await
         .map_err(|e| TiramiError::ModelLoadError(format!("download tokenizer: {e}")))?;
 
     Ok(ResolvedModel {
@@ -291,7 +316,26 @@ fn download_hf_file(
     file: &str,
     _branch: &str,
 ) -> Result<(PathBuf, PathBuf), TiramiError> {
-    use hf_hub::api::sync::ApiBuilder;
+    let repo = repo.to_string();
+    let file = file.to_string();
+    std::thread::scope(|s| {
+        s.spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|e| TiramiError::ModelLoadError(format!("tokio rt: {e}")))?;
+            rt.block_on(download_hf_file_async(&repo, &file))
+        })
+        .join()
+        .unwrap_or_else(|_| Err(TiramiError::ModelLoadError("worker thread panicked".into())))
+    })
+}
+
+async fn download_hf_file_async(
+    repo: &str,
+    file: &str,
+) -> Result<(PathBuf, PathBuf), TiramiError> {
+    use hf_hub::api::tokio::ApiBuilder;
 
     let api = ApiBuilder::new()
         .with_progress(true)
@@ -301,10 +345,11 @@ fn download_hf_file(
     let model_repo = api.model(repo.to_string());
     let model_path = model_repo
         .get(file)
+        .await
         .map_err(|e| TiramiError::ModelLoadError(format!("download {repo}/{file}: {e}")))?;
 
     // Try tokenizer.json from the GGUF repo first.
-    let tokenizer_path = match model_repo.get("tokenizer.json") {
+    let tokenizer_path = match model_repo.get("tokenizer.json").await {
         Ok(p) => p,
         Err(_) => {
             // Fallback: derive the non-GGUF repo name (strip -GGUF suffix).
@@ -315,7 +360,7 @@ fn download_hf_file(
                 .to_string();
             if non_gguf_repo != repo {
                 let alt_repo = api.model(non_gguf_repo);
-                alt_repo.get("tokenizer.json").map_err(|e| {
+                alt_repo.get("tokenizer.json").await.map_err(|e| {
                     TiramiError::ModelLoadError(format!("download tokenizer: {e}"))
                 })?
             } else {

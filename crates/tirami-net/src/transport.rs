@@ -121,11 +121,15 @@ impl ForgeTransport {
         secret_key: Option<iroh::SecretKey>,
         bind_addr: Option<SocketAddr>,
     ) -> anyhow::Result<Self> {
-        let mdns = iroh::address_lookup::mdns::MdnsAddressLookup::builder();
-
+        // Phase 25 #137 — iroh 1.0 split mDNS into a separate crate
+        // (iroh-mdns-address-lookup). LAN-only mDNS discovery is
+        // dropped from the default transport since Tailscale tailnet
+        // already provides DNS-equivalent peer lookup in our
+        // production deploy topology. Local-LAN-only operators can
+        // re-enable mDNS via a future `mdns` feature flag bringing
+        // back iroh-mdns-address-lookup once it is 1.0-compatible.
         let mut builder = iroh::Endpoint::builder(presets::N0)
-            .alpns(vec![FORGE_ALPN.to_vec()])
-            .address_lookup(mdns);
+            .alpns(vec![FORGE_ALPN.to_vec()]);
         if let Some(secret_key) = secret_key {
             builder = builder.secret_key(secret_key);
         }
@@ -137,7 +141,7 @@ impl ForgeTransport {
 
         let endpoint_id = endpoint.id();
         tracing::info!("Forge node started: {}", endpoint_id.fmt_short());
-        tracing::info!("mDNS LAN discovery enabled");
+        tracing::info!("mDNS LAN discovery disabled (iroh 1.0 split into separate crate)");
         let addr = endpoint.addr();
         tracing::info!("Endpoint address: {:?}", addr);
 
@@ -201,8 +205,18 @@ impl ForgeTransport {
 
     /// Get the forge-core NodeId derived from the Iroh identity.
     pub fn tirami_node_id(&self) -> NodeId {
-        let bytes: [u8; 32] = *self.endpoint.id().as_bytes();
-        NodeId(bytes)
+        Self::node_id_from_endpoint_id(self.endpoint.id())
+    }
+
+    /// Derive a Tirami NodeId from an Iroh endpoint id.
+    pub fn node_id_from_endpoint_id(endpoint_id: iroh::EndpointId) -> NodeId {
+        NodeId(*endpoint_id.as_bytes())
+    }
+
+    /// Derive the stable Tirami NodeId that would be used by an endpoint
+    /// created with `secret_key`, without binding network sockets.
+    pub fn node_id_from_secret_key(secret_key: &iroh::SecretKey) -> NodeId {
+        Self::node_id_from_endpoint_id(secret_key.public())
     }
 
     /// Sign arbitrary bytes with this node's Ed25519 secret key.
@@ -579,16 +593,19 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn stable_secret_key_yields_stable_node_id() {
+    #[test]
+    fn stable_secret_key_yields_stable_node_id() {
         let secret_key = iroh::SecretKey::from_bytes(&[42u8; 32]);
         let expected = NodeId(*secret_key.public().as_bytes());
+        let same_secret_key = iroh::SecretKey::from_bytes(&[42u8; 32]);
 
-        let transport = ForgeTransport::new_with_secret_key(secret_key)
-            .await
-            .expect("transport");
-        assert_eq!(transport.tirami_node_id(), expected);
-
-        transport.close().await;
+        assert_eq!(
+            ForgeTransport::node_id_from_secret_key(&secret_key),
+            expected
+        );
+        assert_eq!(
+            ForgeTransport::node_id_from_secret_key(&secret_key),
+            ForgeTransport::node_id_from_secret_key(&same_secret_key)
+        );
     }
 }

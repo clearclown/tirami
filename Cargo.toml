@@ -108,7 +108,7 @@ tokenizers = { version = "0.21", default-features = false, features = ["onig"] }
 hf-hub = { version = "0.4", default-features = false, features = ["tokio", "rustls-tls"] }
 
 # Networking (Iroh)
-iroh = { version = "0.97", features = ["address-lookup-mdns"] }
+iroh = "1.0.0-rc.0"
 
 # HTTP (for single-node API)
 axum = "0.8"

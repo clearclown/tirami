@@ -101,7 +101,11 @@ llama-cpp-2 = "0.1"
 
 # Tokenization
 tokenizers = { version = "0.21", default-features = false, features = ["onig"] }
-hf-hub = "0.4"
+# Phase 25 #138 — drop the default `ureq + native-tls` path so
+# Linux hosts without `libssl-dev` (e.g. immutable container, no
+# passwordless sudo) can build. We use the tokio async surface +
+# rustls TLS and block_on at the (sync) caller boundary.
+hf-hub = { version = "0.4", default-features = false, features = ["tokio", "rustls-tls"] }
 
 # Networking (Iroh)
 iroh = { version = "0.97", features = ["address-lookup-mdns"] }

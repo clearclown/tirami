@@ -8,7 +8,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-brightgreen.svg)](LICENSE)
 [![Tests](https://img.shields.io/badge/tests-targeted_pass-brightgreen)]()
 [![verify-impl](https://img.shields.io/badge/verify--impl-123%2F123_GREEN-brightgreen)]()
-[![foundry test](https://img.shields.io/badge/foundry_test-15%2F15_GREEN-brightgreen)]()
+[![foundry test](https://img.shields.io/badge/foundry_test-20%2F20_GREEN-brightgreen)]()
 [![Phase](https://img.shields.io/badge/phase-19_hardened-blue)]()
 [![Mainnet](https://img.shields.io/badge/mainnet-audit_gated-orange)]()
 
@@ -20,13 +20,13 @@
 
 **Tirami is a distributed inference protocol where compute is money.** Nodes earn TRM (Tirami Resource Merit) by performing useful LLM inference for others. Unlike Bitcoin — where electricity is burned on meaningless hashes — every joule spent on a Tirami node produces real intelligence that someone actually needs.
 
-The distributed inference engine is built on [mesh-llm](https://github.com/michaelneale/mesh-llm) by Michael Neale. Tirami adds a compute economy on top: TRM accounting, Proof of Useful Work, dynamic pricing, autonomous agent budgets, and fail-safe controls. See [CREDITS.md](CREDITS.md).
+The inference foundation comes from [mesh-llm](https://github.com/Mesh-LLM/mesh-llm), originally by Michael Neale and now maintained under the Mesh-LLM organization. Tirami adds a compute economy on top: TRM accounting, Proof of Useful Work, dynamic pricing, autonomous agent budgets, and fail-safe controls. See [CREDITS.md](CREDITS.md).
 
-**Integrated fork:** [forge-mesh](https://github.com/nm-arealnormalman/mesh-llm) — mesh-llm with Tirami economic layer built in.
+**Tirami fork:** [forge-mesh](https://github.com/nm-arealnormalman/mesh-llm) is the historical mesh-llm fork with the Tirami economic layer ported into the mesh-llm layout. The current recommended entry point for Tirami protocol work is this `clearclown/tirami` workspace; use upstream Mesh-LLM when you specifically want the latest distributed local-LLM runtime.
 
 ---
 
-## ⚠️ Status Honesty (2026-04-27 / Phase 19)
+## ⚠️ Status Honesty (2026-05-04 / Phase 19 hardening)
 
 Before anything else, here is exactly what works and what does not. Tirami is MIT-licensed open-source software, **not a token sale**. No ICO, no pre-mine, no team treasury, no airdrop. TRM is compute accounting (1 TRM = 10⁹ FLOP), not a financial product — see [`SECURITY.md § Secondary Markets`](SECURITY.md#secondary-markets--third-party-tokenization).
 
@@ -51,16 +51,21 @@ Before anything else, here is exactly what works and what does not. Tirami is MI
   ledger / PersonalAgent state is persisted after economic events.
 - Public testnet bootstrap joins via `--bootstrap-peer` /
   `TIRAMI_BOOTSTRAP_PEERS`, with public HTTP binds requiring an API token.
+- `tirami worker --daemon` now runs a background P2P inbound loop so it
+  ingests gossip continuously and routes request-scoped inference
+  responses back to the waiting HTTP request.
 - PersonalAgent auto-configured on `tirami start` (Phase 18.5-pt3e), with tick-loop observability.
 - Prometheus `/metrics` endpoint using the `tirami_*` prefix.
-- Base Sepolia/mainnet deploy `Makefile` targets — sepolia is free to run, mainnet is gated (see below).
+- `TiramiBridge` batch anchoring is validator-gated, PoUW minting
+  verifies Merkle proofs against stored batch roots, and duplicate mint
+  claims are rejected.
+- Base Sepolia/mainnet deploy `Makefile` targets — sepolia is free to run, mainnet is audit-gated (see below).
 
 ### 🟡 Scaffolded (spec + types exist; production wiring pending)
 
 - zkML proof-of-inference: `tirami-zkml-bench` has a `MockBackend` only. Real `ezkl` / `risc0` backends land in Phase 20+. Default `ProofPolicy = Optional` (Phase 19) — proofs are accepted and rewarded when supplied, but trades without proofs are still valid during the rollout.
 - ML-DSA (Dilithium) post-quantum hybrid signatures: struct + verify path exist, `Config::pq_signatures = false` by default (blocked on iroh 0.97 dep chain).
 - TEE attestation (Apple Secure Enclave / NVIDIA H100 CC): `tirami-attestation` scaffold only.
-- Daemon-mode worker gossip-recv loop ([issue #88](https://github.com/clearclown/tirami/issues/88)): full `tirami start` nodes receive and ingest gossip today; `worker --daemon` still needs the recv loop.
 
 ### ❌ Not done
 
@@ -310,6 +315,79 @@ scheduler's decisions feed back into reputation, which feeds back into future
 scheduling. Price discovery, capacity balancing, trust all emerge from this
 single loop.
 
+## How the mesh forms
+
+Tirami is a **node-level protocol** — every participant runs the same binary and joins a single mesh via iroh QUIC + Noise. One node holds the model and serves inference (the *seed*); the rest consume inference and pay in TRM (the *workers*). All trades are dual-signed Ed25519 records and gossip to every connected peer, building an eventually-consistent ledger.
+
+```mermaid
+graph TD
+    subgraph Mesh["Tirami mesh (iroh P2P, dual-signed trades, gossiped ledger)"]
+        S(("Seed<br/>model + provider"))
+        W1["Worker<br/>consumer"]
+        W2["Worker<br/>consumer"]
+        W3["Worker<br/>consumer"]
+        W4["Worker<br/>consumer"]
+    end
+
+    A1["AI agent"] -->|chat / TRM spend| W1
+    A2["AI agent"] -->|chat / TRM spend| W2
+    H["Human / CLI"] -->|chat| W3
+
+    W1 <-->|P2P inference + signed TRM trade| S
+    W2 <-->|P2P inference + signed TRM trade| S
+    W3 <-->|P2P inference + signed TRM trade| S
+    W4 <-->|P2P inference + signed TRM trade| S
+
+    W1 -. gossip .- W2
+    W1 -. gossip .- W3
+    W2 -. gossip .- W4
+    S -. gossip .- W4
+```
+
+Each round-trip carries:
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Agent as AI agent / CLI
+    participant W as Worker node
+    participant S as Seed node (holds model)
+    participant Peers as Other nodes (gossip)
+
+    Agent->>W: POST /v1/chat/completions
+    W->>S: P2P InferenceRequest (over iroh QUIC + Noise)
+    S->>S: llama.cpp generate(prompt, tokens)
+    S->>W: TradeProposal (provider signs canonical bytes)
+    W->>S: TradeAccept (consumer counter-signs)
+    S->>W: Stream tokens back
+    par Append to local ledger
+        S->>S: execute_signed_trade (nonce dedup, attestation check)
+        W->>W: execute_signed_trade
+    and Gossip to mesh
+        S->>Peers: TradeGossip (Ed25519 dual-sig + optional zkML attestation)
+        Peers->>Peers: verify dual-sig, dedup nonce, update ledger
+    end
+    W-->>Agent: chat.completion with x_tirami.trm_cost
+```
+
+Per-node state lives in `~/.tirami/`:
+
+```mermaid
+graph LR
+    subgraph "One node (seed or worker)"
+        K[node.key<br/>Ed25519 keypair, 0600]
+        L[ledger.json<br/>HMAC-SHA256 persistence]
+        AID[agent_identity bundle<br/>Argon2id + XChaCha20]
+        K --> S2[Seed / Worker<br/>process]
+        L --> S2
+        AID --> S2
+        S2 -->|/metrics| P((Prometheus))
+        S2 -->|/healthz, /readyz| K8s((K8s probes))
+    end
+```
+
+The seed restart-survives a full process kill: the Ed25519 keypair is persistent, so the seed re-enters the mesh with the same public key, and other nodes' ledgers continue verifying gossiped trades without re-handshaking trust.
+
 ## Architecture
 
 ```
@@ -336,23 +414,23 @@ single loop.
 │  Prometheus, FLOP measurement, audit tiers,     │
 │  gossip PriceSignal, on-chain anchor loop       │
 ├─────────────────────────────────────────────────┤
-│  L0: Inference (forge-mesh / mesh-llm) ✅       │
-│  Pipeline parallelism, MoE sharding, iroh mesh, │
-│  Nostr discovery, MLX/llama.cpp                 │
+│  L0: Inference (Tirami + Mesh-LLM upstream) 🟡  │
+│  Tirami: local GGUF, P2P forwarding, pipeline   │
+│  protocol; Mesh-LLM upstream: full mesh runtime │
 └─────────────────────────────────────────────────┘
                                  │
          ┌───────────────────────┘
          │  periodic 10-min batches (Phase 16)
          ▼
 ┌─────────────────────────────────────────────────┐
-│  On-chain: tirami-contracts (Base L2, skeleton) │
+│  On-chain: tirami-contracts (Base L2, audit-gated) │
 │  TRM ERC-20 (21B cap) + TiramiBridge            │
-│  storeBatch / mintForProvider / withdraw        │
+│  validator storeBatch / proofed mint / withdraw │
 │  Not deployed yet — in-memory MockChainClient   │
 └─────────────────────────────────────────────────┘
 
-All 5 layers are Rust across 16 workspace crates. **1 192 tests passing
-+ 15 Solidity tests.** 123/123 verify-impl GREEN. Phase 17 shipped 24
+All 5 layers are Rust across 16 workspace crates. **1 195 tests passing
++ 20 Solidity tests.** 123/123 verify-impl GREEN. Phase 17 shipped 24
 security primitives across 4 waves for public-network readiness; Phase
 18-19 layered on Constitutional parameters, stake-required mining, the
 zkML `ProofPolicy` ratchet, peer HTTP auto-discovery, and a gated
@@ -579,22 +657,23 @@ tirami/  (this repo — all 5 layers, 16 Rust crates)
 │   ├── tirami-zkml-bench/   # zkML benchmark harness (MockBackend + ezkl/risc0/halo2 stubs, Phase 18.3)
 │   └── tirami-attestation/  # TEE attestation scaffold (Apple SE / NVIDIA H100 CC, Phase 17 Wave 3.1)
 ├── repos/tirami-contracts/  # Foundry workspace for TRM ERC-20 + TiramiBridge
-│   ├── src/                 # 15 passing Solidity tests
+│   ├── src/                 # 20 passing Solidity tests
 │   └── Makefile             # Base Sepolia deploy + gated mainnet (AUDIT_CLEARANCE interlock)
 ├── scripts/verify-impl.sh   # TDD conformance (123 assertions)
 └── docs/                    # Specs, whitepaper, threat model, roadmap, release-readiness
 ```
 
-~25,000 lines of Rust. **1 192 tests passing** + 15 Solidity tests. Phase 1-19 complete.
+~25,000 lines of Rust. **1 195 tests passing** + 20 Solidity tests. Phase 1-19 hardening complete.
 
 ## Ecosystem
 
 | Repo | Layer | Tests | Status |
 |------|-------|-------|--------|
-| [clearclown/tirami](https://github.com/clearclown/tirami) (this) | L1-L4 | 1 192 | Phase 1-19 ✅ |
+| [clearclown/tirami](https://github.com/clearclown/tirami) (this) | L1-L4 | 1 195 | Phase 1-19 hardening ✅ |
 | [clearclown/tirami-economics](https://github.com/clearclown/tirami-economics) | Theory | 16/16 verify-audit GREEN | Spec §1-§25, chapters §1-§18, papers PDF + arXiv tarball |
-| [repos/tirami-contracts](https://github.com/clearclown/tirami/tree/main/repos/tirami-contracts) (in-tree) | On-chain | 15 forge tests | TRM ERC-20 + TiramiBridge, mainnet deploy gated (see `Makefile`) |
-| [nm-arealnormalman/mesh-llm](https://github.com/nm-arealnormalman/mesh-llm) | L0 Inference | 646 | forge-economy port ✅ |
+| [repos/tirami-contracts](https://github.com/clearclown/tirami/tree/main/repos/tirami-contracts) (in-tree) | On-chain | 20 forge tests | TRM ERC-20 + TiramiBridge, validator-gated Merkle mint, mainnet deploy gated (see `Makefile`) |
+| [Mesh-LLM/mesh-llm](https://github.com/Mesh-LLM/mesh-llm) | L0 upstream | external | Active distributed local-LLM runtime: public/private meshes, OpenAI-compatible API, pipeline split, MoE expert sharding |
+| [nm-arealnormalman/mesh-llm](https://github.com/nm-arealnormalman/mesh-llm) | L0 Tirami fork | historical fork | Tirami economic-layer port; not the canonical launch repo today |
 | clearclown/tirami-bank | L2 Finance | archived | Superseded by `crates/tirami-bank/` |
 | clearclown/tirami-mind | L3 Intelligence | archived | Superseded by `crates/tirami-mind/` |
 | clearclown/tirami-agora | L4 Discovery | archived | Superseded by `crates/tirami-agora/` |
@@ -661,4 +740,4 @@ Full text of the disclaimer is in
 
 ## Acknowledgements
 
-Tirami's distributed inference is built on [mesh-llm](https://github.com/michaelneale/mesh-llm) by Michael Neale. See [CREDITS.md](CREDITS.md).
+Tirami's inference foundation comes from [mesh-llm](https://github.com/Mesh-LLM/mesh-llm), originally by Michael Neale. See [CREDITS.md](CREDITS.md).

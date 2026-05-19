@@ -25,7 +25,10 @@ pub struct TiramiNode {
     /// and trades from endpoint handlers) and the pipeline coordinator (to
     /// broadcast trades completed during inference). Must be a single
     /// instance so dedup across both paths is coherent.
-    gossip: Arc<Mutex<GossipState>>,
+    /// Phase 25 #88 — shared gossip state. Made `pub` so the
+    /// worker daemon entry point can spawn its own gossip recv
+    /// loop alongside the pipeline coordinator's loop.
+    pub gossip: Arc<Mutex<GossipState>>,
     /// forge-bank L2 services (persisted via bank_state_path).
     pub bank: Arc<Mutex<crate::bank_adapter::BankServices>>,
     /// forge-agora L4 marketplace (persisted via marketplace_state_path).

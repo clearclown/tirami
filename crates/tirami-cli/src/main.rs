@@ -728,6 +728,12 @@ async fn main() -> anyhow::Result<()> {
 
             if daemon {
                 tracing::info!("Worker running in daemon mode (Ctrl-C to stop)");
+                // Issue #143 — worker also self-registers + drives
+                // the 30 s PriceSignal broadcast loop so seeds (and
+                // other workers) populate this worker in their
+                // peer_registry, and vice versa.
+                node.self_register_price_signal().await;
+                node.spawn_price_signal_loop(transport.clone());
                 // Issue #88 — worker daemon mode previously parked
                 // forever without consuming transport.recv(), so
                 // gossip messages (TradeGossip, PriceSignalMsg,

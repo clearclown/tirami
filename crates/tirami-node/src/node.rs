@@ -623,7 +623,10 @@ impl TiramiNode {
 
     /// Immediately register our own PriceSignal into the PeerRegistry so
     /// select_provider (Phase 14.2) can find us before the first gossip tick.
-    async fn self_register_price_signal(&self) {
+    /// Phase 25 #143 — exposed so worker mode can self-register
+    /// alongside the seed. Without this, workers never appear in
+    /// any peer's PriceSignal-driven peer_registry.
+    pub async fn self_register_price_signal(&self) {
         let Some(transport) = self.transport.as_ref() else {
             return;
         };
@@ -986,7 +989,10 @@ impl TiramiNode {
         });
     }
 
-    fn spawn_price_signal_loop(&self, transport: Arc<ForgeTransport>) {
+    /// Phase 25 #143 — exposed so worker mode can drive the
+    /// 30 s broadcast loop too. Two-way PriceSignal gossip means
+    /// every node's peer_registry reflects every other node.
+    pub fn spawn_price_signal_loop(&self, transport: Arc<ForgeTransport>) {
         let ledger = self.ledger.clone();
         let gossip = self.gossip.clone();
         let model_manifest = self.model_manifest.clone();

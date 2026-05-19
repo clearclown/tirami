@@ -728,7 +728,66 @@ async fn main() -> anyhow::Result<()> {
 
             if daemon {
                 tracing::info!("Worker running in daemon mode (Ctrl-C to stop)");
-                // Block forever — the HTTP API runs in the background
+                // Issue #88 — worker daemon mode previously parked
+                // forever without consuming transport.recv(), so
+                // gossip messages (TradeGossip, PriceSignalMsg,
+                // ReputationObservation) were silently dropped. The
+                // recv loop below ingests them into the local ledger
+                // so /v1/tirami/peers populates from PriceSignal
+                // broadcasts and /v1/tirami/network reflects mesh
+                // trade gossip even on worker-only nodes.
+                let recv_transport = transport.clone();
+                let recv_ledger = node.ledger.clone();
+                let recv_gossip = node.gossip.clone();
+                tokio::spawn(async move {
+                    use tirami_net::gossip::{
+                        handle_reputation_gossip, handle_trade_gossip,
+                    };
+                    use tirami_proto::Payload;
+                    tracing::info!("Worker gossip recv loop started (issue #88)");
+                    while let Some((from, envelope)) = recv_transport.recv().await {
+                        match envelope.payload {
+                            Payload::TradeGossip(msg) => {
+                                if let Some(signed) =
+                                    handle_trade_gossip(&recv_gossip, &msg).await
+                                {
+                                    let mut ledger = recv_ledger.lock().await;
+                                    match ledger.execute_signed_trade(&signed) {
+                                        Ok(()) => tracing::debug!(
+                                            "Gossip trade recorded from {}: {} CU",
+                                            from, signed.trade.trm_amount,
+                                        ),
+                                        Err(e) => tracing::debug!(
+                                            "Gossip trade rejected: {e}",
+                                        ),
+                                    }
+                                }
+                            }
+                            Payload::PriceSignalGossip(signal) => {
+                                let mut ledger = recv_ledger.lock().await;
+                                ledger.peer_registry.ingest_price_signal(&signal);
+                            }
+                            Payload::ReputationGossip(obs) => {
+                                handle_reputation_gossip(
+                                    obs,
+                                    &recv_ledger,
+                                    &recv_gossip,
+                                    None,
+                                )
+                                .await;
+                            }
+                            _ => {
+                                // Intentional: TradeProposal / TradeAccept /
+                                // InferenceRequest are driven by the worker's
+                                // own request_inference inner loop. Other
+                                // payloads are seed-side concerns.
+                            }
+                        }
+                    }
+                    tracing::warn!("Worker gossip recv loop exited");
+                });
+
+                // Block forever — the HTTP API + gossip loop run in the background
                 std::future::pending::<()>().await;
             } else {
                 // Interactive worker chat

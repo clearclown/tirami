@@ -23,6 +23,8 @@ tirami-infer = { workspace = true }
 tirami-lightning = { workspace = true }
 tirami-node = { workspace = true }
 tirami-ledger = { workspace = true }
+tirami-net = { workspace = true }
+tirami-proto = { workspace = true }
 iroh = { workspace = true }
 tokio = { workspace = true }
 clap = { workspace = true }

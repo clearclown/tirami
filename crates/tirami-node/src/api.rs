@@ -347,12 +347,21 @@ pub fn create_router_with_services(
         .route("/v1/tirami/loans", get(forge_loans))
         // Forge routing (Phase 6 / Issue #38)
         .route("/v1/tirami/route", get(forge_route))
-        // AgentNet — social network for AI agents
+        // AgentNet — social network for AI agents.
+        //
+        // Issue #42 (Phase 25) — the legacy /v1/agentnet/* surface
+        // pre-dates the forge-agora design. The functional successor
+        // is /v1/tirami/agora/* (capability match, reputation from
+        // dual-signed trades, NIP-90 publishing, A2A Agent Card).
+        // We keep the endpoints alive for backward compatibility
+        // and attach RFC 8594 Deprecation + Sunset headers via
+        // `agentnet_deprecation_layer` so clients can migrate.
         .route("/v1/agentnet/feed", get(agentnet_feed))
         .route("/v1/agentnet/post", post(agentnet_post))
         .route("/v1/agentnet/profile", post(agentnet_upsert_profile))
         .route("/v1/agentnet/discover", get(agentnet_discover))
         .route("/v1/agentnet/leaderboard", get(agentnet_leaderboard))
+        .route_layer(middleware::from_fn(agentnet_deprecation_layer))
         // forge-bank L2 routes (Phase 8 / Batch B1)
         .route(
             "/v1/tirami/bank/portfolio",
@@ -1393,6 +1402,63 @@ async fn health(State(state): State<AppState>) -> Json<HealthResponse> {
         status: "ok".to_string(),
         model_loaded: engine.is_loaded(),
     })
+}
+
+/// Phase 25 #42 — stamp RFC 8594 deprecation + sunset headers on
+/// every legacy `/v1/agentnet/*` response, plus a `Link` header
+/// pointing the client at the forge-agora successor endpoint.
+///
+/// Mapping:
+///   /v1/agentnet/feed        → /v1/tirami/agora/agents (list)
+///   /v1/agentnet/post        → /v1/tirami/agora/register
+///   /v1/agentnet/profile     → /v1/tirami/agora/register
+///   /v1/agentnet/discover    → /v1/tirami/agora/find
+///   /v1/agentnet/leaderboard → /v1/tirami/agora/stats
+///
+/// Other forge-agora features beyond the old surface
+/// (NIP-90 publishing, A2A Agent Cards, capability ranking,
+/// reputation aggregated from dual-signed trades) are available at
+/// `/v1/tirami/agora/nostr/*`, `/v1/tirami/agora/reputation/{hex}`,
+/// and `/v1/tirami/agora/find`.
+async fn agentnet_deprecation_layer(
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    let path = request.uri().path().to_string();
+    let successor = match path.as_str() {
+        "/v1/agentnet/feed" => "/v1/tirami/agora/agents",
+        "/v1/agentnet/post" => "/v1/tirami/agora/register",
+        "/v1/agentnet/profile" => "/v1/tirami/agora/register",
+        "/v1/agentnet/discover" => "/v1/tirami/agora/find",
+        "/v1/agentnet/leaderboard" => "/v1/tirami/agora/stats",
+        _ => return next.run(request).await,
+    };
+    let mut response = next.run(request).await;
+    let headers = response.headers_mut();
+    // RFC 8594 / draft-ietf-httpapi-deprecation-header.
+    headers.insert(
+        axum::http::HeaderName::from_static("deprecation"),
+        axum::http::HeaderValue::from_static("true"),
+    );
+    // Suggested sunset 6 months after Phase 25 ship (operators can
+    // plan migration). Static string; clients use it as a guide,
+    // not a hard cliff.
+    headers.insert(
+        axum::http::HeaderName::from_static("sunset"),
+        axum::http::HeaderValue::from_static("Sat, 21 Nov 2026 00:00:00 GMT"),
+    );
+    if let Ok(link_value) =
+        axum::http::HeaderValue::from_str(&format!("<{successor}>; rel=\"successor-version\""))
+    {
+        headers.insert(axum::http::header::LINK, link_value);
+    }
+    headers.insert(
+        axum::http::HeaderName::from_static("x-tirami-deprecation"),
+        axum::http::HeaderValue::from_static(
+            "agentnet endpoints superseded by /v1/tirami/agora/* - see issue #42",
+        ),
+    );
+    response
 }
 
 /// Phase 25 A8 — request-trace id middleware.
@@ -5024,6 +5090,112 @@ mod tests {
             .get("x-tirami-request-id")
             .and_then(|v| v.to_str().ok())
             .is_some_and(|v| !v.is_empty()));
+    }
+
+    // -----------------------------------------------------------------
+    // Phase 25 #42 — legacy /v1/agentnet/* deprecation headers
+    // -----------------------------------------------------------------
+
+    #[tokio::test]
+    async fn agentnet_feed_carries_deprecation_headers() {
+        let app = test_router(Config::default());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/v1/agentnet/feed")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        // Body succeeds (200) — we don't want to break existing clients.
+        assert_eq!(resp.status(), StatusCode::OK);
+        // RFC 8594 Deprecation: true.
+        assert_eq!(
+            resp.headers().get("deprecation").and_then(|v| v.to_str().ok()),
+            Some("true"),
+        );
+        // Sunset header set.
+        assert!(resp.headers().get("sunset").is_some());
+        // Link: successor-version → /v1/tirami/agora/agents.
+        let link = resp.headers().get("link").and_then(|v| v.to_str().ok()).unwrap();
+        assert!(link.contains("/v1/tirami/agora/agents"));
+        assert!(link.contains("rel=\"successor-version\""));
+    }
+
+    #[tokio::test]
+    async fn agentnet_discover_maps_to_agora_find() {
+        let app = test_router(Config::default());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/v1/agentnet/discover")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        let link = resp.headers().get("link").and_then(|v| v.to_str().ok()).unwrap();
+        assert!(link.contains("/v1/tirami/agora/find"), "got {link}");
+    }
+
+    #[tokio::test]
+    async fn agentnet_leaderboard_maps_to_agora_stats() {
+        let app = test_router(Config::default());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/v1/agentnet/leaderboard")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        let link = resp.headers().get("link").and_then(|v| v.to_str().ok()).unwrap();
+        assert!(link.contains("/v1/tirami/agora/stats"), "got {link}");
+    }
+
+    #[tokio::test]
+    async fn agora_endpoints_have_no_deprecation_header() {
+        // Successor endpoints must NOT carry Deprecation: true.
+        let app = test_router(Config::default());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/v1/tirami/agora/agents")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert!(resp.headers().get("deprecation").is_none());
+    }
+
+    #[tokio::test]
+    async fn agentnet_x_tirami_deprecation_pointer_present() {
+        // Custom header gives human-readable migration pointer.
+        let app = test_router(Config::default());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/v1/agentnet/feed")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        let pointer = resp
+            .headers()
+            .get("x-tirami-deprecation")
+            .and_then(|v| v.to_str().ok())
+            .unwrap();
+        assert!(pointer.contains("issue #42"), "got {pointer}");
+        assert!(pointer.contains("/v1/tirami/agora/"));
     }
 
     // -----------------------------------------------------------------

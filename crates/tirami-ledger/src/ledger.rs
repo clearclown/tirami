@@ -1418,6 +1418,15 @@ impl ComputeLedger {
     /// we treat the collusion signals as noise and do not touch the stake.
     pub const SLASH_PENALTY_THRESHOLD: f64 = 0.1;
 
+    /// Issue #154 — minimum number of distinct providers in the
+    /// trade log before collusion-based slashing is allowed to fire.
+    /// Below this threshold the collusion detector's signals
+    /// ("tight cluster / volume spike / round-robin") are an
+    /// artefact of a small mesh's topology, not of malicious
+    /// behaviour. Operators with at least this many providers in
+    /// the recent trade window get the protection back automatically.
+    pub const COLLUSION_PROVIDER_DIVERSITY_MIN: usize = 4;
+
     /// Append one entry to the persistent slash audit trail. Callers MUST
     /// have already burned the stake via [`crate::StakingPool::apply_slash`]
     /// — this method does not transfer or burn TRM itself.
@@ -1583,6 +1592,22 @@ impl ComputeLedger {
         now_ms: u64,
         max_slashes_per_tick: u32,
     ) -> Vec<SlashEvent> {
+        // Issue #154 — collusion-FP guard. The collusion detector's
+        // "tight cluster / volume spike / round-robin" heuristics
+        // all degenerate into the same signal in a small mesh where
+        // one provider is the only realistic counterparty: by
+        // topological necessity every trade involves the same N-tuple.
+        // Skip the entire collusion-based slashing pass when the
+        // ledger has fewer than `COLLUSION_PROVIDER_DIVERSITY_MIN`
+        // distinct providers in the trade log. Operators expanding
+        // the mesh past the threshold get the protection back on
+        // the next slashing tick.
+        let distinct_providers: std::collections::HashSet<&NodeId> =
+            self.trade_log.iter().map(|t| &t.provider).collect();
+        if distinct_providers.len() < Self::COLLUSION_PROVIDER_DIVERSITY_MIN {
+            return Vec::new();
+        }
+
         let candidates: Vec<NodeId> = {
             let mut seen: std::collections::HashSet<NodeId> =
                 self.balances.keys().cloned().collect();
@@ -1603,6 +1628,17 @@ impl ComputeLedger {
             .map(|e| e.node_id.clone())
             .collect();
 
+        // Issue #154 follow-up — once a node has been slashed
+        // *ever*, the Constitution marks it as `PreviouslySlashed`
+        // (permanent ban). Further slashes serve no protective
+        // purpose — they only drain the locked stake of an
+        // already-banned identity. Skip them.
+        let already_banned: std::collections::HashSet<NodeId> = self
+            .slash_events
+            .iter()
+            .map(|e| e.node_id.clone())
+            .collect();
+
         let mut new_events = Vec::new();
         for node_id in candidates {
             if (new_events.len() as u32) >= max_slashes_per_tick {
@@ -1613,6 +1649,11 @@ impl ComputeLedger {
                 break;
             }
             if recently_slashed.contains(&node_id) {
+                continue;
+            }
+            if already_banned.contains(&node_id) {
+                // Issue #154 follow-up — already permanently banned;
+                // no marginal protection from further drain.
                 continue;
             }
             let report = crate::collusion::CollusionDetector::analyze_node(
@@ -3391,6 +3432,16 @@ mod tests {
         // Inject a tight-cluster pattern: 20 trades with a single peer in
         // the recent window. This should trip the collusion detector.
         inject_tight_cluster(&mut ledger, subject.clone(), counterparty, 20, now);
+        // Issue #154 — diversify the trade log past
+        // `COLLUSION_PROVIDER_DIVERSITY_MIN` so the small-mesh guard
+        // does not short-circuit the collusion analysis. The added
+        // providers each emit a single benign trade so they do not
+        // themselves trip the detector.
+        for idx in 0u8..4 {
+            let other_provider = NodeId([0x80 + idx; 32]);
+            let other_consumer = NodeId([0x40 + idx; 32]);
+            inject_tight_cluster(&mut ledger, other_provider, other_consumer, 1, now);
+        }
 
         let events = ledger.update_trust_penalties(&mut staking, now);
 
@@ -3438,6 +3489,16 @@ mod tests {
             .unwrap();
 
         inject_tight_cluster(&mut ledger, subject.clone(), counterparty, 20, now);
+        // Issue #154 — diversify past the small-mesh guard.
+        for idx in 0u8..4 {
+            inject_tight_cluster(
+                &mut ledger,
+                NodeId([0xA0 + idx; 32]),
+                NodeId([0x60 + idx; 32]),
+                1,
+                now,
+            );
+        }
 
         // First sweep fires once.
         let first = ledger.update_trust_penalties(&mut staking, now);
@@ -3450,6 +3511,79 @@ mod tests {
             !second.iter().any(|e| e.node_id == subject),
             "must not double-slash within the cooldown window"
         );
+    }
+
+    // -----------------------------------------------------------------
+    // Issue #154 — collusion-FP guard + already-banned skip
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn update_trust_penalties_skips_when_below_provider_diversity_min() {
+        use crate::{StakeDuration, StakingPool};
+        let now = now_millis();
+        let mut staking = StakingPool::new();
+        let mut ledger = ComputeLedger::new();
+        // A single dominant provider with stake — the exact scenario
+        // (#154 live mesh) that the guard is designed to spare. Inject
+        // enough trades to trip the collusion detector if the guard
+        // were absent.
+        let dominant = NodeId([0x77u8; 32]);
+        let consumer = NodeId([0x88u8; 32]);
+        staking
+            .stake(dominant.clone(), 10_000, StakeDuration::Days7, now)
+            .expect("stake fixture");
+        inject_tight_cluster(&mut ledger, dominant.clone(), consumer, 20, now);
+        // distinct_providers in trade_log == 1, below
+        // COLLUSION_PROVIDER_DIVERSITY_MIN (= 4) — must short-circuit
+        // and emit nothing.
+        let events = ledger.update_trust_penalties(&mut staking, now);
+        assert!(
+            events.is_empty(),
+            "small-mesh guard must short-circuit collusion slashing"
+        );
+        // Stake intact — nothing burned.
+        assert_eq!(staking.total_staked(), 10_000);
+    }
+
+    #[test]
+    fn update_trust_penalties_skips_already_banned_node() {
+        use crate::{StakeDuration, StakingPool};
+        let now = now_millis();
+        let mut staking = StakingPool::new();
+        let mut ledger = ComputeLedger::new();
+        // Set up a slashable subject in a diverse ledger so the
+        // small-mesh guard does NOT short-circuit.
+        let subject = NodeId([0x11u8; 32]);
+        let counterparty = NodeId([0x22u8; 32]);
+        staking
+            .stake(subject.clone(), 10_000, StakeDuration::Days7, now)
+            .unwrap();
+        inject_tight_cluster(&mut ledger, subject.clone(), counterparty, 20, now);
+        for idx in 0u8..4 {
+            inject_tight_cluster(
+                &mut ledger,
+                NodeId([0xC0 + idx; 32]),
+                NodeId([0x40 + idx; 32]),
+                1,
+                now,
+            );
+        }
+        // First sweep slashes the subject.
+        let first = ledger.update_trust_penalties(&mut staking, now);
+        assert!(!first.is_empty(), "first sweep must slash");
+        let stake_after_first = staking.total_staked();
+
+        // Advance past the 5-minute cooldown so the cooldown gate
+        // would re-allow a slash. Without the already-banned guard
+        // the same node would burn again.
+        let later = now + 6 * 60_000;
+        let second = ledger.update_trust_penalties(&mut staking, later);
+        assert!(
+            second.iter().all(|e| e.node_id != subject),
+            "already-banned node must not be re-slashed"
+        );
+        // Locked stake is untouched by the second sweep.
+        assert_eq!(staking.total_staked(), stake_after_first);
     }
 
     #[test]
@@ -3516,11 +3650,15 @@ mod tests {
     fn update_trust_penalties_back_compat_unbounded() {
         // The unparameterised method matches the old semantics
         // (no cap, all eligible nodes processed in one call).
+        // Issue #154 — use ≥ `COLLUSION_PROVIDER_DIVERSITY_MIN`
+        // distinct providers so the small-mesh guard does not
+        // short-circuit; the test's intent is the back-compat
+        // wrapper equivalence, not the guard.
         use crate::StakingPool;
         let now = now_millis();
         let mut staking = StakingPool::new();
         let mut ledger = ComputeLedger::new();
-        for i in 0..3 {
+        for i in 0..4 {
             let subject = NodeId([0xD0 + i as u8; 32]);
             let counterparty = NodeId([0xEF + i as u8; 32]);
             staking
@@ -3534,7 +3672,7 @@ mod tests {
         // since the first call already consumed the candidates).
         let mut staking2 = StakingPool::new();
         let mut ledger2 = ComputeLedger::new();
-        for i in 0..3 {
+        for i in 0..4 {
             let subject = NodeId([0xD0 + i as u8; 32]);
             let counterparty = NodeId([0xEF + i as u8; 32]);
             staking2
@@ -3572,6 +3710,16 @@ mod tests {
             .stake(subject.clone(), 10_000, crate::StakeDuration::Days30, now)
             .unwrap();
         inject_tight_cluster(&mut ledger, subject, counterparty, 20, now);
+        // Issue #154 — diversify past the small-mesh guard.
+        for idx in 0u8..4 {
+            inject_tight_cluster(
+                &mut ledger,
+                NodeId([0xB0 + idx; 32]),
+                NodeId([0x50 + idx; 32]),
+                1,
+                now,
+            );
+        }
         ledger.update_trust_penalties(&mut staking, now);
         let expected = ledger.slash_events().to_vec();
         assert!(!expected.is_empty());

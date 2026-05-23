@@ -2,7 +2,7 @@ use crate::agent_loop::{AgentLoopStats, AgentTickInput, spawn_agent_tick_loop};
 use crate::pipeline::PipelineCoordinator;
 use crate::state_persist;
 use crate::topology::{TopologySnapshot, build_local_capability, build_topology_snapshot};
-use std::path::Path;
+use crate::wallet::WalletKey;
 use std::sync::Arc;
 use tirami_agora::Marketplace;
 use tirami_core::Config;
@@ -66,6 +66,13 @@ pub struct TiramiNode {
     /// pipeline reads it at trade-execute time so the gate honours
     /// the latest governance decision.
     pub current_proof_policy: Arc<tokio::sync::RwLock<tirami_ledger::zk::ProofPolicy>>,
+    /// Phase 25 #161 — persistent Ed25519 wallet. Same 32-byte seed
+    /// underlies the iroh QUIC keypair AND HTTP-layer trade/loan
+    /// signing. Populated by `init_transport` (loaded from
+    /// `config.node_key_path` or generated in-memory). Threaded onto
+    /// `AppState` so handlers like `/v1/tirami/borrow` sign as the
+    /// real node identity instead of one-shot ephemeral keys.
+    pub wallet: Option<Arc<WalletKey>>,
     heartbeat_started: bool,
 }
 
@@ -190,6 +197,7 @@ impl TiramiNode {
             // out-of-the-box default.
             agent_identity: Arc::new(Mutex::new(agent_identity)),
             current_proof_policy,
+            wallet: None,
             heartbeat_started: false,
         }
     }
@@ -251,6 +259,9 @@ impl TiramiNode {
             // Phase 24 Wave 4.5 — share the same proof-policy Arc
             // so HTTP `governance/execute/:id` reaches the pipeline.
             self.current_proof_policy.clone(),
+            // Phase 25 #161 — share the persistent wallet so HTTP
+            // handlers can sign as this node.
+            self.wallet.clone(),
         );
         let addr = self.config.api_socket_addr();
         tracing::info!("API server listening on {}", addr);
@@ -286,6 +297,7 @@ impl TiramiNode {
         let agent_loop_stats_api = self.agent_loop_stats.clone();
         let agent_identity_api = self.agent_identity.clone();
         let current_proof_policy_api = self.current_proof_policy.clone();
+        let wallet_api = self.wallet.clone();
         let api_config = self.config.clone();
         tokio::spawn(async move {
             let app = crate::api::create_router_with_services(
@@ -310,6 +322,8 @@ impl TiramiNode {
                 agent_identity_api,
                 // Phase 24 Wave 4.5 — shared ProofPolicy handle.
                 current_proof_policy_api,
+                // Phase 25 #161 — shared persistent wallet.
+                wallet_api,
             );
             let addr = api_config.api_socket_addr();
             if let Ok(listener) = tokio::net::TcpListener::bind(&addr).await {
@@ -420,38 +434,61 @@ impl TiramiNode {
             })
             .transpose()?;
 
-        let transport = match (self.config.node_key_path.as_ref(), p2p_bind_addr) {
-            (Some(path), Some(bind_addr)) => {
-                let secret_key = load_node_secret_key(path)?;
-                tracing::info!("Loaded persistent node key from {}", path.display());
-                ForgeTransport::new_with_max_connections_secret_key_and_bind_addr(
-                    max_connections,
-                    secret_key,
-                    bind_addr,
-                )
-                .await
+        // Phase 25 #161 — single 32-byte Ed25519 seed underlies both the
+        // iroh QUIC keypair AND HTTP-layer trade/loan signing. Load the
+        // wallet first; auto-create with mode 0600 on first run if a
+        // `node_key_path` is configured. Falls back to an in-memory
+        // wallet when no path is set so the HTTP layer can still sign
+        // (with the same caveat as the old "ephemeral identity" warning:
+        // the NodeId rotates on every restart).
+        let wallet = match self.config.node_key_path.as_ref() {
+            Some(path) => {
+                let (w, created) = WalletKey::load_or_create(path).map_err(|e| {
+                    tirami_core::TiramiError::InvalidRequest(format!(
+                        "wallet load_or_create({}): {e}",
+                        path.display()
+                    ))
+                })?;
+                if created {
+                    tracing::info!(
+                        "Generated fresh wallet at {} (node id: {})",
+                        path.display(),
+                        hex::encode(w.verifying_key_bytes())
+                    );
+                } else {
+                    tracing::info!(
+                        "Loaded wallet from {} (node id: {})",
+                        path.display(),
+                        hex::encode(w.verifying_key_bytes())
+                    );
+                }
+                w
             }
-            (Some(path), None) => {
-                let secret_key = load_node_secret_key(path)?;
-                tracing::info!("Loaded persistent node key from {}", path.display());
+            None => {
+                let w = WalletKey::generate();
+                tracing::warn!(
+                    "No node_key_path configured; generated ephemeral wallet for this process \
+                     (node id: {})",
+                    hex::encode(w.verifying_key_bytes())
+                );
+                w
+            }
+        };
+        let secret_key = iroh::SecretKey::from_bytes(wallet.seed());
+        let transport = match p2p_bind_addr {
+            Some(bind_addr) => ForgeTransport::new_with_max_connections_secret_key_and_bind_addr(
+                max_connections,
+                secret_key,
+                bind_addr,
+            )
+            .await,
+            None => {
                 ForgeTransport::new_with_max_connections_and_secret_key(max_connections, secret_key)
                     .await
             }
-            (None, Some(bind_addr)) => {
-                tracing::warn!(
-                    "No node_key_path configured; using ephemeral P2P identity for this process"
-                );
-                ForgeTransport::new_with_max_connections_and_bind_addr(max_connections, bind_addr)
-                    .await
-            }
-            (None, None) => {
-                tracing::warn!(
-                    "No node_key_path configured; using ephemeral P2P identity for this process"
-                );
-                ForgeTransport::new_with_max_connections(max_connections).await
-            }
         }
         .map_err(|e| tirami_core::TiramiError::NetworkError(format!("transport: {e}")))?;
+        self.wallet = Some(Arc::new(wallet));
         let transport = Arc::new(transport);
         let local_capability = build_local_capability(&self.config, transport.tirami_node_id());
         self.cluster = Some(Arc::new(ClusterManager::new(
@@ -1324,39 +1361,6 @@ fn load_persisted_agent_identity(
     }
 }
 
-fn load_node_secret_key(path: &Path) -> Result<iroh::SecretKey, tirami_core::TiramiError> {
-    let bytes = std::fs::read(path)?;
-    let raw = parse_node_secret_key_bytes(&bytes).map_err(|reason| {
-        tirami_core::TiramiError::InvalidRequest(format!(
-            "invalid node key file {}: {reason}",
-            path.display()
-        ))
-    })?;
-    Ok(iroh::SecretKey::from_bytes(&raw))
-}
-
-fn parse_node_secret_key_bytes(bytes: &[u8]) -> Result<[u8; 32], &'static str> {
-    if bytes.len() == 32 {
-        let mut raw = [0u8; 32];
-        raw.copy_from_slice(bytes);
-        return Ok(raw);
-    }
-
-    let Ok(text) = std::str::from_utf8(bytes) else {
-        return Err("expected 32 raw bytes or 64 lowercase/uppercase hex characters");
-    };
-    let text = text.trim();
-    if text.len() != 64 || !text.as_bytes().iter().all(u8::is_ascii_hexdigit) {
-        return Err("expected 32 raw bytes or 64 lowercase/uppercase hex characters");
-    }
-
-    let decoded =
-        hex::decode(text).map_err(|_| "expected valid hex-encoded Ed25519 secret bytes")?;
-    let mut raw = [0u8; 32];
-    raw.copy_from_slice(&decoded);
-    Ok(raw)
-}
-
 pub(crate) fn parse_bootstrap_peer_spec(spec: &str) -> Result<iroh::EndpointAddr, String> {
     let spec = spec.trim();
     if spec.is_empty() {
@@ -1529,27 +1533,6 @@ mod tests {
         let url = super::derive_public_http_endpoint("2001:db8::1", 3000)
             .expect("v6 public bind should advertise");
         assert_eq!(url, "http://[2001:db8::1]:3000");
-    }
-
-    #[test]
-    fn parse_node_secret_key_accepts_raw_32_bytes() {
-        let bytes = [7u8; 32];
-        assert_eq!(parse_node_secret_key_bytes(&bytes).unwrap(), bytes);
-    }
-
-    #[test]
-    fn parse_node_secret_key_accepts_hex_with_newline() {
-        let parsed = parse_node_secret_key_bytes(
-            b"0707070707070707070707070707070707070707070707070707070707070707\n",
-        )
-        .unwrap();
-        assert_eq!(parsed, [7u8; 32]);
-    }
-
-    #[test]
-    fn parse_node_secret_key_rejects_wrong_length() {
-        let err = parse_node_secret_key_bytes(b"too-short").unwrap_err();
-        assert!(err.contains("expected 32 raw bytes"));
     }
 
     #[test]

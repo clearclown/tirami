@@ -109,6 +109,15 @@ pub(crate) struct AppState {
     /// in-flight `/v1/chat/completions` requests. `None` when
     /// `config.chat_concurrency_cap == 0` (legacy behaviour).
     pub chat_concurrency: Option<Arc<tokio::sync::Semaphore>>,
+    /// Phase 25 #161 — persistent Ed25519 wallet for this node.
+    /// Same seed underlies the iroh QUIC keypair and HTTP-layer
+    /// signing. `None` when the API was built via `create_router`
+    /// (legacy/test path); production callers go through
+    /// `create_router_with_services` and TiramiNode supplies a real
+    /// wallet. Handlers like `/v1/tirami/borrow` and
+    /// `/v1/tirami/lend-to` sign with this wallet when present so
+    /// the loan record binds to the actual node identity.
+    pub wallet: Option<Arc<crate::wallet::WalletKey>>,
 }
 
 /// Simple rate limiter for authentication failures.
@@ -218,6 +227,10 @@ pub fn create_router(
         Arc::new(Mutex::new(None)),
         // Phase 24 Wave 4.5 — runtime policy handle, computed above.
         proof_policy_handle,
+        // Phase 25 #161 — `create_router` is the legacy test/stub
+        // entrypoint; no wallet plumbed in. HTTP signing handlers fall
+        // back to ephemeral keys when this is None.
+        None,
     )
 }
 
@@ -254,6 +267,10 @@ pub fn create_router_with_services(
     // `POST /v1/tirami/governance/execute/:id` is immediately
     // visible to the pipeline.
     current_proof_policy: Arc<tokio::sync::RwLock<tirami_ledger::zk::ProofPolicy>>,
+    // Phase 25 #161 — persistent Ed25519 wallet. Populated by
+    // `TiramiNode::init_transport`. `None` when the API runs in a
+    // test fixture that did not stand up a transport.
+    wallet: Option<Arc<crate::wallet::WalletKey>>,
 ) -> Router {
     // Derive local node ID from cluster or generate a deterministic one.
     let local_node_id = cluster
@@ -311,6 +328,7 @@ pub fn create_router_with_services(
                 Some(Arc::new(tokio::sync::Semaphore::new(cap as usize)))
             }
         },
+        wallet,
     };
     let api_max_request_body_bytes = state.config.api_max_request_body_bytes;
 
@@ -3310,10 +3328,20 @@ async fn forge_lend_to(
         })?;
     let borrower = NodeId(borrower_bytes);
 
-    // MVP: generate ephemeral lender key (same caveat as forge_borrow).
-    // TODO: use node's persistent signing key from state.
-    let lender_key = SigningKey::generate(&mut OsRng);
-    let lender_id = NodeId(lender_key.verifying_key().to_bytes());
+    // Lender side: prefer the persistent wallet (real node identity)
+    // so the lend operation accrues to *this* node's lending history.
+    // Falls back to a fresh ephemeral key when no wallet is wired in
+    // (legacy test fixtures).
+    let (lender_id, lender_key): (NodeId, SigningKey) = match state.wallet.as_ref() {
+        Some(w) => (
+            NodeId(w.verifying_key_bytes()),
+            SigningKey::from_bytes(w.seed()),
+        ),
+        None => {
+            let ek = SigningKey::generate(&mut OsRng);
+            (NodeId(ek.verifying_key().to_bytes()), ek)
+        }
+    };
 
     // Compute borrower's credit score for rate determination.
     let ledger = state.ledger.lock().await;
@@ -3411,10 +3439,14 @@ async fn forge_lend_to(
 
 /// POST /v1/tirami/borrow — request a CU loan.
 ///
-/// MVP: constructs a self-signed loan against a fresh keypair so the
-/// dual-signature verification path inside `create_loan` succeeds. This is
-/// only meaningful inside a single-node test fixture; the production path
-/// is the gossiped LoanProposal/LoanAccept handshake (Batch B2).
+/// The borrower is the caller node itself (signed with `state.wallet`
+/// when present, so the loan binds to the real persistent NodeId and
+/// affects this node's credit + effective balance). The lender side
+/// is an ephemeral one-shot pool key — a placeholder until the full
+/// P2P LoanProposal/LoanAccept handshake (Batch B2) wires in a real
+/// counterparty. When no wallet is configured (test fixtures, legacy
+/// `create_router`), both sides fall back to ephemeral keys so the
+/// bilateral-signature check still passes.
 async fn forge_borrow(
     State(state): State<AppState>,
     Json(req): Json<BorrowRequest>,
@@ -3437,16 +3469,30 @@ async fn forge_borrow(
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0);
 
-    // MVP: one-shot signing key acting as both lender and borrower so the
-    // bilateral signature check inside `create_loan` is satisfied without
-    // requiring the persistent node key (which lives in forge-net).
-    let signing_key = SigningKey::generate(&mut OsRng);
-    let signed_node_id = NodeId(signing_key.verifying_key().to_bytes());
+    // Ephemeral one-shot "pool" key for the lender side — same MVP
+    // placeholder as before. Replace with a real counterparty when the
+    // P2P LoanProposal/LoanAccept handshake ships.
+    let pool_key = SigningKey::generate(&mut OsRng);
+    let pool_id = NodeId(pool_key.verifying_key().to_bytes());
+
+    // Borrower side: prefer the persistent wallet (real node identity)
+    // so the loan accrues to this node. Fall back to a fresh ephemeral
+    // key when no wallet is wired in (legacy test fixtures).
+    let (borrower_id, borrower_signer): (NodeId, SigningKey) = match state.wallet.as_ref() {
+        Some(w) => (
+            NodeId(w.verifying_key_bytes()),
+            SigningKey::from_bytes(w.seed()),
+        ),
+        None => {
+            let ek = SigningKey::generate(&mut OsRng);
+            (NodeId(ek.verifying_key().to_bytes()), ek)
+        }
+    };
 
     let mut loan = LoanRecord {
         loan_id: [0u8; 32],
-        lender: signed_node_id.clone(),
-        borrower: signed_node_id,
+        lender: pool_id,
+        borrower: borrower_id,
         principal_trm: req.amount,
         interest_rate_per_hour: interest_rate,
         term_hours: req.term_hours,
@@ -3459,11 +3505,12 @@ async fn forge_borrow(
     loan.loan_id = loan.compute_loan_id();
 
     let canonical = loan.canonical_bytes();
-    let sig = signing_key.sign(&canonical).to_bytes().to_vec();
+    let lender_sig = pool_key.sign(&canonical).to_bytes().to_vec();
+    let borrower_sig = borrower_signer.sign(&canonical).to_bytes().to_vec();
     let signed = SignedLoanRecord {
         loan: loan.clone(),
-        lender_sig: sig.clone(),
-        borrower_sig: sig,
+        lender_sig,
+        borrower_sig,
     };
 
     ledger
@@ -4760,6 +4807,9 @@ pub(crate) fn test_router_default(config: Config) -> Router {
         Arc::new(Mutex::new(None)),
         // Phase 24 Wave 4.5 — runtime policy handle.
         policy_handle,
+        // Phase 25 #161 — test helper omits the persistent wallet;
+        // HTTP signing handlers fall back to ephemeral keys.
+        None,
     )
 }
 
@@ -4894,6 +4944,7 @@ mod tests {
             Arc::new(Mutex::new(crate::agent_loop::AgentLoopStats::new())),
             Arc::new(Mutex::new(None)),
             proof_policy_handle,
+            None,
         );
         let _ = TokenStore::new(); // unused
         // Hold the ledger lock for the duration of the probe.
@@ -6050,6 +6101,7 @@ mod tests {
             Arc::new(Mutex::new(crate::agent_loop::AgentLoopStats::new())),
             Arc::new(Mutex::new(None)),
             Arc::new(tokio::sync::RwLock::new(tirami_ledger::zk::ProofPolicy::Disabled)),
+            None,
         )
     }
 
@@ -8367,6 +8419,7 @@ mod tests {
             Arc::new(Mutex::new(crate::agent_loop::AgentLoopStats::new())),
             shared.clone(), // ← the Arc we will observe externally
             Arc::new(tokio::sync::RwLock::new(tirami_ledger::zk::ProofPolicy::Disabled)),
+            None,
         );
 
         // Externally observed slot is empty before init.
@@ -8417,6 +8470,7 @@ mod tests {
             Arc::new(Mutex::new(crate::agent_loop::AgentLoopStats::new())),
             shared.clone(),
             Arc::new(tokio::sync::RwLock::new(tirami_ledger::zk::ProofPolicy::Disabled)),
+            None,
         );
         // First identity via init.
         let (_, init_a) = post_identity_init(app_a.clone(), None).await;
@@ -8447,6 +8501,7 @@ mod tests {
             Arc::new(Mutex::new(crate::agent_loop::AgentLoopStats::new())),
             shared_b.clone(),
             Arc::new(tokio::sync::RwLock::new(tirami_ledger::zk::ProofPolicy::Disabled)),
+            None,
         );
         let (_status, _view) =
             post_identity_import(app_b, "passphrase-1234567", bundle).await;

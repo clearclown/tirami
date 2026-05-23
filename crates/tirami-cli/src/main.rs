@@ -386,6 +386,17 @@ enum WalletAction {
         /// BOLT11 invoice string
         invoice: String,
     },
+    /// Show the persistent Ed25519 node identity ("wallet" in the
+    /// Bitcoin sense: the long-lived key whose public component is
+    /// this node's NodeId). Reads the key file at `--key-path` (or
+    /// the config default), auto-creating it with mode 0600 on first
+    /// run. Prints the public NodeId only — the secret seed is never
+    /// displayed.
+    Identity {
+        /// Path to the wallet key file. Defaults to `~/.tirami/node.key`.
+        #[arg(long)]
+        key_path: Option<std::path::PathBuf>,
+    },
 }
 
 /// Default tracing filter when `RUST_LOG` is unset.
@@ -435,6 +446,43 @@ async fn main() -> anyhow::Result<()> {
             tirami_infer::model_registry::list_models();
         }
         Commands::Wallet { action } => {
+            // Phase 25 #161 — Identity action is purely read-only on
+            // the node-key file. Handle it before bringing up the
+            // Lightning wallet (which opens disk + network resources)
+            // so `tirami wallet identity` stays fast and side-effect-free.
+            if let WalletAction::Identity { key_path } = action {
+                let path = match key_path {
+                    Some(p) => p,
+                    None => default_node_key_path()?,
+                };
+                let (wallet, created) = tirami_node::wallet::WalletKey::load_or_create(&path)
+                    .map_err(|e| {
+                        anyhow::anyhow!("failed to open wallet at {}: {e}", path.display())
+                    })?;
+                println!("Wallet file:        {}", path.display());
+                println!(
+                    "Status:             {}",
+                    if created {
+                        "created (fresh keypair generated)"
+                    } else {
+                        "loaded"
+                    }
+                );
+                println!(
+                    "Node ID (Ed25519):  {}",
+                    hex::encode(wallet.verifying_key_bytes())
+                );
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    if let Ok(meta) = std::fs::metadata(&path) {
+                        let mode = meta.permissions().mode() & 0o777;
+                        println!("File permissions:   {:o}", mode);
+                    }
+                }
+                return Ok(());
+            }
+
             let config = tirami_lightning::node::WalletConfig::default();
             let wallet = tirami_lightning::ForgeWallet::start(config)?;
 
@@ -464,6 +512,7 @@ async fn main() -> anyhow::Result<()> {
                     let payment_id = wallet.pay_invoice(&invoice)?;
                     println!("Payment sent: {}", payment_id);
                 }
+                WalletAction::Identity { .. } => unreachable!("handled above"),
             }
         }
         Commands::Chat {
@@ -1541,6 +1590,14 @@ fn ensure_default_data_dir() -> anyhow::Result<PathBuf> {
         std::fs::create_dir_all(&tirami_dir)?;
     }
     Ok(tirami_dir)
+}
+
+/// Default location for the persistent Ed25519 wallet file
+/// (`~/.tirami/node.key`). The parent directory is created on demand
+/// by `WalletKey::load_or_create`, so this helper only resolves the
+/// path — it does not touch the filesystem.
+fn default_node_key_path() -> anyhow::Result<PathBuf> {
+    Ok(default_data_dir()?.join("node.key"))
 }
 
 fn ensure_default_node_key() -> anyhow::Result<PathBuf> {

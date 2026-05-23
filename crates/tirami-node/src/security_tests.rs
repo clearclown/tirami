@@ -711,6 +711,7 @@ mod security_tests {
             Arc::new(Mutex::new(crate::agent_loop::AgentLoopStats::new())),
             Arc::new(Mutex::new(None)),
             Arc::new(tokio::sync::RwLock::new(tirami_ledger::zk::ProofPolicy::Disabled)),
+            None,
         );
         let _ = state; // suppress unused warning
 

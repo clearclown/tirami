@@ -11,6 +11,7 @@ pub mod pipeline;
 pub mod security_tests;
 pub mod state_persist;
 pub mod topology;
+pub mod wallet;
 
 pub use node::TiramiNode;
 pub use pipeline::{PipelineCoordinator, PipelineRole};

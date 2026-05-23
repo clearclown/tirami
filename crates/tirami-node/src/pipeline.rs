@@ -194,6 +194,10 @@ impl PipelineCoordinator {
                         let ledger_path = ledger_path.clone();
                         let gossip = gossip.clone();
                         let dispatcher = trade_accept_dispatcher.clone();
+                        // Issue #151 — plumb staking_pool so the P2P
+                        // inference path can enforce the same stake-
+                        // required gate the HTTP path enforces.
+                        let staking_p2p_gate = staking_pool.clone();
                         // Phase 23 Wave 2 — snapshot the current
                         // AgentIdentity (if any) so the trade is
                         // attributed to the agent rather than the
@@ -226,6 +230,7 @@ impl PipelineCoordinator {
                                 dispatcher,
                                 agent_snapshot,
                                 policy_snapshot,
+                                staking_p2p_gate,
                             )
                             .await
                             {
@@ -890,6 +895,12 @@ async fn handle_inference(
     // execute_signed_trade time so a governance ratchet between
     // dispatch and execute is honoured.
     current_proof_policy: tirami_ledger::zk::ProofPolicy,
+    // Issue #151 — staking pool snapshot used to enforce the same
+    // stake-required gate the HTTP path enforces. The P2P path
+    // previously had no provider-side gate, which let worker meshes
+    // route around the HTTP gate and drive the seed past the
+    // stakeless earn cap indefinitely.
+    staking_pool: Arc<Mutex<tirami_ledger::StakingPool>>,
 ) -> anyhow::Result<()> {
     use tirami_infer::InferenceEngine;
 
@@ -910,6 +921,38 @@ async fn handle_inference(
         )
         .await?;
         return Ok(());
+    }
+
+    // Issue #151 — provider-side stake gate. Mirror the HTTP path's
+    // `forge_chat_completions` gate so a worker mesh can't route
+    // around the Constitutional stake-required requirement. The
+    // verdict has two failure modes:
+    //   - PreviouslySlashed → constitutional permanent ban, non-retryable
+    //   - StakeRequired     → past stakeless earn cap without stake,
+    //                         not retryable until operator stakes
+    if config.stake_gate_enabled {
+        let verdict = {
+            let ledger_g = ledger.lock().await;
+            let staking_g = staking_pool.lock().await;
+            ledger_g.inference_eligibility(&node_id, &staking_g, now_millis())
+        };
+        if let Err(ineligible) = verdict {
+            tracing::warn!(
+                "P2P inference denied by stake gate from {}: {}",
+                peer_id, ineligible
+            );
+            send_protocol_error(
+                &transport,
+                peer_id,
+                &node_id,
+                req.request_id,
+                ErrorCode::InvalidRequest,
+                format!("stake_gate_denied: {ineligible}"),
+                false,
+            )
+            .await?;
+            return Ok(());
+        }
     }
 
     // Reserve CU for this inference (prevents double-spending)

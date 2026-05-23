@@ -1336,9 +1336,15 @@ where
 ///
 /// - `gate_enabled = false` → always `Ok(())`. Restores pre-Phase-21
 ///   behaviour for operators that explicitly opt out.
-/// - `gate_enabled = true` → consult the verdict. `Ok` for Staked /
-///   WelcomeLoan / BootstrapWindow; `Err(InferenceIneligible)` for
-///   PreviouslySlashed / StakeRequired.
+/// - `gate_enabled = true` → consult the verdict, but **only**
+///   hard-reject [`InferenceIneligible::PreviouslySlashed`].
+///   [`InferenceIneligible::StakeRequired`] is **soft-accepted**:
+///   the receiver's local `StakingPool` does not necessarily reflect
+///   the provider's canonical stake (no chain client / no stake
+///   gossip in this protocol revision), so an authoritative rejection
+///   based on the local view would partition the mesh — exactly the
+///   pathology observed in issue #148, where a 10-TRM stakeless cap
+///   on one seed caused every other seed to drop its gossip traffic.
 ///
 /// A denial here only refuses **local** recording; the dual-signed
 /// trade still stands as a bilateral agreement between the remote
@@ -1354,9 +1360,23 @@ pub(crate) fn check_gossip_trade_eligibility(
     if !gate_enabled {
         return Ok(());
     }
-    ledger
-        .inference_eligibility(provider, staking, now_ms)
-        .map(|_| ())
+    match ledger.inference_eligibility(provider, staking, now_ms) {
+        Ok(_) => Ok(()),
+        Err(InferenceIneligible::PreviouslySlashed) => {
+            Err(InferenceIneligible::PreviouslySlashed)
+        }
+        Err(stake_required @ InferenceIneligible::StakeRequired { .. }) => {
+            // Issue #148: do NOT authoritatively reject — the
+            // receiver's view of the provider's StakingPool is
+            // incomplete by construction. Log so operators can
+            // observe the local-policy mismatch and proceed.
+            tracing::debug!(
+                provider = %provider.to_hex(),
+                "gossip stake-cap soft-accept (local view): {stake_required}"
+            );
+            Ok(())
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1426,11 +1446,14 @@ mod gossip_gate_tests {
     }
 
     #[test]
-    fn gate_enabled_rejects_past_cap_provider_without_stake_or_loan() {
-        // Seed a balance via the public API: grant a welcome loan
-        // (creates the balance entry), pump contributions past cap,
-        // then mark the loan repaid so the eligibility check falls
-        // through to StakeRequired.
+    fn gate_enabled_soft_accepts_past_cap_provider_without_stake_or_loan() {
+        // Issue #148: a past-cap, unstaked provider with no welcome
+        // loan still has its trades recorded locally. Authoritatively
+        // rejecting based on the receiver's local view of the staking
+        // pool is incorrect because that view is incomplete — there
+        // is no canonical stake-state gossip in this protocol revision.
+        // The constitutional ban remains (PreviouslySlashed); only the
+        // stake-cap branch is softened.
         let mut ledger = ComputeLedger::new();
         let staking = StakingPool::new();
         let provider = NodeId([0xA5u8; 32]);
@@ -1447,16 +1470,21 @@ mod gossip_gate_tests {
             nonce: [0u8; 16],
         };
         ledger.execute_trade(&cap_buster);
-        // Flip the welcome loan to repaid so it no longer satisfies
-        // the gate. The remaining path is then StakeRequired.
         if let Some(grant) = ledger.welcome_loans.get_mut(&provider) {
             grant.repaid = true;
         }
+        // Sanity check: the underlying ledger gate still reports the
+        // StakeRequired verdict for the HTTP-path (outbound) callers.
+        assert!(matches!(
+            ledger.inference_eligibility(&provider, &staking, now),
+            Err(InferenceIneligible::StakeRequired { .. })
+        ));
+        // …but the gossip-receive helper soft-accepts.
         let verdict =
             check_gossip_trade_eligibility(&ledger, &staking, &provider, now, true);
         assert!(
-            matches!(verdict, Err(InferenceIneligible::StakeRequired { .. })),
-            "got {verdict:?}"
+            verdict.is_ok(),
+            "stake-cap should NOT block inbound gossip; got {verdict:?}"
         );
     }
 

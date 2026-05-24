@@ -211,6 +211,78 @@ impl StakingPool {
             .get(node_id)
             .into_iter()
     }
+
+    /// Issue #156 — persist the pool to JSON at `path`. The write is
+    /// atomic: serialise to a sibling `.tmp` file, then rename into
+    /// place. This guarantees that a crash in the middle of the
+    /// write never produces a torn `staking.json` that would lose
+    /// every operator's locked stake on the next load.
+    ///
+    /// `HashMap<NodeId, Stake>` cannot round-trip through `serde_json`
+    /// directly because `NodeId = [u8; 32]` does not serialise as a
+    /// JSON object key. Each `Stake` already carries its own
+    /// `node_id` field, so the on-disk shape is a `Vec<Stake>` —
+    /// load rehydrates the map from `stake.node_id`.
+    pub fn save_to_path(&self, path: &std::path::Path) -> std::io::Result<()> {
+        let snapshot = PersistedStakingPool {
+            stakes: self.stakes.values().cloned().collect(),
+            total_burned: self.total_burned,
+        };
+        let json = serde_json::to_vec_pretty(&snapshot).map_err(|e| {
+            std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string())
+        })?;
+        if let Some(parent) = path.parent() {
+            if !parent.as_os_str().is_empty() {
+                std::fs::create_dir_all(parent)?;
+            }
+        }
+        let tmp = match path.file_name() {
+            Some(name) => {
+                let mut buf = std::ffi::OsString::from(name);
+                buf.push(".tmp");
+                path.with_file_name(buf)
+            }
+            None => path.with_extension("json.tmp"),
+        };
+        std::fs::write(&tmp, &json)?;
+        std::fs::rename(&tmp, path)?;
+        Ok(())
+    }
+
+    /// Issue #156 — load the pool from JSON at `path`. Missing file
+    /// is mapped to `Ok(StakingPool::default())` so first-run boot is
+    /// not an error condition; every other I/O / parse failure
+    /// propagates so a corrupted snapshot is surfaced loudly instead
+    /// of silently wiping operator stakes.
+    pub fn load_from_path(path: &std::path::Path) -> std::io::Result<Self> {
+        match std::fs::read(path) {
+            Ok(bytes) => {
+                let snap: PersistedStakingPool =
+                    serde_json::from_slice(&bytes).map_err(|e| {
+                        std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string())
+                    })?;
+                let mut stakes = HashMap::new();
+                for stake in snap.stakes {
+                    stakes.insert(stake.node_id.clone(), stake);
+                }
+                Ok(Self {
+                    stakes,
+                    total_burned: snap.total_burned,
+                })
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
+            Err(e) => Err(e),
+        }
+    }
+}
+
+/// Issue #156 — on-disk representation for JSON-friendly serialisation.
+/// Internal to the persistence layer; callers always work with
+/// [`StakingPool`].
+#[derive(Debug, Serialize, Deserialize)]
+struct PersistedStakingPool {
+    stakes: Vec<Stake>,
+    total_burned: u64,
 }
 
 #[cfg(test)]
@@ -497,5 +569,83 @@ mod tests {
         let after = NOW + StakeDuration::Days7.duration_ms();
         pool.unstake(&node(100), after).unwrap();
         assert_eq!(pool.total_staked(), 2_000);
+    }
+
+    // -----------------------------------------------------------------
+    // Issue #156 — persistence
+    // -----------------------------------------------------------------
+
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static PERSIST_TEST_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    fn scratch_path(label: &str) -> std::path::PathBuf {
+        let n = PERSIST_TEST_COUNTER.fetch_add(1, Ordering::SeqCst);
+        let pid = std::process::id();
+        std::env::temp_dir().join(format!("tirami-staking-{label}-{pid}-{n}.json"))
+    }
+
+    #[test]
+    fn save_and_load_round_trip_preserves_stakes() {
+        let mut pool = StakingPool::new();
+        pool.stake(node(1), 1_000, StakeDuration::Days7, NOW).unwrap();
+        pool.stake(node(2), 5_000, StakeDuration::Days30, NOW).unwrap();
+        // Mutate burned counter so we know that field round-trips too.
+        pool.apply_slash(&node(1), 0.5);
+
+        let path = scratch_path("roundtrip");
+        pool.save_to_path(&path).unwrap();
+        let loaded = StakingPool::load_from_path(&path).unwrap();
+
+        assert_eq!(loaded.stakes.len(), pool.stakes.len());
+        assert_eq!(loaded.total_burned, pool.total_burned);
+        assert_eq!(loaded.total_staked(), pool.total_staked());
+        assert_eq!(
+            loaded.stakes.get(&node(2)).map(|s| s.amount),
+            pool.stakes.get(&node(2)).map(|s| s.amount)
+        );
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn load_missing_path_returns_empty_pool() {
+        let path = scratch_path("missing");
+        let loaded = StakingPool::load_from_path(&path).unwrap();
+        assert!(loaded.stakes.is_empty());
+        assert_eq!(loaded.total_burned, 0);
+    }
+
+    #[test]
+    fn save_is_atomic_no_partial_file() {
+        let mut pool = StakingPool::new();
+        pool.stake(node(3), 2_000, StakeDuration::Days7, NOW).unwrap();
+        let path = scratch_path("atomic");
+        pool.save_to_path(&path).unwrap();
+        // Final file exists; sibling .tmp must NOT remain.
+        assert!(path.exists());
+        let tmp = {
+            let mut buf = std::ffi::OsString::from(path.file_name().unwrap());
+            buf.push(".tmp");
+            path.with_file_name(buf)
+        };
+        assert!(
+            !tmp.exists(),
+            ".tmp sibling must be renamed in place by save_to_path"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn locked_stake_survives_save_load() {
+        let mut pool = StakingPool::new();
+        pool.stake(node(4), 100, StakeDuration::Days7, NOW).unwrap();
+        let path = scratch_path("locked");
+        pool.save_to_path(&path).unwrap();
+        let loaded = StakingPool::load_from_path(&path).unwrap();
+        // Lock semantics preserved.
+        let s = loaded.stakes.get(&node(4)).unwrap();
+        assert!(s.is_locked(NOW + 60_000));
+        assert_eq!(s.amount, 100);
+        let _ = std::fs::remove_file(&path);
     }
 }

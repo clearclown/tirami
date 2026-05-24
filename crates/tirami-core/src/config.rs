@@ -23,6 +23,15 @@ pub struct Config {
     /// Optional path to the persisted forge-agora (L4) marketplace state.
     pub marketplace_state_path: Option<PathBuf>,
 
+    /// Issue #156 — optional path to the persisted staking-pool
+    /// snapshot. When `Some(_)`, `TiramiNode::new` loads the pool at
+    /// startup, and every `/v1/tirami/su/stake`, `/su/unstake`, plus
+    /// the slashing loop persist after mutation. `None` keeps the
+    /// pre-#156 behaviour (in-memory only — operator loses locked
+    /// TRM on restart).
+    #[serde(default)]
+    pub staking_state_path: Option<PathBuf>,
+
     /// Optional path to the persisted forge-mind (L3) agent snapshot.
     pub mind_state_path: Option<PathBuf>,
 
@@ -362,6 +371,7 @@ impl Config {
         self.ledger_path = Some(data_dir.join("ledger.json"));
         self.bank_state_path = Some(data_dir.join("bank_state.json"));
         self.marketplace_state_path = Some(data_dir.join("marketplace_state.json"));
+        self.staking_state_path = Some(data_dir.join("staking.json"));
         self.mind_state_path = Some(data_dir.join("mind_state.json"));
         self.personal_agent_state_path = Some(data_dir.join("personal_agent.json"));
         self.archive_path = Some(data_dir.join("trades.jsonl"));
@@ -426,6 +436,7 @@ impl Default for Config {
             ledger_path: None,
             bank_state_path: None,
             marketplace_state_path: None,
+            staking_state_path: None,
             mind_state_path: None,
             personal_agent_state_path: None,
             agent_identity_path: None,

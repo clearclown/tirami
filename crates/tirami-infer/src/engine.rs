@@ -14,6 +14,21 @@ pub trait InferenceEngine: Send + Sync {
     /// Check if a model is loaded and ready.
     fn is_loaded(&self) -> bool;
 
+    /// Issue #147 — does this backend implement the inputs the
+    /// audit-challenge loop needs (specifically `forward_tokens`)?
+    /// The `generate_audit` default iterates `forward_tokens` to
+    /// derive a deterministic logit hash; a backend that returns
+    /// `InferenceError::*Not yet implemented*` from `forward_tokens`
+    /// must override this to `false` so the audit-challenger loop
+    /// can exit cleanly instead of spamming WARN every interval.
+    ///
+    /// Default is `true` so backends that implement `forward_tokens`
+    /// (Candle today, future Metal / CUDA backends) opt in
+    /// automatically.
+    fn supports_audit_challenge(&self) -> bool {
+        true
+    }
+
     /// Generate tokens from a prompt string.
     /// Returns a vector of generated text fragments.
     fn generate(

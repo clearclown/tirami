@@ -266,6 +266,15 @@ impl InferenceEngine for LlamaCppEngine {
         ))
     }
 
+    /// Issue #147 — llama.cpp backend lacks `forward_tokens`, so the
+    /// `generate_audit` default would fail every call. Declare the
+    /// capability as unavailable so the audit-challenger loop in
+    /// `tirami-node` skips probing this engine entirely. Re-enable
+    /// when `forward_tokens` ships (Wave 2.x).
+    fn supports_audit_challenge(&self) -> bool {
+        false
+    }
+
     fn sample_token(
         &mut self,
         _logits: &[f32],

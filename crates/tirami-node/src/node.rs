@@ -154,6 +154,36 @@ impl TiramiNode {
         // for a snapshot file and calls agent.restore_from_snapshot()).
         let mind_agent: Option<tirami_mind::TiramiMindAgent> = None;
 
+        // Issue #156 — load the staking pool snapshot if a path is
+        // configured. Missing file → empty pool (first-run). Other
+        // I/O / parse errors are surfaced loudly as WARN; the
+        // operator's locked TRM has more value than silently
+        // overwriting a corrupted snapshot.
+        let staking_pool = match config.staking_state_path.as_ref() {
+            Some(path) => match tirami_ledger::StakingPool::load_from_path(path) {
+                Ok(pool) => {
+                    if !pool.stakes.is_empty() {
+                        tracing::info!(
+                            "Loaded staking pool from {} ({} active stakes, {} TRM burned)",
+                            path.display(),
+                            pool.stakes.len(),
+                            pool.total_burned
+                        );
+                    }
+                    pool
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        "Failed to load staking pool from {}: {} — starting with empty pool",
+                        path.display(),
+                        err
+                    );
+                    tirami_ledger::StakingPool::new()
+                }
+            },
+            None => tirami_ledger::StakingPool::new(),
+        };
+
         // Phase 23 Wave 3 — compute BEFORE `config` is moved into
         // `self`. Best-effort load; returns `None` if path or
         // passphrase env var is unset.
@@ -184,7 +214,7 @@ impl TiramiNode {
             bank: Arc::new(Mutex::new(bank)),
             marketplace: Arc::new(Mutex::new(marketplace)),
             mind_agent: Arc::new(Mutex::new(mind_agent)),
-            staking_pool: Arc::new(Mutex::new(tirami_ledger::StakingPool::new())),
+            staking_pool: Arc::new(Mutex::new(staking_pool)),
             referral_tracker: Arc::new(Mutex::new(tirami_ledger::ReferralTracker::new())),
             governance: Arc::new(Mutex::new(tirami_ledger::GovernanceState::new(0))),
             chain_client: Arc::new(tirami_anchor::MockChainClient::new()),
@@ -690,6 +720,26 @@ impl TiramiNode {
         let my_id = transport.tirami_node_id();
 
         tokio::spawn(async move {
+            // Issue #147 — probe the loaded engine's audit capability
+            // once at startup. If the backend cannot serve
+            // `forward_tokens` (e.g. the llama.cpp backend) there is
+            // nothing the audit-challenger loop can produce except
+            // WARN spam every interval. Log once at INFO and exit
+            // the task entirely; a future audit-capable backend will
+            // start the loop on its next process bootstrap.
+            {
+                use tirami_infer::InferenceEngine;
+                let eng = engine.lock().await;
+                if !eng.supports_audit_challenge() {
+                    tracing::info!(
+                        "Audit-challenger loop disabled: loaded inference engine \
+                         does not implement forward_tokens (see issue #147 — \
+                         re-enabled when the backend's audit support lands)"
+                    );
+                    return;
+                }
+            }
+
             let mut ticker = tokio::time::interval(std::time::Duration::from_secs(60));
             // Skip the immediate first tick — let peers register first.
             ticker.tick().await;
@@ -825,6 +875,9 @@ impl TiramiNode {
         let ledger = self.ledger.clone();
         let staking = self.staking_pool.clone();
         let ledger_path = self.config.ledger_path.clone();
+        // Issue #156 — staking-pool snapshot path so each slash
+        // event persists the residual locked stake.
+        let staking_path = self.config.staking_state_path.clone();
         let interval_secs = self.config.slashing_interval_secs.max(60);
         // Phase 25 C9 — per-tick cap so a logic bug or false-positive
         // cluster can't drain the staking pool in one sweep.
@@ -869,6 +922,18 @@ impl TiramiNode {
                         let l = ledger.lock().await;
                         if let Err(e) = l.save_to_path(path) {
                             tracing::error!("Failed to persist slash events: {}", e);
+                        }
+                    }
+                    // Issue #156 — persist the slashed (smaller)
+                    // staking pool so the burn survives a restart.
+                    if let Some(path) = staking_path.as_ref() {
+                        let s = staking.lock().await;
+                        if let Err(e) = s.save_to_path(path) {
+                            tracing::error!(
+                                "Failed to persist staking pool to {}: {}",
+                                path.display(),
+                                e
+                            );
                         }
                     }
                 }

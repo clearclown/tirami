@@ -156,14 +156,28 @@ pub(crate) async fn su_stake(
 
     let now_ms = now_millis_pub();
     let mut pool = state.staking_pool.lock().await;
-    let stake = pool
-        .stake(state.local_node_id.clone(), req.amount, duration, now_ms)
-        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    let (multiplier, unlocks_at_ms) = {
+        let stake = pool
+            .stake(state.local_node_id.clone(), req.amount, duration, now_ms)
+            .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+        (stake.multiplier(), stake.unlocks_at_ms)
+    };
+    // Issue #156 — persist after mutation so a restart does not
+    // silently wipe the operator's locked TRM.
+    if let Some(path) = state.config.staking_state_path.as_ref() {
+        if let Err(e) = pool.save_to_path(path) {
+            tracing::warn!(
+                "Failed to persist staking pool to {} after stake: {}",
+                path.display(),
+                e
+            );
+        }
+    }
 
     Ok(Json(StakeResponse {
         ok: true,
-        multiplier: stake.multiplier(),
-        unlocks_at_ms: stake.unlocks_at_ms,
+        multiplier,
+        unlocks_at_ms,
     }))
 }
 
@@ -205,6 +219,17 @@ pub(crate) async fn su_unstake(
     let returned = pool
         .unstake(&state.local_node_id, now_ms)
         .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    // Issue #156 — persist after the unlock so the next restart
+    // does not silently re-insert the removed stake.
+    if let Some(path) = state.config.staking_state_path.as_ref() {
+        if let Err(e) = pool.save_to_path(path) {
+            tracing::warn!(
+                "Failed to persist staking pool to {} after unstake: {}",
+                path.display(),
+                e
+            );
+        }
+    }
 
     Ok(Json(UnstakeResponse { ok: true, returned }))
 }

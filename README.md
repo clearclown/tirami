@@ -6,10 +6,10 @@
 
 [![Crates.io](https://img.shields.io/crates/v/tirami-core?label=crates.io&color=e6522c)](https://crates.io/crates/tirami-core)
 [![License: MIT](https://img.shields.io/badge/License-MIT-brightgreen.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-targeted_pass-brightgreen)]()
+[![Tests](https://img.shields.io/badge/tests-1574_passing-brightgreen)]()
 [![verify-impl](https://img.shields.io/badge/verify--impl-123%2F123_GREEN-brightgreen)]()
 [![foundry test](https://img.shields.io/badge/foundry_test-20%2F20_GREEN-brightgreen)]()
-[![Phase](https://img.shields.io/badge/phase-19_hardened-blue)]()
+[![Phase](https://img.shields.io/badge/phase-25_hardened-blue)]()
 [![Mainnet](https://img.shields.io/badge/mainnet-audit_gated-orange)]()
 
 ---
@@ -26,9 +26,22 @@ The inference foundation comes from [mesh-llm](https://github.com/Mesh-LLM/mesh-
 
 ---
 
-## ⚠️ Status Honesty (2026-05-04 / Phase 19 hardening)
+## ⚠️ Status Honesty (2026-05-25 / Phase 25 hardening)
 
 Before anything else, here is exactly what works and what does not. Tirami is MIT-licensed open-source software, **not a token sale**. No ICO, no pre-mine, no team treasury, no airdrop. TRM is compute accounting (1 TRM = 10⁹ FLOP), not a financial product — see [`SECURITY.md § Secondary Markets`](SECURITY.md#secondary-markets--third-party-tokenization).
+
+### Phase 20-25 — multi-host live-mesh hardening (2026-05)
+
+A sustained run of **2 seeds + 35 worker daemons across 4 physical hosts** (2× macOS arm64, 2× Linux x86_64) over a Tailscale tailnet exercised the protocol for 24h+ and surfaced — then fixed — five protocol-level bugs:
+
+- **Persistent Ed25519 node wallet** (`crates/tirami-node/src/wallet.rs`): one 32-byte seed at `~/.tirami/node.key` (mode 0600, atomic write) underlies both the iroh QUIC keypair and HTTP-layer trade/loan signing, so a node keeps its identity across restarts. `tirami wallet identity` prints the NodeId.
+- **Stake gate enforced on the P2P path too**, not just HTTP — closes a bypass where a worker mesh could drive a provider past the stakeless earn cap without staking.
+- **Gossip-ingress stake check is soft-accept**: a receiver cannot authoritatively reject a peer's gossiped trade on a stake state it doesn't hold; only the constitutional `PreviouslySlashed` ban is hard-rejected.
+- **Collusion-detector false-positive guard**: collusion-based slashing is skipped below `COLLUSION_PROVIDER_DIVERSITY_MIN` distinct providers (a small mesh's concentration is topological, not malicious), and an already-banned node is never re-slashed (no further drain of locked stake).
+- **StakingPool persistence** (`~/.tirami/staking.json`, atomic): locked TRM now survives a restart — verified in production when a slept Mac's seed reloaded its 100 TRM stake on relaunch.
+- **Audit-challenger gated on backend capability**: the llama.cpp backend lacks `forward_tokens`, so the audit loop now logs one INFO and exits instead of emitting a WARN every interval (full `forward_tokens` impl is still pending — see "Not done").
+
+These are merged on `main` (PRs #146, #149, #152, #155, #157). The audit challenge-response mechanism itself remains **non-functional** on llama.cpp until `forward_tokens` lands, so `audit_tier` stays at its default and reputation is effectively trade-volume-based today.
 
 ### ✅ Functional today (targeted tests verified; public-testnet prep)
 
@@ -429,12 +442,15 @@ The seed restart-survives a full process kill: the Ed25519 keypair is persistent
 │  Not deployed yet — in-memory MockChainClient   │
 └─────────────────────────────────────────────────┘
 
-All 5 layers are Rust across 16 workspace crates. **1 195 tests passing
+All 5 layers are Rust across 16 workspace crates. **1 574 tests passing
 + 20 Solidity tests.** 123/123 verify-impl GREEN. Phase 17 shipped 24
 security primitives across 4 waves for public-network readiness; Phase
 18-19 layered on Constitutional parameters, stake-required mining, the
 zkML `ProofPolicy` ratchet, peer HTTP auto-discovery, and a gated
-mainnet deploy path — see [`docs/release-readiness.md`](docs/release-readiness.md) for the tier A-D roadmap.
+mainnet deploy path; Phase 20-25 added the persistent node wallet,
+StakingPool persistence, P2P stake-gate enforcement, and the
+collusion-FP guard hardened against a 35-worker live mesh — see
+[`docs/release-readiness.md`](docs/release-readiness.md) for the tier A-D roadmap.
 
 Mainnet deploy is gated on external audit + 30-day Sepolia stability +
 multi-sig custody + bug bounty live ([`docs/security/audit-scope.md`](docs/security/audit-scope.md)).
@@ -457,7 +473,7 @@ bash scripts/demo-e2e.sh
 
 This downloads SmolLM2-135M (~100 MB) from HuggingFace, starts a real Tirami
 node with Metal/CUDA acceleration, runs real chat completions, walks
-through every Phase 1-19 endpoint, and prints a colored summary.
+through every Phase 1-25 endpoint, and prints a colored summary.
 
 After it finishes, the same node also responds to:
 
@@ -663,13 +679,13 @@ tirami/  (this repo — all 5 layers, 16 Rust crates)
 └── docs/                    # Specs, whitepaper, threat model, roadmap, release-readiness
 ```
 
-~25,000 lines of Rust. **1 195 tests passing** + 20 Solidity tests. Phase 1-19 hardening complete.
+~25,000 lines of Rust. **1 574 tests passing** + 20 Solidity tests. Phase 1-25 hardening complete.
 
 ## Ecosystem
 
 | Repo | Layer | Tests | Status |
 |------|-------|-------|--------|
-| [clearclown/tirami](https://github.com/clearclown/tirami) (this) | L1-L4 | 1 195 | Phase 1-19 hardening ✅ |
+| [clearclown/tirami](https://github.com/clearclown/tirami) (this) | L1-L4 | 1 574 | Phase 1-25 hardening ✅ |
 | [clearclown/tirami-economics](https://github.com/clearclown/tirami-economics) | Theory | 16/16 verify-audit GREEN | Spec §1-§25, chapters §1-§18, papers PDF + arXiv tarball |
 | [repos/tirami-contracts](https://github.com/clearclown/tirami/tree/main/repos/tirami-contracts) (in-tree) | On-chain | 20 forge tests | TRM ERC-20 + TiramiBridge, validator-gated Merkle mint, mainnet deploy gated (see `Makefile`) |
 | [Mesh-LLM/mesh-llm](https://github.com/Mesh-LLM/mesh-llm) | L0 upstream | external | Active distributed local-LLM runtime: public/private meshes, OpenAI-compatible API, pipeline split, MoE expert sharding |

@@ -16,3 +16,7 @@ sdk/python/build/
 mcp/dist/
 mcp/build/
 repos/
+
+# Runtime ledger / state snapshots (must never be committed)
+forge-ledger.json
+*.ledger.json

@@ -10,7 +10,7 @@ RESULTS=()
 
 assert() {
   local id="$1"; local desc="$2"; local cmd="$3"
-  if eval "$cmd" >/dev/null 2>&1; then
+  if eval "$cmd"; then
     PASS=$((PASS+1)); RESULTS+=("✓ $id  $desc")
   else
     FAIL=$((FAIL+1)); RESULTS+=("✗ $id  $desc")
@@ -371,9 +371,9 @@ assert "#P13-prom-staked"   "tirami_total_staked Prometheus gauge" \
 
 # === Build & test ===
 assert "BUILD" "cargo check --workspace passes" \
-  "cargo check --workspace --quiet 2>&1 | grep -qv 'error'"
+  "cargo check --workspace --quiet"
 assert "TEST" "cargo test --workspace passes" \
-  "cargo test --workspace --quiet 2>&1 | tail -30 | grep -qE 'test result: ok' && ! cargo test --workspace --quiet 2>&1 | tail -30 | grep -qE 'FAILED'"
+  "cargo test --workspace --quiet"
 
 # === Report ===
 echo ""

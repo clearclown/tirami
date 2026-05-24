@@ -2,7 +2,7 @@
 
 ## mesh-llm
 
-Tirami's distributed inference engine is built on [mesh-llm](https://github.com/michaelneale/mesh-llm) by **Michael Neale**.
+Tirami's inference foundation comes from [mesh-llm](https://github.com/Mesh-LLM/mesh-llm), originally by **Michael Neale** and now maintained under the Mesh-LLM organization.
 
 mesh-llm solved the hard problems of distributed LLM inference:
 
@@ -13,7 +13,9 @@ mesh-llm solved the hard problems of distributed LLM inference:
 - Web management console with live topology visualization
 - Plugin system with Blackboard agent coordination
 
-Tirami does not claim credit for any of this engineering. What Tirami adds is an economic layer — TRM accounting, Proof of Useful Work, dynamic pricing, and autonomous agent budgets — on top of mesh-llm's inference foundation.
+Tirami does not claim credit for any of this engineering. What Tirami adds is an economic layer — TRM accounting, Proof of Useful Work, dynamic pricing, and autonomous agent budgets — on top of the mesh-llm inference foundation.
+
+The current upstream local/distributed LLM runtime is [Mesh-LLM/mesh-llm](https://github.com/Mesh-LLM/mesh-llm). Tirami also has a historical integration fork at [nm-arealnormalman/mesh-llm](https://github.com/nm-arealnormalman/mesh-llm), but the recommended entry point for the Tirami protocol and economy is the `clearclown/tirami` workspace.
 
 The relationship is straightforward: mesh-llm makes distributed inference work. Tirami makes it worth doing.
 

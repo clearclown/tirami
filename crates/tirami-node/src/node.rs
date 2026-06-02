@@ -1426,7 +1426,7 @@ fn load_persisted_agent_identity(
     }
 }
 
-pub(crate) fn parse_bootstrap_peer_spec(spec: &str) -> Result<iroh::EndpointAddr, String> {
+pub fn parse_bootstrap_peer_spec(spec: &str) -> Result<iroh::EndpointAddr, String> {
     let spec = spec.trim();
     if spec.is_empty() {
         return Err("expected PUBLIC_KEY or PUBLIC_KEY@RELAY_URL".to_string());

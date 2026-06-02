@@ -309,7 +309,23 @@ fn engine_thread(rx: mpsc::Receiver<EngineCmd>) {
                     let be = LlamaBackend::init()
                         .map_err(|e| TiramiError::ModelLoadError(format!("backend: {e}")))?;
 
-                    let params = LlamaModelParams::default();
+                    // Offload model layers to the GPU when a GPU backend
+                    // (Metal/CUDA) is compiled in. llama.cpp only initialises
+                    // the CUDA backend when `n_gpu_layers > 0`; the upstream
+                    // default of 0 leaves every layer on the CPU even in a
+                    // CUDA build, so a `--features cuda` binary would silently
+                    // run CPU-only without this.
+                    //
+                    // Default to offloading all layers (a high count, clamped
+                    // to the model's actual depth by llama.cpp). Operators tune
+                    // it per machine via `TIRAMI_GPU_LAYERS`: lower it on GPUs
+                    // with limited VRAM, or set 0 to force CPU. On a CPU-only
+                    // build this is a no-op regardless of the value.
+                    let gpu_layers = std::env::var("TIRAMI_GPU_LAYERS")
+                        .ok()
+                        .and_then(|v| v.parse::<u32>().ok())
+                        .unwrap_or(256);
+                    let params = LlamaModelParams::default().with_n_gpu_layers(gpu_layers);
                     let m = LlamaModel::load_from_file(&be, &model_path, &params)
                         .map_err(|e| TiramiError::ModelLoadError(format!("load: {e}")))?;
 

@@ -13,34 +13,36 @@ Tirami is a distributed LLM inference protocol where **compute is currency**. Th
 
 | Repo | Language | Status | Layer | Purpose |
 |------|----------|--------|-------|---------|
-| `clearclown/tirami` (this) | Rust | Active (1,192 tests, Phase 19) | L1-L4 | Protocol core + finance, intelligence, marketplace + tokenomics + governance (21 mutable / 18 constitutional) + staking + slashing loop + collusion detection + NIP-90 relay + Prometheus metrics + Bitcoin OP_RETURN + hybrid-chain anchor + PeerRegistry/PriceSignal/select_provider + FLOP measurement + `tirami start` + audit challenge-response + dual-signed P2P trade w/ nonce replay protection + PersonalAgent + peer auto-discovery + HTTP→P2P forwarding + gated Base mainnet Makefile (Rust workspace, 16 crates incl. `tirami-zkml-bench` + `tirami-attestation`) |
+| `clearclown/tirami` (this) | Rust | Active (1,574 tests, Phase 25) | L1-L4 | Protocol core + finance, intelligence, marketplace + tokenomics + governance (21 mutable / 18 constitutional) + staking + slashing loop + collusion detection + NIP-90 relay + Prometheus metrics + Bitcoin OP_RETURN + hybrid-chain anchor + PeerRegistry/PriceSignal/select_provider + FLOP measurement + `tirami start` + audit challenge-response + dual-signed P2P trade w/ nonce replay protection + PersonalAgent + peer auto-discovery + HTTP→P2P forwarding + persistent Ed25519 node wallet + multi-host live-mesh hardening (Phase 20-25) + gated Base mainnet Makefile (Rust workspace, 16 crates incl. `tirami-zkml-bench`, `tirami-anchor`) |
 | `clearclown/tirami-contracts` | Solidity (Foundry) | 15 tests passing | On-chain | TRM ERC-20 + TiramiBridge. Target: Base L2. **Not deployed to mainnet** — `Makefile` gated on `AUDIT_CLEARANCE=yes` + `MULTISIG_OWNER` + interactive prompt. Base Sepolia deploy is free and unblocked. |
 | `nm-arealnormalman/mesh-llm` | Rust | Active (43 tests) | L0 | mesh-llm + Tirami economy = production runtime |
 | `clearclown/tirami-bank` | Python (archived) | Scaffold v0.1 (45 tests) | — | Superseded by `crates/tirami-bank/` in this repo |
 | `clearclown/tirami-mind` | Python (archived) | Scaffold v0.1 (40 tests) | — | Superseded by `crates/tirami-mind/` in this repo |
 | `clearclown/tirami-agora` | Python (archived) | Scaffold v0.1 (39 tests) | — | Superseded by `crates/tirami-agora/` in this repo |
 | `clearclown/forge-economics` | Markdown | Active (16/16 GREEN) | Theory | Economic theory, design rationale, parameters (§1-§12 = single source of truth for all layers) |
-| `tirami-sdk` (in-tree) | Rust | Active (15 tests) | Client | Rust async HTTP client for Tirami API |
-| `tirami-mcp` (in-tree) | Rust | Active (5 tests) | Client | Rust MCP server (40 tools for Claude/Cursor) |
+| `tirami-sdk` (in-tree) | Rust | Active (24 tests) | Client | Rust async HTTP client for Tirami API |
+| `tirami-mcp` (in-tree) | Rust | Active (6 tests) | Client | Rust MCP server (44 tools for Claude/Cursor) |
 
-### 5-Layer Architecture (all layers are Rust since 2026-04-07 Phase 7 — now at Phase 19 as of 2026-04-19)
+### 5-Layer Architecture (all layers are Rust since 2026-04-07 Phase 7 — now at Phase 25 as of 2026-05-25)
 
 ```
-L4: Discovery     crates/tirami-agora          — Agent marketplace, reputation, NIP-90 (42 tests)
-L3: Intelligence  crates/tirami-mind           — AutoAgent self-improvement paid in TRM (53 tests)
-L2: Finance       crates/tirami-bank           — Strategies, portfolios, futures, insurance (53 tests)
-L1: Economy       crates/tirami-ledger et al.  — TRM ledger, trades, lending, safety (143 tests)
+L4: Discovery     crates/tirami-agora          — Agent marketplace, reputation, NIP-90 (54 tests)
+L3: Intelligence  crates/tirami-mind           — AutoAgent self-improvement paid in TRM (127 tests)
+L2: Finance       crates/tirami-bank           — Strategies, portfolios, futures, insurance (85 tests)
+L1: Economy       crates/tirami-ledger et al.  — TRM ledger, trades, lending, safety (642 tests)
 L0: Inference     nm-arealnormalman/mesh-llm  — Distributed LLM inference + forge-economy port
 ```
 
-**Total tests across the ecosystem:** 1,192 (tirami workspace) + 646 (forge-mesh) +
-15 (tirami-contracts Foundry) + 16 (tirami-economics SPEC-AUDIT) = **1,869 passing**.
+**Tirami workspace:** **1,574 passing** across 16 crates
+(`cargo test --workspace`; authoritative count per the Phase 25 README sync).
+forge-mesh (L0 runtime) and forge-economics (theory, 16/16 GREEN) are
+tracked separately in their own repos.
 
 Phase 7 (2026-04-07) rewrote L2/L3/L4 from Python scaffolds into Rust
 workspace crates. Phase 8 (2026-04-08) wired them into tirami-node with
 20 new HTTP endpoints (8 bank + 7 agora + 5 mind), plus a CuPaidOptimizer
 that calls a frontier LLM via reqwest and records the TRM consumption as
-a real TradeRecord on the ledger. A single `forge node --port 3000` now
+a real TradeRecord on the ledger. A single `tirami node --port 3000` now
 exposes the full 5-layer Tirami ecosystem.
 
 All L2/L3/L4 numeric constants reference `forge-economics/spec/parameters.md`
@@ -52,7 +54,7 @@ The integrated fork at `/Users/ablaze/Projects/forge-mesh` contains mesh-llm's f
 
 ```bash
 cargo build --release          # Full build
-cargo test --workspace         # All tests (891 across 15 crates)
+cargo test --workspace         # All tests (1,574 across 16 crates)
 cargo check --workspace        # Fast type check
 cargo clippy --workspace       # Lint
 ```
@@ -66,13 +68,13 @@ Economic Layer (Tirami-original)    ← This is what we build
 ├── tirami-ledger   TRM trades, pricing, yield, settlement
 ├── tirami-lightning CU↔BTC bridge (optional)
 ├── tirami-node/api OpenAI API + /v1/tirami/* economic endpoints
-└── forge-verify   (planned) dual-sign, gossip, PoUW
+└── tirami-anchor  Merkle-root anchor to on-chain (Phase 16)
 
 Inference Layer (mesh-llm-derived)  ← This is inherited
 ├── tirami-net      iroh QUIC + Noise encryption
 ├── tirami-infer    llama.cpp backend
-├── tirami-proto    wire protocol (bincode, 14 message types)
-└── forge-shard    layer assignment
+├── tirami-proto    wire protocol (bincode, 30+ message types)
+└── tirami-shard   layer assignment
 ```
 
 **When making changes, prioritize the economic layer.** Inference/networking code will eventually be replaced by mesh-llm's implementation.
@@ -89,7 +91,7 @@ Inference Layer (mesh-llm-derived)  ← This is inherited
 | `tirami-cli` | ~1050 | Reference CLI (chat, seed, worker, su) | Low (will change with mesh-llm fork) |
 | `tirami-net` | ~1400 | P2P transport | Low (replaced by mesh-llm) |
 | `tirami-infer` | ~1270 | llama.cpp inference | Low (replaced by mesh-llm) |
-| `forge-shard` | ~130 | Topology planner | Low (replaced by mesh-llm) |
+| `tirami-shard` | ~130 | Topology planner | Low (replaced by mesh-llm) |
 
 ## Key Design Rules
 
@@ -189,11 +191,44 @@ All `/v1/tirami/*` endpoints are rate-limited (token bucket, 30 req/sec).
 
 ## What's Implemented vs Planned
 
+> **Current state (Phase 25):** 1,574 tests passing across 16 crates.
+> See the README "⚠️ Status Honesty" section for the authoritative
+> functional-today / scaffolded / not-done breakdown — keep this guide
+> in sync with it, not ahead of it.
+
+### Phase 20-25 — Multi-host live-mesh hardening (DONE 2026-05-25, 1,574 tests)
+
+A sustained run of 2 seeds + 35 worker daemons across 4 physical hosts
+(2× macOS arm64, 2× Linux x86_64) over a Tailscale tailnet surfaced and
+fixed five protocol-level bugs (PRs #146, #149, #152, #155, #157):
+
+- **Persistent Ed25519 node wallet** (`crates/tirami-node/src/wallet.rs`):
+  one 32-byte seed at `~/.tirami/node.key` (mode 0600, atomic) backs both
+  the iroh QUIC keypair and HTTP-layer trade/loan signing — identity
+  survives restart. `tirami wallet identity` prints the NodeId.
+- **Stake gate enforced on the P2P path** (not just HTTP) — closes a
+  bypass where a worker mesh drove a provider past the stakeless earn cap.
+- **Gossip-ingress stake check is soft-accept** — only the constitutional
+  `PreviouslySlashed` ban is hard-rejected on gossiped trades.
+- **Collusion-detector false-positive guards** — slashing skipped below
+  `COLLUSION_PROVIDER_DIVERSITY_MIN` providers; already-banned nodes are
+  never re-slashed.
+- **StakingPool persistence** (`~/.tirami/staking.json`, atomic) — locked
+  TRM survives restart.
+- **Audit-challenger gated on backend capability** — llama.cpp lacks
+  `forward_tokens`, so the audit loop logs one INFO and exits instead of
+  WARN-spamming. Audit challenge-response is still **non-functional** on
+  llama.cpp until `forward_tokens` lands; `audit_tier` stays at default
+  and reputation is effectively trade-volume-based today.
+- Earlier waves (20-24): agent action/data economy, autonomous join,
+  stake-enforcement, NIP-90 Schnorr publish, shared wallet-identity
+  handle + identity persistence, zkML backend interface, iroh 0.97 → 1.0-rc.
+
 ### Phase 17-19 — Hardening + mainnet gate (DONE 2026-04-19, 1,192 tests)
 
 **Phase 17 Wave 1-3 — Hostile-network hardening:**
 - Wave 1.3: `slashing::SlashingEngine` + automatic slashing loop inside `tirami-node` (interval `slashing_interval_secs`). Collusion detector + audit-tier failures → slashing events recorded on ledger.
-- Wave 3.1: `tirami-attestation` crate — scaffold for Apple Secure Enclave / NVIDIA H100 CC TEE attestation (not wired; Phase 20+).
+- Wave 3.1: `tirami-core::attestation` module — scaffold for Apple Secure Enclave / NVIDIA H100 CC TEE attestation (not wired; Phase 20+).
 - Wave 3.2: Kani formal-verification harness (10 initial invariants over ledger).
 - Wave 3.4: DDoS mitigation — `max_concurrent_connections` cap + per-ASN rate limits.
 - Wave 3.5: Key-rotation scaffold for node identities.

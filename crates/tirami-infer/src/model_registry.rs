@@ -44,13 +44,34 @@ pub fn builtin_models() -> Vec<ModelSpec> {
             tokenizer_file: "tokenizer.json".to_string(),
             size_mb: 2000,
         },
+        // 7B+ : Qwen's official *-GGUF repos ship these as SPLIT files
+        // (…-q4_k_m-00001-of-0000N.gguf), which the single-file downloader
+        // here 404s on. bartowski publishes single-file Q4_K_M quants with a
+        // consistent `Qwen2.5-{N}B-Instruct-Q4_K_M.gguf` name, so we point at
+        // those. Tokenizer still comes from the official Qwen repo.
         ModelSpec {
             name: "qwen2.5:7b".to_string(),
-            gguf_repo: "Qwen/Qwen2.5-7B-Instruct-GGUF".to_string(),
-            gguf_file: "qwen2.5-7b-instruct-q4_k_m.gguf".to_string(),
+            gguf_repo: "bartowski/Qwen2.5-7B-Instruct-GGUF".to_string(),
+            gguf_file: "Qwen2.5-7B-Instruct-Q4_K_M.gguf".to_string(),
             tokenizer_repo: "Qwen/Qwen2.5-7B-Instruct".to_string(),
             tokenizer_file: "tokenizer.json".to_string(),
             size_mb: 4700,
+        },
+        ModelSpec {
+            name: "qwen2.5:14b".to_string(),
+            gguf_repo: "bartowski/Qwen2.5-14B-Instruct-GGUF".to_string(),
+            gguf_file: "Qwen2.5-14B-Instruct-Q4_K_M.gguf".to_string(),
+            tokenizer_repo: "Qwen/Qwen2.5-14B-Instruct".to_string(),
+            tokenizer_file: "tokenizer.json".to_string(),
+            size_mb: 9000,
+        },
+        ModelSpec {
+            name: "qwen2.5:32b".to_string(),
+            gguf_repo: "bartowski/Qwen2.5-32B-Instruct-GGUF".to_string(),
+            gguf_file: "Qwen2.5-32B-Instruct-Q4_K_M.gguf".to_string(),
+            tokenizer_repo: "Qwen/Qwen2.5-32B-Instruct".to_string(),
+            tokenizer_file: "tokenizer.json".to_string(),
+            size_mb: 20000,
         },
         ModelSpec {
             name: "smollm2:135m".to_string(),

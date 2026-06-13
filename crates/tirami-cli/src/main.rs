@@ -695,11 +695,15 @@ async fn main() -> anyhow::Result<()> {
             config.ledger_path = Some(PathBuf::from(&ledger));
             let mut node = tirami_node::TiramiNode::new(config);
 
-            let public_key: iroh::PublicKey = seed
-                .parse()
-                .map_err(|e| anyhow::anyhow!("invalid seed public key: {}", e))?;
-
-            let mut seed_addr = iroh::EndpointAddr::new(public_key);
+            // Accept "HEX", "HEX@IP:PORT", or "HEX@RELAY_URL" — same grammar as
+            // the seed's --bootstrap-peer. The "@IP:PORT" form lets a worker
+            // dial its seed directly without pkarr/DNS discovery, which is
+            // essential on networks where the iroh discovery service
+            // (dns.iroh.link) is unreachable. Without a direct address the
+            // worker can only find the seed via discovery and silently fails
+            // to connect on such networks.
+            let mut seed_addr = tirami_node::node::parse_bootstrap_peer_spec(&seed)
+                .map_err(|e| anyhow::anyhow!("invalid seed spec: {}", e))?;
             if let Some(relay_url) = relay {
                 let url: iroh::RelayUrl = relay_url
                     .parse()

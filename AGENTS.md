@@ -1,64 +1,106 @@
-# AGENTS.md — Forge
+# AGENTS.md — Tirami
+
+> Guidance for AI coding agents working in this repo. For the full
+> development guide see [`CLAUDE.md`](CLAUDE.md); for the authoritative
+> functional-today / scaffolded / not-done breakdown see the README
+> "⚠️ Status Honesty" section. This file is the condensed orientation.
 
 ## Project
 
-Forge is a self-expanding LLM protocol over encrypted P2P networks.
+Tirami is a distributed LLM inference protocol where **compute is currency**.
+The inference layer is built on [mesh-llm](https://github.com/michaelneale/mesh-llm);
+Tirami's original contribution is the **economic layer** — TRM (Tirami
+Resource Merit) accounting, Proof of Useful Work, dynamic pricing, and
+autonomous agent budgets. TRM is compute accounting (1 TRM = 10⁹ FLOP),
+**not a financial product** — no ICO, no pre-mine, no airdrop.
 
-A small LLM on a phone discovers idle devices, shards itself across them via pipeline parallelism, and grows autonomously. All traffic encrypted. All compute logically local.
-
-**Tagline:** "A seed falls into the network and grows into a forest."
+**Tagline:** "Computation is currency. Every watt produces intelligence, not waste."
 
 ## Workspace Structure
 
-Rust monorepo with Cargo workspaces:
+Rust monorepo (edition 2024, resolver v2), **16 crates**:
 
 ```
 crates/
-  forge-core/    — Shared types (NodeId, ShardId, ModelManifest, Config, errors)
-  forge-net/     — P2P networking via Iroh (QUIC, Noise, NAT traversal, mDNS)
-  forge-shard/   — Model layer partitioning, assignment, rebalancing
-  forge-infer/   — Inference engine (Candle + GGUF + Metal/CPU)
-  forge-proto/   — Wire protocol message types (serde + bincode)
-  forge-ledger/  — Compute economy (CU, trades, yield, reputation)
-  forge-node/    — Node daemon, orchestrator, event loop
-  forge-cli/     — Reference CLI client (chat, seed, worker, status)
+  tirami-core/      — Shared types (NodeId, TRM, Config, PriceSignal, AuditTier, InferenceTicket, attestation scaffold)
+  tirami-net/       — P2P networking via iroh (QUIC, Noise, NAT traversal, gossip)
+  tirami-shard/     — Model layer partitioning / topology
+  tirami-infer/     — Inference engine (llama.cpp + GGUF + Metal/CPU, generate_metered/audit)
+  tirami-proto/     — Wire protocol message types (serde + bincode; 30+ types incl. audit challenge/response)
+  tirami-ledger/    — Core economic engine (TRM, trades, lending, tokenomics, staking,
+                       governance, collusion, slashing, PeerRegistry, select_provider, audit)
+  tirami-node/      — Node daemon, HTTP API (60+ endpoints), pipeline, persistent wallet, background loops
+  tirami-cli/       — Reference CLI (chat, seed, worker, start, settle, wallet, su, agent)
+  tirami-lightning/ — TRM <-> Bitcoin Lightning bridge (bidirectional)
+  tirami-bank/      — L2: strategies, portfolios, futures, insurance, risk, yield
+  tirami-mind/      — L3: AutoAgent self-improvement loops paid in TRM
+  tirami-agora/     — L4: agent marketplace, reputation, NIP-90
+  tirami-sdk/       — Rust async HTTP client for the Tirami API
+  tirami-mcp/       — Rust MCP server (44 tools for Claude/Cursor/ChatGPT)
+  tirami-anchor/    — Periodic Merkle-root anchor loop + swappable ChainClient (Phase 16)
+  tirami-zkml-bench/— zkML proof-policy ratchet + benchmark harness (MockBackend; ezkl/risc0 pending)
 ```
 
-## Key Technical Invariants
+(`crates/tirami-zkml-bench-guest` is a risc0 guest, not a workspace member.)
 
-- All network traffic MUST be encrypted (Noise protocol over QUIC)
-- Pipeline parallelism only over WAN (tensor parallelism only for LAN/Thunderbolt)
-- Phone always holds layers 0..k (embedding + early layers) for instant fallback
-- Graceful degradation: if all remote nodes disconnect, fall back to local model
-- GGUF Q4 is the model format — no custom formats
-- Activation tensors use raw bytes + optional int8 quantization for WAN transfer
+## Build & Test
+
+```bash
+cargo build --release      # Full build
+cargo test --workspace     # 1,574 tests across 16 crates
+cargo check --workspace    # Fast type check
+cargo clippy --workspace   # Lint
+bash scripts/verify-impl.sh  # TDD conformance check
+```
+
+## Key Design Rules
+
+- **CU/TRM is the native currency.** Bitcoin/Lightning is an optional
+  off-ramp, never a hard dependency in the economic engine.
+- **Trades and loans are bilateral.** Every transfer is dual-signed
+  (Ed25519) by provider + consumer (or lender + borrower) and gossiped,
+  with 128-bit nonce replay protection.
+- **No global consensus.** TRM accounting uses local ledgers + gossip +
+  dual signatures. On-chain anchoring (Base L2, Bitcoin OP_RETURN) is an
+  optional audit layer, not the source of truth.
+- **No tokens, no ICO.** TRM is earned by useful computation, not sold
+  (see SECURITY.md § Secondary Markets).
+- **Agent-first API.** `/v1/tirami/*` endpoints exist so AI agents can make
+  autonomous economic decisions without human help.
+- **Fail-safe.** If any safety check cannot determine safety, it denies.
+- **Governance is constitutional.** 18 immutable constitutional parameters
+  vs 21 mutable governance parameters; proposals outside the mutable list
+  auto-reject. Don't widen the mutable set without spec change.
 
 ## What NOT to Do
 
-- Do NOT add blockchain or smart contracts
-- Do NOT add centralized servers (except bootstrap relays)
-- Do NOT send unencrypted data over the network
-- Do NOT use tensor parallelism over WAN (physics won't allow it)
-- Do NOT add GPU/CUDA support in MVP (Apple Silicon Metal + CPU only)
-- Do NOT use protobuf for tensor payloads (raw bytes only)
-- Do NOT build UI — Forge is a protocol, clients are built by third parties
-- Do NOT add mobile-specific code (UniFFI, SwiftUI, Compose)
+- Do NOT make Bitcoin/Lightning a hard dependency of the economic core.
+- Do NOT add unilateral trades or loans — both parties must sign.
+- Do NOT send unencrypted data over the network (Noise over QUIC).
+- Do NOT re-define economic constants in Rust — reference the theory
+  spec (`parameters.md`) as the single source of truth.
+- Do NOT execute external payments in the protocol core — settlement
+  endpoints export data; bridges are adapters outside the core.
+- Do NOT overstate status in docs — match the README "Status Honesty"
+  section (functional-today vs scaffolded vs not-done).
 
-## Testing Strategy
+## Conventions
 
-- `forge-core`: Unit tests for type serialization/deserialization
-- `forge-infer`: Integration tests with small GGUF models (Llama-1B-Q4)
-- `forge-net`: Integration tests with local Iroh nodes
-- `forge-shard`: Unit tests for layer assignment algorithms
-- `forge-node`: Multi-process integration tests (2+ nodes on localhost)
-- `forge-cli`: Smoke tests for CLI commands
+- Errors: `TiramiError` enum in `tirami-core`; `anyhow` in the CLI only.
+- Serialization: `serde` for JSON/config, `bincode` for the wire protocol.
+- Async: `tokio`, `Arc<Mutex<T>>` for shared state.
+- Logging: `tracing` — INFO for user-visible events, DEBUG for protocol detail.
+- Security: HMAC-SHA256 for ledger integrity, Ed25519 for trade/loan
+  signatures (persistent node wallet at `~/.tirami/node.key`), Noise for
+  transport, constant-time auth-token comparison.
 
 ## Docs
 
-- `docs/concept.md` — Why Forge exists
-- `docs/economy.md` — Compute Standard, CU, trades, yield
-- `docs/architecture.md` — Technical architecture
-- `docs/protocol-spec.md` — Wire protocol specification
-- `docs/bootstrap.md` — How a node starts and grows
-- `docs/threat-model.md` — Security considerations
-- `docs/roadmap.md` — Implementation phases
+- `CLAUDE.md` — full development guide (crate map, API surface, common tasks)
+- `README.md` — Status Honesty (authoritative implemented/scaffolded/not-done)
+- `docs/economy.md` — Compute Standard, TRM, trades, yield, lending
+- `docs/architecture.md` — two-layer (economic / inference) design
+- `docs/protocol-spec.md` — wire protocol specification
+- `docs/roadmap.md` — implementation phases
+- `docs/threat-model.md` + `docs/security/` — security + economic threats
+- `docs/release-readiness.md` — mainnet audit gates

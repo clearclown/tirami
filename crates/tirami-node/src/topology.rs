@@ -1,6 +1,6 @@
-use tirami_core::{Config, TiramiError, ModelManifest, NodeId, PeerCapability, PipelineTopology};
-use tirami_shard::ShardAssigner;
 use serde::{Deserialize, Serialize};
+use tirami_core::{Config, ModelManifest, NodeId, PeerCapability, PipelineTopology, TiramiError};
+use tirami_shard::ShardAssigner;
 
 /// A runtime snapshot of the current split-inference plan.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -276,4 +276,3 @@ mod tests {
         assert!(uncapped.available_memory_gb <= uncapped.memory_gb);
     }
 }
-

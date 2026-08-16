@@ -3,13 +3,11 @@
 //! This is the single place where ComputeLedger lending state is reified
 //! into forge-bank types. All `/v1/tirami/bank/*` handlers use it.
 
-use tirami_bank::{
-    FuturesContract, Portfolio, PortfolioManager, RiskTolerance, StrategyKind,
-};
+use serde::{Deserialize, Serialize};
+use tirami_bank::{FuturesContract, Portfolio, PortfolioManager, RiskTolerance, StrategyKind};
 use tirami_core::NodeId;
 use tirami_ledger::ComputeLedger;
 use tirami_ledger::lending::{max_borrowable, offered_interest_rate};
-use serde::{Deserialize, Serialize};
 
 /// Wrapper combining PortfolioManager with a futures book.
 /// PortfolioManager does not store futures, so we maintain them here.
@@ -29,7 +27,9 @@ impl BankServices {
         let strategy_kind = StrategyKind::default();
         let risk = RiskTolerance::Balanced;
         let portfolio = Portfolio::new(10_000);
-        let strategy = strategy_kind.to_strategy().expect("default StrategyKind is always valid");
+        let strategy = strategy_kind
+            .to_strategy()
+            .expect("default StrategyKind is always valid");
         let mgr = PortfolioManager::new(portfolio, strategy, risk.clone());
         Self {
             portfolio: mgr,

@@ -117,10 +117,9 @@ impl ChallengeStore {
     /// The entry is removed before return so a successful consume
     /// cannot be replayed.
     pub fn consume(&mut self, challenge_hex: &str, now_ms: u64) -> Result<[u8; 32], String> {
-        let record = self
-            .by_hex
-            .remove(challenge_hex)
-            .ok_or_else(|| "unknown challenge_hex (expired, already-consumed, or never issued)".to_string())?;
+        let record = self.by_hex.remove(challenge_hex).ok_or_else(|| {
+            "unknown challenge_hex (expired, already-consumed, or never issued)".to_string()
+        })?;
         if record.expires_at_ms <= now_ms {
             return Err("challenge expired".into());
         }
@@ -217,8 +216,12 @@ pub(crate) async fn verify_did_signature(
             "signature_hex must be 128 hex characters (64-byte Ed25519 sig)".into(),
         ));
     }
-    let sig_bytes = hex::decode(&req.signature_hex)
-        .map_err(|e| (StatusCode::BAD_REQUEST, format!("signature_hex decode: {e}")))?;
+    let sig_bytes = hex::decode(&req.signature_hex).map_err(|e| {
+        (
+            StatusCode::BAD_REQUEST,
+            format!("signature_hex decode: {e}"),
+        )
+    })?;
     let mut sig_arr = [0u8; 64];
     sig_arr.copy_from_slice(&sig_bytes);
     let sig = Signature::from_bytes(&sig_arr);
@@ -258,7 +261,10 @@ pub(crate) async fn verify_did_signature(
             did_node_id,
             scope,
             SESSION_TTL_SECS,
-            format!("did-auth:{}", &req.did[DID_PREFIX.len()..DID_PREFIX.len() + 12]),
+            format!(
+                "did-auth:{}",
+                &req.did[DID_PREFIX.len()..DID_PREFIX.len() + 12]
+            ),
             now,
         )
     };

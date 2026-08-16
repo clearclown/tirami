@@ -42,6 +42,9 @@ pub(crate) struct AppState {
     agentnet: Arc<Mutex<AgentNet>>,
     /// Node identity for this seed (used as provider in trades).
     pub local_node_id: NodeId,
+    /// #162 — split-inference orchestration handles. `None` without a
+    /// live transport.
+    split_ctx: Option<SplitInferenceContext>,
     /// forge-bank L2 services: PortfolioManager + futures book.
     pub bank: Arc<Mutex<crate::bank_adapter::BankServices>>,
     /// forge-agora L4 marketplace.
@@ -189,6 +192,17 @@ impl RateLimiter {
     }
 }
 
+/// #162 — everything a split-inference request needs beyond what `AppState`
+/// already carries.
+///
+/// `None` in `create_router` and in test fixtures: there is no live transport
+/// to orchestrate over, and the endpoint answers 503 rather than pretending.
+#[derive(Clone)]
+pub struct SplitInferenceContext {
+    pub transport: Arc<tirami_net::ForgeTransport>,
+    pub rpc_ready: crate::split_inference::RpcReadyDispatcher,
+}
+
 pub fn create_router(
     config: Config,
     engine: EngineState,
@@ -231,6 +245,8 @@ pub fn create_router(
         // entrypoint; no wallet plumbed in. HTTP signing handlers fall
         // back to ephemeral keys when this is None.
         None,
+        // #162 — no transport here, so no split orchestration.
+        None,
     )
 }
 
@@ -271,6 +287,9 @@ pub fn create_router_with_services(
     // `TiramiNode::init_transport`. `None` when the API runs in a
     // test fixture that did not stand up a transport.
     wallet: Option<Arc<crate::wallet::WalletKey>>,
+    // #162 — live transport + the dispatcher the seed loop resolves, so
+    // `POST /v1/tirami/split-inference` can orchestrate a model split.
+    split_ctx: Option<SplitInferenceContext>,
 ) -> Router {
     // Derive local node ID from cluster or generate a deterministic one.
     let local_node_id = cluster
@@ -295,6 +314,7 @@ pub fn create_router_with_services(
         safety: Arc::new(Mutex::new(SafetyController::new())),
         agentnet: Arc::new(Mutex::new(AgentNet::new())),
         local_node_id,
+        split_ctx,
         bank,
         marketplace,
         agora_last_seen,
@@ -313,9 +333,7 @@ pub fn create_router_with_services(
             crate::handlers::purchase_intent::PurchaseIntentRegistry::new(),
         )),
         agent_identity,
-        auth_challenges: Arc::new(Mutex::new(
-            crate::handlers::auth_did::ChallengeStore::new(),
-        )),
+        auth_challenges: Arc::new(Mutex::new(crate::handlers::auth_did::ChallengeStore::new())),
         nostr_identity: Arc::new(Mutex::new(None)),
         current_proof_policy,
         // Phase 25 C2 — build the chat-concurrency semaphore when
@@ -351,6 +369,7 @@ pub fn create_router_with_services(
         .route("/v1/tirami/providers", get(forge_providers))
         .route("/v1/tirami/peers", get(forge_peers))
         .route("/v1/tirami/schedule", post(forge_schedule))
+        .route("/v1/tirami/split-inference", post(forge_split_inference))
         .route("/v1/tirami/anchors", get(forge_anchors))
         .route("/v1/tirami/safety", get(forge_safety_status))
         .route("/v1/tirami/kill", post(forge_kill_switch))
@@ -1557,7 +1576,13 @@ fn inference_unavailable_response(reason: &str) -> Response {
     // dropped, preserving word boundaries.
     let reason_ascii: String = reason
         .chars()
-        .map(|c| if c.is_ascii_graphic() || c == ' ' { c } else { '-' })
+        .map(|c| {
+            if c.is_ascii_graphic() || c == ' ' {
+                c
+            } else {
+                '-'
+            }
+        })
         .take(120)
         .collect();
     let reason_header = axum::http::HeaderValue::from_str(&reason_ascii)
@@ -1587,9 +1612,7 @@ async fn healthz() -> (StatusCode, &'static str) {
 /// write, engine is mid-load). The body always carries a
 /// per-component breakdown so dashboards can plot subsystem
 /// availability over time.
-async fn readyz(
-    State(state): State<AppState>,
-) -> (StatusCode, Json<serde_json::Value>) {
+async fn readyz(State(state): State<AppState>) -> (StatusCode, Json<serde_json::Value>) {
     // try_lock returns Err if the mutex is currently held;
     // we treat that as "not ready" rather than blocking — the
     // whole point of the readiness probe is to avoid blocking.
@@ -1936,8 +1959,7 @@ async fn openai_chat_completions(
     if state.config.stake_gate_enabled {
         let ledger = state.ledger.lock().await;
         let staking = state.staking_pool.lock().await;
-        let verdict =
-            ledger.inference_eligibility(&state.local_node_id, &staking, now_millis());
+        let verdict = ledger.inference_eligibility(&state.local_node_id, &staking, now_millis());
         drop(ledger);
         drop(staking);
         if let Err(ineligible) = verdict {
@@ -2024,7 +2046,12 @@ async fn openai_sync_response(
         // can decide between "wait" vs "fail over".
         use axum::response::IntoResponse;
         return match forward_chat_to_peer(
-            &state, &prompt, max_tokens, temperature, model, has_tools,
+            &state,
+            &prompt,
+            max_tokens,
+            temperature,
+            model,
+            has_tools,
         )
         .await
         {
@@ -2800,9 +2827,11 @@ pub struct TiramiNetworkResponse {
 }
 
 fn local_protocol_features(state: &AppState) -> Vec<String> {
-    let advertised_http_endpoint =
-        crate::node::derive_public_http_endpoint(&state.config.api_bind_addr, state.config.api_port)
-            .is_some();
+    let advertised_http_endpoint = crate::node::derive_public_http_endpoint(
+        &state.config.api_bind_addr,
+        state.config.api_port,
+    )
+    .is_some();
     tirami_core::advertised_protocol_features_with_backend(
         advertised_http_endpoint,
         &state.config.proof_policy,
@@ -2814,8 +2843,10 @@ async fn forge_protocol(
     State(state): State<AppState>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     check_forge_rate_limit(&state).await?;
-    let advertised_http_endpoint =
-        crate::node::derive_public_http_endpoint(&state.config.api_bind_addr, state.config.api_port);
+    let advertised_http_endpoint = crate::node::derive_public_http_endpoint(
+        &state.config.api_bind_addr,
+        state.config.api_port,
+    );
     Ok(Json(serde_json::json!({
         "protocol_version": tirami_core::TIRAMI_PROTOCOL_VERSION,
         "min_protocol_version": tirami_core::TIRAMI_MIN_PROTOCOL_VERSION,
@@ -2885,64 +2916,63 @@ async fn forge_peers(
     check_forge_rate_limit(&state).await?;
     let ledger = state.ledger.lock().await;
 
-    let peers: Vec<serde_json::Value> =
-        ledger
-            .peer_registry
-            .peers()
-            .iter()
-            .map(|(node_id, state)| {
-                let (
-                    protocol_version,
-                    features,
-                    price_multiplier,
-                    available_cu,
-                    models,
-                    latency_hint_ms,
-                    timestamp,
-                    http_endpoint,
-                ) = match &state.price_signal {
-                    Some(sig) => (
-                        sig.protocol_version,
-                        sig.features.clone(),
-                        sig.price_multiplier,
-                        sig.available_cu,
-                        sig.model_capabilities
-                            .iter()
-                            .map(|m| m.0.clone())
-                            .collect::<Vec<_>>(),
-                        sig.latency_hint_ms,
-                        sig.timestamp,
-                        sig.http_endpoint.clone(),
-                    ),
-                    None => (
-                        tirami_core::TIRAMI_PROTOCOL_VERSION,
-                        vec![],
-                        1.0,
-                        0,
-                        vec![],
-                        0,
-                        0,
-                        None,
-                    ),
-                };
-                serde_json::json!({
-                    "node_id": node_id.to_hex(),
-                    "protocol_version": protocol_version,
-                    "features": features,
-                    "price_multiplier": price_multiplier,
-                    "available_cu": available_cu,
-                    "models": models,
-                    "latency_hint_ms": latency_hint_ms,
-                    "latency_ema_ms": state.latency_ema_ms,
-                    "last_seen": timestamp,
-                    "audit_tier": format!("{:?}", state.audit_tier),
-                    "verified_trades": state.verified_trade_count,
-                    // Phase 19 / Tier C — peer's self-advertised HTTP
-                    // endpoint (None if iroh-P2P only).
-                    "http_endpoint": http_endpoint,
-                })
+    let peers: Vec<serde_json::Value> = ledger
+        .peer_registry
+        .peers()
+        .iter()
+        .map(|(node_id, state)| {
+            let (
+                protocol_version,
+                features,
+                price_multiplier,
+                available_cu,
+                models,
+                latency_hint_ms,
+                timestamp,
+                http_endpoint,
+            ) = match &state.price_signal {
+                Some(sig) => (
+                    sig.protocol_version,
+                    sig.features.clone(),
+                    sig.price_multiplier,
+                    sig.available_cu,
+                    sig.model_capabilities
+                        .iter()
+                        .map(|m| m.0.clone())
+                        .collect::<Vec<_>>(),
+                    sig.latency_hint_ms,
+                    sig.timestamp,
+                    sig.http_endpoint.clone(),
+                ),
+                None => (
+                    tirami_core::TIRAMI_PROTOCOL_VERSION,
+                    vec![],
+                    1.0,
+                    0,
+                    vec![],
+                    0,
+                    0,
+                    None,
+                ),
+            };
+            serde_json::json!({
+                "node_id": node_id.to_hex(),
+                "protocol_version": protocol_version,
+                "features": features,
+                "price_multiplier": price_multiplier,
+                "available_cu": available_cu,
+                "models": models,
+                "latency_hint_ms": latency_hint_ms,
+                "latency_ema_ms": state.latency_ema_ms,
+                "last_seen": timestamp,
+                "audit_tier": format!("{:?}", state.audit_tier),
+                "verified_trades": state.verified_trade_count,
+                // Phase 19 / Tier C — peer's self-advertised HTTP
+                // endpoint (None if iroh-P2P only).
+                "http_endpoint": http_endpoint,
             })
-            .collect();
+        })
+        .collect();
 
     Ok(Json(serde_json::json!({
         "count": peers.len(),
@@ -2955,6 +2985,135 @@ async fn forge_peers(
 /// Given `{model_id, max_tokens, [consumer]}`, returns the provider that
 /// `select_provider` would pick (or 404 if none). Does NOT reserve TRM —
 /// it's a read-only "what would you do?" query for agents and testing.
+/// `POST /v1/tirami/split-inference` — run one prompt across the peers in the
+/// current topology plan (#162).
+#[derive(serde::Deserialize)]
+struct SplitInferenceRequest {
+    /// Path to the GGUF on **this** machine. Peers receive weights over the
+    /// RPC link; they do not read this path.
+    model_path: String,
+    prompt: String,
+    #[serde(default = "default_split_max_tokens")]
+    max_tokens: u32,
+    #[serde(default = "default_split_temperature")]
+    temperature: f32,
+}
+
+fn default_split_max_tokens() -> u32 {
+    256
+}
+
+fn default_split_temperature() -> f32 {
+    0.7
+}
+
+async fn forge_split_inference(
+    State(state): State<AppState>,
+    Json(req): Json<SplitInferenceRequest>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    check_forge_rate_limit(&state).await?;
+
+    let Some(ctx) = state.split_ctx.clone() else {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "split inference needs a running P2P transport".to_string(),
+        ));
+    };
+
+    let plan = state
+        .advertised_topology
+        .lock()
+        .await
+        .clone()
+        .ok_or_else(|| {
+            (
+                StatusCode::CONFLICT,
+                "no topology plan — load a model and connect peers first".to_string(),
+            )
+        })?;
+
+    let local = ctx.transport.tirami_node_id();
+
+    let session = crate::split_inference::start_split_session(
+        &ctx.transport,
+        &ctx.rpc_ready,
+        &plan,
+        &local,
+        &plan.model_id,
+    )
+    .await
+    .map_err(|e| (StatusCode::BAD_GATEWAY, e.to_string()))?;
+
+    // No remote stage means the model fits here. Say so instead of quietly
+    // running single-machine — that silent-success shape is exactly what #164
+    // documented as the dangerous failure mode.
+    let Some(session) = session else {
+        return Err((
+            StatusCode::CONFLICT,
+            "the plan has no remote stage — this model fits locally, so there is \
+             nothing to split"
+                .to_string(),
+        ));
+    };
+
+    let llama_cli = tirami_infer::distributed::find_llama_cli().ok_or_else(|| {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "llama-cli not found. Set TIRAMI_LLAMA_CLI_PATH".to_string(),
+        )
+    })?;
+
+    let endpoints = session.rpc_endpoints();
+    let config = tirami_infer::distributed::DistributedConfig {
+        model_path: std::path::PathBuf::from(&req.model_path),
+        rpc_endpoints: endpoints.clone(),
+        n_gpu_layers: 99,
+        llama_cli_path: llama_cli,
+        tensor_split: Some(crate::split_inference::tensor_split_for(&plan)),
+        context_size: None,
+        no_mmap: true,
+    };
+
+    let prompt = req.prompt.clone();
+    let outcome = tokio::task::spawn_blocking(move || {
+        tirami_infer::distributed::run_distributed_inference(
+            &config,
+            &prompt,
+            req.max_tokens,
+            req.temperature,
+        )
+    })
+    .await;
+
+    let stages: Vec<serde_json::Value> = session
+        .stages
+        .iter()
+        .map(|s| {
+            serde_json::json!({
+                "peer": s.peer_id,
+                "session_id": s.session_id,
+                "layers": [s.layer_range.start, s.layer_range.end],
+                "local_endpoint": format!("127.0.0.1:{}", s.local_port),
+            })
+        })
+        .collect();
+
+    session.shutdown(&ctx.transport, &local).await;
+
+    match outcome {
+        Ok(Ok((text, tokens))) => Ok(Json(serde_json::json!({
+            "text": text,
+            "tokens": tokens,
+            "stages": stages,
+        }))),
+        Ok(Err(e)) => Err((StatusCode::BAD_GATEWAY, e.to_string())),
+        Err(e) => Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("inference task failed: {e}"),
+        )),
+    }
+}
+
 async fn forge_schedule(
     State(state): State<AppState>,
     Json(req): Json<ScheduleRequest>,
@@ -4811,6 +4970,8 @@ pub(crate) fn test_router_default(config: Config) -> Router {
         // Phase 25 #161 — test helper omits the persistent wallet;
         // HTTP signing handlers fall back to ephemeral keys.
         None,
+        // #162 — no transport in the test helper.
+        None,
     )
 }
 
@@ -4878,7 +5039,9 @@ mod tests {
             )
             .await
             .expect("response");
-        let bytes = axum::body::to_bytes(resp.into_body(), 10_000).await.unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), 10_000)
+            .await
+            .unwrap();
         assert_eq!(&bytes[..], b"ok");
     }
 
@@ -4895,7 +5058,9 @@ mod tests {
             .await
             .expect("response");
         assert_eq!(resp.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(resp.into_body(), 10_000).await.unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), 10_000)
+            .await
+            .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(json["ready"].as_bool().unwrap(), true);
         for component in ["ledger", "engine", "governance", "staking_pool"] {
@@ -4919,11 +5084,9 @@ mod tests {
         use tirami_anchor::MockChainClient;
         use tirami_ledger::{GovernanceState, ReferralTracker, StakingPool};
         let config = Config::default();
-        let initial_proof_policy =
-            tirami_ledger::zk::ProofPolicy::parse(&config.proof_policy)
-                .unwrap_or(tirami_ledger::zk::ProofPolicy::Disabled);
-        let proof_policy_handle =
-            Arc::new(tokio::sync::RwLock::new(initial_proof_policy));
+        let initial_proof_policy = tirami_ledger::zk::ProofPolicy::parse(&config.proof_policy)
+            .unwrap_or(tirami_ledger::zk::ProofPolicy::Disabled);
+        let proof_policy_handle = Arc::new(tokio::sync::RwLock::new(initial_proof_policy));
         let ledger = Arc::new(Mutex::new(ComputeLedger::new()));
         let app = create_router_with_services(
             config,
@@ -4946,6 +5109,8 @@ mod tests {
             Arc::new(Mutex::new(None)),
             proof_policy_handle,
             None,
+            // #162 — tests build no transport.
+            None,
         );
         let _ = TokenStore::new(); // unused
         // Hold the ledger lock for the duration of the probe.
@@ -4960,7 +5125,9 @@ mod tests {
             .await
             .expect("response");
         assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
-        let bytes = axum::body::to_bytes(resp.into_body(), 10_000).await.unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), 10_000)
+            .await
+            .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(json["ready"].as_bool().unwrap(), false);
         assert_eq!(json["components"]["ledger"].as_bool().unwrap(), false);
@@ -5012,11 +5179,12 @@ mod tests {
         let resp = super::inference_unavailable_response(
             "no connected peer cluster — model not loaded and transport inactive",
         );
-        assert!(resp
-            .headers()
-            .get("x-tirami-reason")
-            .and_then(|v| v.to_str().ok())
-            .is_some_and(|v| v.contains("no connected peer cluster")));
+        assert!(
+            resp.headers()
+                .get("x-tirami-reason")
+                .and_then(|v| v.to_str().ok())
+                .is_some_and(|v| v.contains("no connected peer cluster"))
+        );
     }
 
     #[test]
@@ -5037,11 +5205,16 @@ mod tests {
         let resp = super::inference_unavailable_response(
             "no connected peer cluster — model not loaded and transport inactive",
         );
-        let bytes = axum::body::to_bytes(resp.into_body(), 10_000).await.unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), 10_000)
+            .await
+            .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(json["error"]["code"].as_u64().unwrap(), 503);
         assert_eq!(json["error"]["retry_after_secs"].as_u64().unwrap(), 30);
-        assert_eq!(json["error"]["type"].as_str().unwrap(), "service_unavailable");
+        assert_eq!(
+            json["error"]["type"].as_str().unwrap(),
+            "service_unavailable"
+        );
         let hint = json["error"]["hint"].as_str().unwrap();
         // The "no connected peer cluster" path maps to actionable guidance.
         assert!(
@@ -5096,7 +5269,10 @@ mod tests {
             .get("x-tirami-request-id")
             .and_then(|v| v.to_str().ok())
             .expect("x-tirami-request-id must be present");
-        assert!(id.starts_with("req-"), "generated id should be req- prefix, got {id}");
+        assert!(
+            id.starts_with("req-"),
+            "generated id should be req- prefix, got {id}"
+        );
         assert!(id.len() >= 8);
     }
 
@@ -5137,11 +5313,12 @@ mod tests {
             )
             .await
             .unwrap();
-        assert!(resp
-            .headers()
-            .get("x-tirami-request-id")
-            .and_then(|v| v.to_str().ok())
-            .is_some_and(|v| !v.is_empty()));
+        assert!(
+            resp.headers()
+                .get("x-tirami-request-id")
+                .and_then(|v| v.to_str().ok())
+                .is_some_and(|v| !v.is_empty())
+        );
     }
 
     // -----------------------------------------------------------------
@@ -5165,13 +5342,19 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::OK);
         // RFC 8594 Deprecation: true.
         assert_eq!(
-            resp.headers().get("deprecation").and_then(|v| v.to_str().ok()),
+            resp.headers()
+                .get("deprecation")
+                .and_then(|v| v.to_str().ok()),
             Some("true"),
         );
         // Sunset header set.
         assert!(resp.headers().get("sunset").is_some());
         // Link: successor-version → /v1/tirami/agora/agents.
-        let link = resp.headers().get("link").and_then(|v| v.to_str().ok()).unwrap();
+        let link = resp
+            .headers()
+            .get("link")
+            .and_then(|v| v.to_str().ok())
+            .unwrap();
         assert!(link.contains("/v1/tirami/agora/agents"));
         assert!(link.contains("rel=\"successor-version\""));
     }
@@ -5189,7 +5372,11 @@ mod tests {
             )
             .await
             .expect("response");
-        let link = resp.headers().get("link").and_then(|v| v.to_str().ok()).unwrap();
+        let link = resp
+            .headers()
+            .get("link")
+            .and_then(|v| v.to_str().ok())
+            .unwrap();
         assert!(link.contains("/v1/tirami/agora/find"), "got {link}");
     }
 
@@ -5206,7 +5393,11 @@ mod tests {
             )
             .await
             .expect("response");
-        let link = resp.headers().get("link").and_then(|v| v.to_str().ok()).unwrap();
+        let link = resp
+            .headers()
+            .get("link")
+            .and_then(|v| v.to_str().ok())
+            .unwrap();
         assert!(link.contains("/v1/tirami/agora/stats"), "got {link}");
     }
 
@@ -5352,11 +5543,16 @@ mod tests {
             Some("30"),
         );
         assert!(resp.headers().get("x-tirami-reason").is_some());
-        let bytes = axum::body::to_bytes(resp.into_body(), 10_000).await.unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), 10_000)
+            .await
+            .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(json["error"]["code"].as_u64().unwrap(), 503);
         assert!(json["error"]["hint"].as_str().is_some());
-        assert_eq!(json["error"]["type"].as_str().unwrap(), "service_unavailable");
+        assert_eq!(
+            json["error"]["type"].as_str().unwrap(),
+            "service_unavailable"
+        );
     }
 
     #[tokio::test]
@@ -5572,14 +5768,25 @@ mod tests {
             .await
             .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(json["protocol_version"], tirami_core::TIRAMI_PROTOCOL_VERSION);
+        assert_eq!(
+            json["protocol_version"],
+            tirami_core::TIRAMI_PROTOCOL_VERSION
+        );
         assert_eq!(
             json["min_protocol_version"],
             tirami_core::TIRAMI_MIN_PROTOCOL_VERSION
         );
         let features = json["features"].as_array().expect("features array");
-        assert!(features.iter().any(|f| f == tirami_core::FEATURE_AGENT_REMOTE_DISPATCH));
-        assert!(features.iter().any(|f| f == tirami_core::FEATURE_PRICE_SIGNAL_HTTP_ENDPOINT));
+        assert!(
+            features
+                .iter()
+                .any(|f| f == tirami_core::FEATURE_AGENT_REMOTE_DISPATCH)
+        );
+        assert!(
+            features
+                .iter()
+                .any(|f| f == tirami_core::FEATURE_PRICE_SIGNAL_HTTP_ENDPOINT)
+        );
         assert_eq!(json["price_signal"]["http_endpoint_advertised"], true);
     }
 
@@ -6101,7 +6308,11 @@ mod tests {
             Arc::new(Mutex::new(agent)),
             Arc::new(Mutex::new(crate::agent_loop::AgentLoopStats::new())),
             Arc::new(Mutex::new(None)),
-            Arc::new(tokio::sync::RwLock::new(tirami_ledger::zk::ProofPolicy::Disabled)),
+            Arc::new(tokio::sync::RwLock::new(
+                tirami_ledger::zk::ProofPolicy::Disabled,
+            )),
+            None,
+            // #162 — tests build no transport.
             None,
         )
     }
@@ -6234,9 +6445,12 @@ mod tests {
         let app = test_router_with_agent(Config::default(), None);
         let from_hex = "aa".repeat(32);
         let to_hex = "bb".repeat(32);
-        let (status, body) =
-            post_agent_message(app, &from_hex, agent_message_body(&to_hex, "request_action", 1))
-                .await;
+        let (status, body) = post_agent_message(
+            app,
+            &from_hex,
+            agent_message_body(&to_hex, "request_action", 1),
+        )
+        .await;
         assert_eq!(status, StatusCode::OK, "got {body}");
         assert_eq!(body["from"], from_hex);
         assert_eq!(body["to"], to_hex);
@@ -6254,9 +6468,12 @@ mod tests {
         let app = test_router_with_agent(Config::default(), None);
         let from_hex = "aa".repeat(32);
         let to_hex = "bb".repeat(32);
-        let (status, body) =
-            post_agent_message(app, &from_hex, agent_message_body(&to_hex, "haha_invalid", 1))
-                .await;
+        let (status, body) = post_agent_message(
+            app,
+            &from_hex,
+            agent_message_body(&to_hex, "haha_invalid", 1),
+        )
+        .await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
         let msg = body["error"]["message"].as_str().unwrap_or("");
         assert!(msg.contains("kind must be one of"), "msg: {msg}");
@@ -6471,7 +6688,10 @@ mod tests {
             post_publish_offer(app, &seller, data_offer_body(5, past_expiry_ms())).await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
         let msg = body["error"]["message"].as_str().unwrap_or("");
-        assert!(msg.contains("expiry_ms must be in the future"), "msg: {msg}");
+        assert!(
+            msg.contains("expiry_ms must be in the future"),
+            "msg: {msg}"
+        );
     }
 
     #[tokio::test]
@@ -6524,7 +6744,10 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_millis(120)).await;
         let (status, list_body) = get_list_offers(app).await;
         assert_eq!(status, StatusCode::OK);
-        assert_eq!(list_body["count"], 0, "expected expired offer to be filtered out");
+        assert_eq!(
+            list_body["count"], 0,
+            "expected expired offer to be filtered out"
+        );
     }
 
     #[tokio::test]
@@ -6568,7 +6791,11 @@ mod tests {
             .iter()
             .map(|a| a["name"].as_str().unwrap_or("").to_string())
             .collect();
-        for expected in &["data_offer_publish", "data_offer_list", "data_offer_purchase"] {
+        for expected in &[
+            "data_offer_publish",
+            "data_offer_list",
+            "data_offer_purchase",
+        ] {
             assert!(
                 names.iter().any(|n| n == expected),
                 "manifest missing {expected}, actions={names:?}"
@@ -6699,12 +6926,8 @@ mod tests {
         let app = test_router_with_agent(Config::default(), None);
         let buyer = "aa".repeat(32);
         // Massive amount, tiny max_trm — must fail.
-        let (status, body) = post_create_intent(
-            app,
-            &buyer,
-            oob_intent(1_000_000_000, 1, "stripe:ch_huge"),
-        )
-        .await;
+        let (status, body) =
+            post_create_intent(app, &buyer, oob_intent(1_000_000_000, 1, "stripe:ch_huge")).await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
         let msg = body["error"]["message"].as_str().unwrap_or("");
         assert!(msg.contains("exceeds caller's max_trm"), "msg: {msg}");
@@ -6721,10 +6944,7 @@ mod tests {
         let (status, resp) = post_create_intent(app, &buyer, body).await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
         let msg = resp["error"]["message"].as_str().unwrap_or("");
-        assert!(
-            msg.contains("must provide invoice_bolt11 or"),
-            "msg: {msg}"
-        );
+        assert!(msg.contains("must provide invoice_bolt11 or"), "msg: {msg}");
     }
 
     #[tokio::test]
@@ -6746,8 +6966,7 @@ mod tests {
     async fn purchase_intent_rejects_zero_amount_sats() {
         let app = test_router_with_agent(Config::default(), None);
         let buyer = "aa".repeat(32);
-        let (status, body) =
-            post_create_intent(app, &buyer, oob_intent(0, 100, "ref:zero")).await;
+        let (status, body) = post_create_intent(app, &buyer, oob_intent(0, 100, "ref:zero")).await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
         let msg = body["error"]["message"].as_str().unwrap_or("");
         assert!(msg.contains("amount_sats must be > 0"), "msg: {msg}");
@@ -6822,8 +7041,7 @@ mod tests {
         let app = test_router_with_agent(Config::default(), None);
         let buyer = "aa".repeat(32);
         let (status, body) =
-            post_create_intent(app.clone(), &buyer, oob_intent(10_000, 2_000_000, "ref:x"))
-                .await;
+            post_create_intent(app.clone(), &buyer, oob_intent(10_000, 2_000_000, "ref:x")).await;
         assert_eq!(status, StatusCode::OK);
         let intent_id = body["intent_id"].as_str().expect("intent_id").to_string();
         let (status, resp) = post_confirm_intent(app, &intent_id, "weirdvalue", None).await;
@@ -7015,8 +7233,7 @@ mod tests {
         let app_a = test_router_with_agent(Config::default(), None);
         let (_, init_body) = post_identity_init(app_a.clone(), Some("Portable")).await;
         let did_a = init_body["did"].as_str().expect("did").to_string();
-        let (status, bundle) =
-            post_identity_export(app_a, "correct-horse-battery-staple").await;
+        let (status, bundle) = post_identity_export(app_a, "correct-horse-battery-staple").await;
         assert_eq!(status, StatusCode::OK, "export: {bundle}");
         // Bundle structure sanity.
         assert_eq!(bundle["schema_version"], 1);
@@ -7025,9 +7242,12 @@ mod tests {
 
         // Move to a fresh second node and import.
         let app_b = test_router_with_agent(Config::default(), None);
-        let (status, view) =
-            post_identity_import(app_b.clone(), "correct-horse-battery-staple", bundle.clone())
-                .await;
+        let (status, view) = post_identity_import(
+            app_b.clone(),
+            "correct-horse-battery-staple",
+            bundle.clone(),
+        )
+        .await;
         assert_eq!(status, StatusCode::OK, "import: {view}");
         assert_eq!(view["did"], did_a);
         // GET on the second node now reflects the imported identity.
@@ -7041,8 +7261,7 @@ mod tests {
         let (_, _) = post_identity_init(app_a.clone(), None).await;
         let (_, bundle) = post_identity_export(app_a, "the-right-one").await;
         let app_b = test_router_with_agent(Config::default(), None);
-        let (status, body) =
-            post_identity_import(app_b, "wrong-passphrase", bundle).await;
+        let (status, body) = post_identity_import(app_b, "wrong-passphrase", bundle).await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
         let msg = body["error"]["message"].as_str().unwrap_or("");
         assert!(msg.contains("AEAD"), "msg: {msg}");
@@ -7244,10 +7463,7 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::UNAUTHORIZED);
         let msg = body["error"]["message"].as_str().unwrap_or("");
-        assert!(
-            msg.contains("unknown challenge_hex"),
-            "msg: {msg}"
-        );
+        assert!(msg.contains("unknown challenge_hex"), "msg: {msg}");
     }
 
     #[tokio::test]
@@ -7429,10 +7645,7 @@ mod tests {
         // (that is literally what makes autonomous join possible).
         let actions = json["actions"].as_array().expect("array");
         for name in &["auth_challenge", "auth_verify"] {
-            let a = actions
-                .iter()
-                .find(|a| a["name"] == *name)
-                .expect("found");
+            let a = actions.iter().find(|a| a["name"] == *name).expect("found");
             assert_eq!(
                 a["auth_required"], false,
                 "{} must advertise auth_required=false",
@@ -7604,14 +7817,16 @@ mod tests {
         let (status, body) = post_claim_welcome(app, &claimant, Some("AS-test")).await;
         assert_eq!(status, StatusCode::OK, "claim failed: {body}");
         assert_eq!(body["node_id"], claimant);
-        assert_eq!(body["principal_trm"], tirami_ledger::lending::WELCOME_LOAN_AMOUNT);
+        assert_eq!(
+            body["principal_trm"],
+            tirami_ledger::lending::WELCOME_LOAN_AMOUNT
+        );
         let granted = body["granted_at_ms"].as_u64().expect("granted_at_ms");
         let expires = body["expires_at_ms"].as_u64().expect("expires_at_ms");
         assert!(expires > granted, "expires must be after granted");
         // Term should be 72 h.
         let term_ms = (expires - granted) as i64;
-        let expected_term_ms =
-            (tirami_ledger::lending::WELCOME_LOAN_TERM_HOURS * 3_600_000) as i64;
+        let expected_term_ms = (tirami_ledger::lending::WELCOME_LOAN_TERM_HOURS * 3_600_000) as i64;
         assert_eq!(term_ms, expected_term_ms);
     }
 
@@ -7631,8 +7846,7 @@ mod tests {
         // JSON string under (StatusCode, String)).
         let outer = body;
         let inner_str = outer["error"]["message"].as_str().expect("inner");
-        let inner: serde_json::Value =
-            serde_json::from_str(inner_str).expect("inner json");
+        let inner: serde_json::Value = serde_json::from_str(inner_str).expect("inner json");
         assert_eq!(inner["error"]["code"], "already_has_balance");
     }
 
@@ -8120,7 +8334,11 @@ mod tests {
             })
             .collect();
         // d discriminator must be present.
-        assert!(tag_strings.iter().any(|t| t.first().map(|s| s.as_str()) == Some("d")));
+        assert!(
+            tag_strings
+                .iter()
+                .any(|t| t.first().map(|s| s.as_str()) == Some("d"))
+        );
         // Both model tags must be present.
         let model_tag_count = tag_strings
             .iter()
@@ -8169,9 +8387,10 @@ mod tests {
         let mut ledger = ComputeLedger::new();
         let borrower = tirami_core::NodeId([0xC1u8; 32]);
         let now = 7_000_000_000_u64;
-        ledger.grant_welcome_loan(borrower.clone(), "", now).expect("grant");
-        let after_expiry =
-            now + tirami_ledger::lending::WELCOME_LOAN_TERM_HOURS * 3_600_000 + 1;
+        ledger
+            .grant_welcome_loan(borrower.clone(), "", now)
+            .expect("grant");
+        let after_expiry = now + tirami_ledger::lending::WELCOME_LOAN_TERM_HOURS * 3_600_000 + 1;
         ledger.settle_expired_welcome_loans(after_expiry);
         let app = test_router_with_agent_and_ledger(Config::default(), None, ledger, None);
         let response = app
@@ -8241,10 +8460,7 @@ mod tests {
     /// `wallet_source` must report `agent_identity`.
     #[tokio::test]
     async fn agent_identity_init_rebinds_personal_agent_wallet() {
-        let app = test_router_with_agent(
-            Config::default(),
-            Some(agent_at(NodeId([0xAAu8; 32]))),
-        );
+        let app = test_router_with_agent(Config::default(), Some(agent_at(NodeId([0xAAu8; 32]))));
         // Pre-init: wallet is the machine NodeId.
         let (_, pre) = get_agent_status(app.clone()).await;
         assert_eq!(pre["wallet_source"], "machine_node");
@@ -8269,10 +8485,7 @@ mod tests {
     /// daily tallies).
     #[tokio::test]
     async fn agent_identity_init_idempotent_preserves_rebound_wallet() {
-        let app = test_router_with_agent(
-            Config::default(),
-            Some(agent_at(NodeId([0xAAu8; 32]))),
-        );
+        let app = test_router_with_agent(Config::default(), Some(agent_at(NodeId([0xAAu8; 32]))));
         let (_, init1) = post_identity_init(app.clone(), Some("alice")).await;
         let did1 = init1["did"].as_str().unwrap().to_string();
         let (_, init2) = post_identity_init(app.clone(), Some("bob")).await;
@@ -8289,19 +8502,13 @@ mod tests {
     /// the wallet to the imported DID's pubkey.
     #[tokio::test]
     async fn agent_identity_import_rebinds_personal_agent_wallet() {
-        let app_a = test_router_with_agent(
-            Config::default(),
-            Some(agent_at(NodeId([0xAAu8; 32]))),
-        );
+        let app_a = test_router_with_agent(Config::default(), Some(agent_at(NodeId([0xAAu8; 32]))));
         let (_, init_a) = post_identity_init(app_a.clone(), Some("alice")).await;
         let did_a = init_a["did"].as_str().unwrap().to_string();
         let (_, bundle) = post_identity_export(app_a, "passphrase-1234567").await;
 
         // Move to a second node and import.
-        let app_b = test_router_with_agent(
-            Config::default(),
-            Some(agent_at(NodeId([0xBBu8; 32]))),
-        );
+        let app_b = test_router_with_agent(Config::default(), Some(agent_at(NodeId([0xBBu8; 32]))));
         // Pre-import on B: wallet is the machine NodeId
         // ([0; 32] for the test router), source = machine_node.
         let (_, pre_b) = get_agent_status(app_b.clone()).await;
@@ -8370,10 +8577,7 @@ mod tests {
     /// don't have to deserialise PascalCase).
     #[tokio::test]
     async fn agent_status_wallet_source_serialises_as_snake_case() {
-        let app = test_router_with_agent(
-            Config::default(),
-            Some(agent_at(NodeId([0xAAu8; 32]))),
-        );
+        let app = test_router_with_agent(Config::default(), Some(agent_at(NodeId([0xAAu8; 32]))));
         let (_, pre) = get_agent_status(app.clone()).await;
         assert_eq!(pre["wallet_source"].as_str(), Some("machine_node"));
         let (_, _) = post_identity_init(app.clone(), None).await;
@@ -8398,8 +8602,7 @@ mod tests {
     async fn shared_agent_identity_arc_receives_init() {
         use crate::api::create_router_with_services;
         use crate::bank_adapter::BankServices;
-        let shared: Arc<Mutex<Option<tirami_mind::AgentIdentity>>> =
-            Arc::new(Mutex::new(None));
+        let shared: Arc<Mutex<Option<tirami_mind::AgentIdentity>>> = Arc::new(Mutex::new(None));
         let app = create_router_with_services(
             Config::default(),
             Arc::new(Mutex::new(CandleEngine::new())),
@@ -8419,7 +8622,11 @@ mod tests {
             Arc::new(Mutex::new(None::<tirami_mind::PersonalAgent>)),
             Arc::new(Mutex::new(crate::agent_loop::AgentLoopStats::new())),
             shared.clone(), // ← the Arc we will observe externally
-            Arc::new(tokio::sync::RwLock::new(tirami_ledger::zk::ProofPolicy::Disabled)),
+            Arc::new(tokio::sync::RwLock::new(
+                tirami_ledger::zk::ProofPolicy::Disabled,
+            )),
+            None,
+            // #162 — tests build no transport.
             None,
         );
 
@@ -8449,8 +8656,7 @@ mod tests {
     async fn shared_agent_identity_arc_replaced_on_import() {
         use crate::api::create_router_with_services;
         use crate::bank_adapter::BankServices;
-        let shared: Arc<Mutex<Option<tirami_mind::AgentIdentity>>> =
-            Arc::new(Mutex::new(None));
+        let shared: Arc<Mutex<Option<tirami_mind::AgentIdentity>>> = Arc::new(Mutex::new(None));
         let app_a = create_router_with_services(
             Config::default(),
             Arc::new(Mutex::new(CandleEngine::new())),
@@ -8470,7 +8676,11 @@ mod tests {
             Arc::new(Mutex::new(None::<tirami_mind::PersonalAgent>)),
             Arc::new(Mutex::new(crate::agent_loop::AgentLoopStats::new())),
             shared.clone(),
-            Arc::new(tokio::sync::RwLock::new(tirami_ledger::zk::ProofPolicy::Disabled)),
+            Arc::new(tokio::sync::RwLock::new(
+                tirami_ledger::zk::ProofPolicy::Disabled,
+            )),
+            None,
+            // #162 — tests build no transport.
             None,
         );
         // First identity via init.
@@ -8480,8 +8690,7 @@ mod tests {
         let (_, bundle) = post_identity_export(app_a, "passphrase-1234567").await;
 
         // Fresh router with a NEW shared Arc, then import the bundle.
-        let shared_b: Arc<Mutex<Option<tirami_mind::AgentIdentity>>> =
-            Arc::new(Mutex::new(None));
+        let shared_b: Arc<Mutex<Option<tirami_mind::AgentIdentity>>> = Arc::new(Mutex::new(None));
         let app_b = create_router_with_services(
             Config::default(),
             Arc::new(Mutex::new(CandleEngine::new())),
@@ -8501,11 +8710,14 @@ mod tests {
             Arc::new(Mutex::new(None::<tirami_mind::PersonalAgent>)),
             Arc::new(Mutex::new(crate::agent_loop::AgentLoopStats::new())),
             shared_b.clone(),
-            Arc::new(tokio::sync::RwLock::new(tirami_ledger::zk::ProofPolicy::Disabled)),
+            Arc::new(tokio::sync::RwLock::new(
+                tirami_ledger::zk::ProofPolicy::Disabled,
+            )),
+            None,
+            // #162 — tests build no transport.
             None,
         );
-        let (_status, _view) =
-            post_identity_import(app_b, "passphrase-1234567", bundle).await;
+        let (_status, _view) = post_identity_import(app_b, "passphrase-1234567", bundle).await;
         let guard = shared_b.lock().await;
         let id = guard.as_ref().expect("imported");
         assert_eq!(id.did(), did_a);

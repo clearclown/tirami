@@ -31,6 +31,30 @@ pub struct DistributedConfig {
     pub n_gpu_layers: u32,
     /// Path to llama-cli binary.
     pub llama_cli_path: PathBuf,
+    /// `-ts` — proportional split across local + RPC devices, e.g. `"21,43"`.
+    /// #164's working two-machine run needed this; without it llama.cpp picks
+    /// its own ratio and can leave a device nearly empty.
+    pub tensor_split: Option<String>,
+    /// `-c` — context size. `None` leaves llama.cpp's default.
+    pub context_size: Option<u32>,
+    /// `--no-mmap`. Set for RPC runs: mapped weights are not what gets shipped
+    /// to a remote device, and mmap makes the load timings unreadable.
+    pub no_mmap: bool,
+}
+
+impl DistributedConfig {
+    /// Minimal config: everything llama.cpp can default, defaulted.
+    pub fn new(model_path: PathBuf, rpc_endpoints: Vec<String>, llama_cli_path: PathBuf) -> Self {
+        Self {
+            model_path,
+            rpc_endpoints,
+            n_gpu_layers: 99,
+            llama_cli_path,
+            tensor_split: None,
+            context_size: None,
+            no_mmap: true,
+        }
+    }
 }
 
 /// Find the llama-cli binary from trusted locations.
@@ -163,10 +187,23 @@ pub fn run_distributed_inference(
         .arg(format!("{:.2}", temperature))
         .arg("-ngl")
         .arg(config.n_gpu_layers.to_string())
-        .arg("--no-display-prompt")
-        .arg("--log-disable")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+        .arg("--no-display-prompt");
+
+    if let Some(split) = config.tensor_split.as_deref() {
+        cmd.arg("-ts").arg(split);
+    }
+    if let Some(ctx) = config.context_size {
+        cmd.arg("-c").arg(ctx.to_string());
+    }
+    if config.no_mmap {
+        cmd.arg("--no-mmap");
+    }
+
+    // NOTE: `--log-disable` used to be passed here. It suppressed exactly the
+    // `load_tensors: RPC0[...] model buffer size` lines that
+    // `verify_layers_distributed` needs — see that function for why silence
+    // is dangerous rather than tidy.
+    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
 
     let child = cmd
         .spawn()
@@ -176,14 +213,17 @@ pub fn run_distributed_inference(
         .wait_with_output()
         .map_err(|e| TiramiError::InferenceError(format!("llama-cli wait: {e}")))?;
 
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(TiramiError::InferenceError(format!(
             "llama-cli failed (exit {}): {}",
             output.status,
             stderr.lines().last().unwrap_or("unknown error")
         )));
     }
+
+    verify_layers_distributed(&stderr, config.rpc_endpoints.len())?;
 
     let text = String::from_utf8_lossy(&output.stdout).to_string();
     let text = text.trim().to_string();
@@ -192,6 +232,72 @@ pub fn run_distributed_inference(
     let token_count = text.split_whitespace().count().max(1);
 
     Ok((text, token_count))
+}
+
+/// Confirm llama.cpp actually placed weights on every RPC device.
+///
+/// `ggml-rpc` does not return an error when it cannot reach a server: it
+/// reports `free = 0, total = 0` (ggml-rpc.cpp:828-833). llama.cpp reads that
+/// as a device with no capacity and assigns it zero layers. Inference then
+/// **succeeds**, on one machine, and the logs look normal — you are simply not
+/// distributed, and nothing says so (#164).
+///
+/// The load line is the only place the truth appears:
+///
+/// ```text
+/// load_tensors: RPC0[127.0.0.1:50052] model buffer size = 17434.00 MiB
+/// ```
+///
+/// A missing line, or one reading 0, means that peer contributed nothing.
+pub fn verify_layers_distributed(
+    llama_stderr: &str,
+    expected_devices: usize,
+) -> Result<(), TiramiError> {
+    let mut live = 0usize;
+    let mut zeroed = Vec::new();
+
+    for line in llama_stderr.lines() {
+        let line = line.trim();
+        if !line.starts_with("load_tensors:") || !line.contains("model buffer size") {
+            continue;
+        }
+        // Only RPC devices matter; the local backend always has layers.
+        let Some(device) = line
+            .split_whitespace()
+            .find(|tok| tok.starts_with("RPC"))
+        else {
+            continue;
+        };
+
+        let size: f64 = line
+            .rsplit('=')
+            .next()
+            .and_then(|tail| tail.split_whitespace().next())
+            .and_then(|n| n.parse().ok())
+            .unwrap_or(0.0);
+
+        if size > 0.0 {
+            live += 1;
+        } else {
+            zeroed.push(device.to_string());
+        }
+    }
+
+    if live == expected_devices {
+        return Ok(());
+    }
+
+    Err(TiramiError::InferenceError(format!(
+        "distribution did not take effect: {live} of {expected_devices} RPC devices \
+         received layers{}. A ggml-rpc server that cannot be reached reports 0/0 \
+         capacity instead of failing, so inference would have run on one machine \
+         while appearing healthy.",
+        if zeroed.is_empty() {
+            String::new()
+        } else {
+            format!(" (zero-sized: {})", zeroed.join(", "))
+        }
+    )))
 }
 
 /// Check if distributed inference is available (llama-cli + rpc-server binaries exist).
@@ -224,6 +330,56 @@ mod tests {
     #[test]
     fn find_llama_cli_does_not_panic() {
         let _ = find_llama_cli();
+    }
+
+    /// Shape taken from a real two-machine run (#164): local Metal device
+    /// plus one RPC device, both loaded.
+    const LOADED: &str = "\
+llama_model_loader: loaded meta data with 30 key-value pairs
+load_tensors: offloading 62 repeating layers to GPU
+load_tensors:      Metal model buffer size = 35021.00 MiB
+load_tensors: RPC0[127.0.0.1:50052] model buffer size = 17434.00 MiB
+llama_context: n_ctx = 8192";
+
+    /// The dangerous case. `ggml-rpc` returns free/total = 0/0 rather than an
+    /// error when it cannot reach a server, so llama.cpp assigns the device no
+    /// layers, inference succeeds on one machine, and nothing says so.
+    const SILENTLY_NOT_DISTRIBUTED: &str = "\
+load_tensors:      Metal model buffer size = 52455.00 MiB
+load_tensors: RPC0[127.0.0.1:50052] model buffer size = 0.00 MiB
+llama_context: n_ctx = 8192";
+
+    /// Worse still: the device may not appear at all.
+    const RPC_DEVICE_ABSENT: &str = "\
+load_tensors:      Metal model buffer size = 52455.00 MiB
+llama_context: n_ctx = 8192";
+
+    #[test]
+    fn distribution_is_confirmed_when_every_rpc_device_has_layers() {
+        verify_layers_distributed(LOADED, 1).expect("one loaded RPC device");
+    }
+
+    #[test]
+    fn a_zero_sized_rpc_device_is_an_error() {
+        let err = verify_layers_distributed(SILENTLY_NOT_DISTRIBUTED, 1)
+            .expect_err("0.00 MiB means the peer contributed nothing");
+        let msg = err.to_string();
+        assert!(msg.contains("0 of 1"), "{msg}");
+        assert!(msg.contains("RPC0"), "{msg}");
+    }
+
+    #[test]
+    fn a_missing_rpc_device_is_an_error() {
+        assert!(
+            verify_layers_distributed(RPC_DEVICE_ABSENT, 1).is_err(),
+            "a device that never reported must not pass as distributed"
+        );
+    }
+
+    #[test]
+    fn fewer_loaded_devices_than_requested_is_an_error() {
+        // Two peers were asked for; only one took layers.
+        assert!(verify_layers_distributed(LOADED, 2).is_err());
     }
 
     #[test]

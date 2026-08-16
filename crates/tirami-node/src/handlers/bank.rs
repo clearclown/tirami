@@ -5,11 +5,11 @@
 //! exactly as existing handlers call ledger.execute_trade().
 
 use axum::{Json, extract::State, http::StatusCode};
+use serde::{Deserialize, Serialize};
 use tirami_bank::{
     BalancedStrategy, ConservativeStrategy, Decision, FuturesContract, HighYieldStrategy,
     PortfolioManager, RiskModel, RiskTolerance, StrategyKind, YieldOptimizer,
 };
-use serde::{Deserialize, Serialize};
 
 use crate::api::{AppState, check_forge_rate_limit};
 use crate::bank_adapter::pool_snapshot_from_ledger;
@@ -117,7 +117,10 @@ pub(crate) async fn bank_set_strategy(
     check_forge_rate_limit(&state).await?;
     let fraction = req.base_commit_fraction.unwrap_or(0.5);
     if !(fraction > 0.0 && fraction <= 1.0) {
-        return Err((StatusCode::BAD_REQUEST, "base_commit_fraction must be in (0, 1]".into()));
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "base_commit_fraction must be in (0, 1]".into(),
+        ));
     }
     let new_strategy: Box<dyn tirami_bank::Strategy> = match req.strategy.as_str() {
         "conservative" => Box::new(
@@ -132,15 +135,24 @@ pub(crate) async fn bank_set_strategy(
         other => {
             return Err((
                 StatusCode::BAD_REQUEST,
-                format!("unknown strategy '{}'; use conservative|highyield|balanced", other),
-            ))
+                format!(
+                    "unknown strategy '{}'; use conservative|highyield|balanced",
+                    other
+                ),
+            ));
         }
     };
     let strategy_name = req.strategy.clone();
     let new_strategy_kind = match req.strategy.as_str() {
-        "conservative" => StrategyKind::Conservative { max_commit_fraction: fraction },
-        "highyield" | "high_yield" => StrategyKind::HighYield { base_commit_fraction: fraction },
-        _ => StrategyKind::Balanced { threshold: fraction },
+        "conservative" => StrategyKind::Conservative {
+            max_commit_fraction: fraction,
+        },
+        "highyield" | "high_yield" => StrategyKind::HighYield {
+            base_commit_fraction: fraction,
+        },
+        _ => StrategyKind::Balanced {
+            threshold: fraction,
+        },
     };
     let mut bank = state.bank.lock().await;
     // Swap the strategy: preserve portfolio and risk, replace strategy
@@ -171,7 +183,7 @@ pub(crate) async fn bank_set_risk(
                     "unknown tolerance '{}'; use conservative|balanced|aggressive",
                     other
                 ),
-            ))
+            ));
         }
     };
     let tolerance_name = req.tolerance.clone();
@@ -201,11 +213,17 @@ pub(crate) async fn bank_create_futures(
     check_forge_rate_limit(&state).await?;
     let local_hex = hex::encode(state.local_node_id.0);
     if req.counterparty_hex.len() != 64 {
-        return Err((StatusCode::BAD_REQUEST, "counterparty_hex must be 64 chars".into()));
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "counterparty_hex must be 64 chars".into(),
+        ));
     }
     let margin_cu = if let Some(frac) = req.margin_fraction {
         if !(frac > 0.0 && frac <= 1.0) {
-            return Err((StatusCode::BAD_REQUEST, "margin_fraction must be in (0, 1]".into()));
+            return Err((
+                StatusCode::BAD_REQUEST,
+                "margin_fraction must be in (0, 1]".into(),
+            ));
         }
         (req.notional_trm as f64 * frac).floor() as u64
     } else {
@@ -310,7 +328,9 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
-        let body = axum::body::to_bytes(resp.into_body(), 10_000).await.unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), 10_000)
+            .await
+            .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert!(json["cash_trm"].is_u64());
         assert_eq!(json["cash_trm"].as_u64().unwrap(), 10_000);
@@ -331,7 +351,9 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
-        let body = axum::body::to_bytes(resp.into_body(), 10_000).await.unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), 10_000)
+            .await
+            .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert!(json.is_array());
     }
@@ -352,7 +374,9 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(resp.into_body(), 10_000).await.unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), 10_000)
+            .await
+            .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(json["ok"], true);
         assert_eq!(json["strategy"], "conservative");
@@ -392,7 +416,9 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(resp.into_body(), 10_000).await.unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), 10_000)
+            .await
+            .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(json["ok"], true);
         assert_eq!(json["tolerance"], "aggressive");
@@ -412,7 +438,9 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(resp.into_body(), 10_000).await.unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), 10_000)
+            .await
+            .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert!(json.is_array());
         assert_eq!(json.as_array().unwrap().len(), 0);
@@ -432,7 +460,9 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(resp.into_body(), 10_000).await.unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), 10_000)
+            .await
+            .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert!(json["portfolio_value_cu"].is_u64());
     }
@@ -453,7 +483,9 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(resp.into_body(), 10_000).await.unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), 10_000)
+            .await
+            .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert!(json["applied"].is_boolean());
         assert!(json["decisions"].is_array());

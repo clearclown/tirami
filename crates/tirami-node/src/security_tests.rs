@@ -677,14 +677,14 @@ mod security_tests {
     /// 30/s — a tight burst of 50 synchronous requests will drain it.
     #[tokio::test]
     async fn test_rate_limiter_blocks_after_burst() {
-        use std::sync::Arc;
-        use tokio::sync::Mutex;
-        use crate::bank_adapter::BankServices;
         use crate::api::create_router_with_services;
+        use crate::bank_adapter::BankServices;
+        use std::sync::Arc;
         use tirami_agora::Marketplace;
         use tirami_infer::CandleEngine;
         use tirami_ledger::ComputeLedger;
         use tirami_net::GossipState;
+        use tokio::sync::Mutex;
 
         let config = Config::default();
         // Use shared state so all requests go through the same rate-limiter instance.
@@ -710,7 +710,11 @@ mod security_tests {
             Arc::new(Mutex::new(None::<tirami_mind::PersonalAgent>)),
             Arc::new(Mutex::new(crate::agent_loop::AgentLoopStats::new())),
             Arc::new(Mutex::new(None)),
-            Arc::new(tokio::sync::RwLock::new(tirami_ledger::zk::ProofPolicy::Disabled)),
+            Arc::new(tokio::sync::RwLock::new(
+                tirami_ledger::zk::ProofPolicy::Disabled,
+            )),
+            None,
+            // #162 — tests build no transport.
             None,
         );
         let _ = state; // suppress unused warning

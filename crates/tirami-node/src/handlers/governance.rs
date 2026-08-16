@@ -76,10 +76,7 @@ pub(crate) async fn governance_propose(
         }
         "emergency_pause" => ProposalKind::EmergencyPause,
         "protocol_upgrade" => {
-            let description = body["description"]
-                .as_str()
-                .unwrap_or("")
-                .to_string();
+            let description = body["description"].as_str().unwrap_or("").to_string();
             ProposalKind::ProtocolUpgrade { description }
         }
         _ => {
@@ -193,7 +190,14 @@ pub(crate) async fn governance_vote(
     let epochs_participated = body["epochs_participated"].as_u64().unwrap_or(0);
 
     let mut gov = state.governance.lock().await;
-    match gov.cast_vote(voter, proposal_id, approve, stake, reputation, epochs_participated) {
+    match gov.cast_vote(
+        voter,
+        proposal_id,
+        approve,
+        stake,
+        reputation,
+        epochs_participated,
+    ) {
         Ok(()) => Json(json!({ "ok": true })).into_response(),
         Err(e) => {
             use tirami_ledger::GovernanceError;
@@ -209,9 +213,7 @@ pub(crate) async fn governance_vote(
 /// GET /v1/tirami/governance/proposals
 ///
 /// Returns all active proposals.
-pub(crate) async fn governance_proposals(
-    State(state): State<AppState>,
-) -> impl IntoResponse {
+pub(crate) async fn governance_proposals(State(state): State<AppState>) -> impl IntoResponse {
     if let Err(e) = check_forge_rate_limit(&state).await {
         return e.into_response();
     }
@@ -315,9 +317,7 @@ pub(crate) async fn governance_execute(
 /// Returns the currently *enforced* proof policy (separate from the
 /// boot-time string in `config.proof_policy`). Agents read this to
 /// decide whether to attach an attestation to their trades.
-pub(crate) async fn governance_proof_policy(
-    State(state): State<AppState>,
-) -> impl IntoResponse {
+pub(crate) async fn governance_proof_policy(State(state): State<AppState>) -> impl IntoResponse {
     if let Err(e) = check_forge_rate_limit(&state).await {
         return e.into_response();
     }
@@ -372,7 +372,9 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(resp.into_body(), 10_000).await.unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), 10_000)
+            .await
+            .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(json["ok"].as_bool().unwrap(), true);
         assert!(json["proposal_id"].as_u64().unwrap() >= 1);
@@ -402,7 +404,9 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(resp.into_body(), 10_000).await.unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), 10_000)
+            .await
+            .unwrap();
         let pjson: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         let proposal_id = pjson["proposal_id"].as_u64().unwrap();
 
@@ -428,7 +432,9 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(resp.into_body(), 10_000).await.unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), 10_000)
+            .await
+            .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(json["ok"].as_bool().unwrap(), true);
     }
@@ -447,7 +453,9 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(resp.into_body(), 10_000).await.unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), 10_000)
+            .await
+            .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert!(json["proposals"].as_array().unwrap().is_empty());
     }
@@ -492,7 +500,9 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(resp.into_body(), 10_000).await.unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), 10_000)
+            .await
+            .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(json["proposals"].as_array().unwrap().len(), 1);
     }
@@ -520,7 +530,9 @@ mod tests {
             )
             .await
             .unwrap();
-        let bytes = axum::body::to_bytes(resp.into_body(), 10_000).await.unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), 10_000)
+            .await
+            .unwrap();
         let pjson: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         let proposal_id = pjson["proposal_id"].as_u64().unwrap();
 
@@ -561,7 +573,9 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(resp.into_body(), 10_000).await.unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), 10_000)
+            .await
+            .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(json["status"].as_str().unwrap(), "Passed");
     }
@@ -589,7 +603,9 @@ mod tests {
             )
             .await
             .unwrap();
-        let bytes = axum::body::to_bytes(resp.into_body(), 10_000).await.unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), 10_000)
+            .await
+            .unwrap();
         let pjson: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         let proposal_id = pjson["proposal_id"].as_u64().unwrap();
 
@@ -640,7 +656,9 @@ mod tests {
             )
             .await
             .unwrap();
-        let bytes = axum::body::to_bytes(resp.into_body(), 10_000).await.unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), 10_000)
+            .await
+            .unwrap();
         let pjson: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         let proposal_id = pjson["proposal_id"].as_u64().unwrap();
 
@@ -711,7 +729,9 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(resp.into_body(), 10_000).await.unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), 10_000)
+            .await
+            .unwrap();
         let pjson: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         let proposal_id = pjson["proposal_id"].as_u64().unwrap();
 
@@ -801,7 +821,9 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(resp.into_body(), 10_000).await.unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), 10_000)
+            .await
+            .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(json["status"].as_str().unwrap(), "Passed");
         assert_eq!(json["proposal_id"].as_u64().unwrap(), proposal_id);
@@ -813,10 +835,7 @@ mod tests {
 
     /// Pass a PROOF_POLICY change proposal and return its id. Helper
     /// for the Wave-4 execute tests.
-    async fn pass_proof_policy_proposal(
-        app: &axum::Router,
-        new_value: f64,
-    ) -> u64 {
+    async fn pass_proof_policy_proposal(app: &axum::Router, new_value: f64) -> u64 {
         let propose_body = serde_json::json!({
             "proposer": proposer_hex(),
             "kind": "change_parameter",
@@ -838,7 +857,9 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(resp.into_body(), 10_000).await.unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), 10_000)
+            .await
+            .unwrap();
         let pjson: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         let id = pjson["proposal_id"].as_u64().unwrap();
         // Phase 25 A5 — 3 distinct voters to clear the 3-participant
@@ -893,7 +914,9 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(resp.into_body(), 10_000).await.unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), 10_000)
+            .await
+            .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(json["policy"].as_str().unwrap(), "optional");
         assert_eq!(json["as_u8"].as_u64().unwrap(), 1);
@@ -916,7 +939,9 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(resp.into_body(), 10_000).await.unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), 10_000)
+            .await
+            .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(json["new_policy"].as_str().unwrap(), "recommended");
         assert_eq!(json["previous_policy"].as_str().unwrap(), "optional");
@@ -932,7 +957,9 @@ mod tests {
             )
             .await
             .unwrap();
-        let bytes = axum::body::to_bytes(resp.into_body(), 10_000).await.unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), 10_000)
+            .await
+            .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(json["policy"].as_str().unwrap(), "recommended");
     }
@@ -995,7 +1022,9 @@ mod tests {
             )
             .await
             .unwrap();
-        let bytes = axum::body::to_bytes(resp.into_body(), 10_000).await.unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), 10_000)
+            .await
+            .unwrap();
         let pjson: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         let id = pjson["proposal_id"].as_u64().unwrap();
 
@@ -1053,7 +1082,9 @@ mod tests {
             )
             .await
             .unwrap();
-        let bytes = axum::body::to_bytes(resp.into_body(), 10_000).await.unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), 10_000)
+            .await
+            .unwrap();
         let pjson: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         let id = pjson["proposal_id"].as_u64().unwrap();
         // Phase 25 A5 — 3 distinct voters for quorum, then tally.

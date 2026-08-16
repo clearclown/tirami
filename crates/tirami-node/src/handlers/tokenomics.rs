@@ -7,8 +7,7 @@ use serde::{Deserialize, Serialize};
 use tirami_ledger::{
     StakeDuration,
     tokenomics::{
-        TOTAL_TRM_SUPPLY, current_epoch, epoch_yield_rate, supply_factor,
-        FEE_ACTIVATION_THRESHOLD,
+        FEE_ACTIVATION_THRESHOLD, TOTAL_TRM_SUPPLY, current_epoch, epoch_yield_rate, supply_factor,
     },
 };
 
@@ -146,13 +145,12 @@ pub(crate) async fn su_stake(
 ) -> Result<Json<StakeResponse>, (StatusCode, String)> {
     check_forge_rate_limit(&state).await?;
 
-    let duration = parse_stake_duration(&req.duration)
-        .ok_or_else(|| {
-            (
-                StatusCode::BAD_REQUEST,
-                "duration must be one of: 7d, 30d, 90d, 365d".to_string(),
-            )
-        })?;
+    let duration = parse_stake_duration(&req.duration).ok_or_else(|| {
+        (
+            StatusCode::BAD_REQUEST,
+            "duration must be one of: 7d, 30d, 90d, 365d".to_string(),
+        )
+    })?;
 
     let now_ms = now_millis_pub();
     let mut pool = state.staking_pool.lock().await;
@@ -251,7 +249,10 @@ pub(crate) async fn su_refer(
         .map_err(|_| (StatusCode::BAD_REQUEST, "invalid referred_hex".to_string()))?
         .try_into()
         .map_err(|_: Vec<u8>| {
-            (StatusCode::BAD_REQUEST, "referred_hex must be 32 bytes".to_string())
+            (
+                StatusCode::BAD_REQUEST,
+                "referred_hex must be 32 bytes".to_string(),
+            )
         })?;
     let referred = tirami_core::NodeId(bytes);
 
@@ -332,7 +333,9 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
-        let body = axum::body::to_bytes(resp.into_body(), 10_000).await.unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), 10_000)
+            .await
+            .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["total_supply"].as_u64().unwrap(), 21_000_000_000);
         assert_eq!(json["total_minted"].as_u64().unwrap(), 0);
@@ -357,7 +360,9 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(resp.into_body(), 10_000).await.unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), 10_000)
+            .await
+            .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(json["ok"].as_bool().unwrap(), true);
         assert!((json["multiplier"].as_f64().unwrap() - 2.0).abs() < 1e-9);
@@ -396,7 +401,9 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(resp.into_body(), 10_000).await.unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), 10_000)
+            .await
+            .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(json["staked"].as_u64().unwrap(), 0);
     }
@@ -449,7 +456,9 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(resp.into_body(), 10_000).await.unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), 10_000)
+            .await
+            .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(json["count"].as_u64().unwrap(), 0);
         assert_eq!(json["total_bonus_earned"].as_u64().unwrap(), 0);
@@ -470,7 +479,9 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
-        let body = axum::body::to_bytes(resp.into_body(), 10_000).await.unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), 10_000)
+            .await
+            .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         // At genesis epoch 0, yield_rate = 0.001
         assert!((json["yield_rate"].as_f64().unwrap() - 0.001).abs() < 1e-9);
@@ -531,7 +542,9 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(resp.into_body(), 10_000).await.unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), 10_000)
+            .await
+            .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert!((json["multiplier"].as_f64().unwrap() - 1.2).abs() < 1e-9);
     }

@@ -11,7 +11,7 @@ use std::io;
 use std::path::Path;
 
 use tirami_agora::{AgentRegistry, Marketplace};
-use tirami_mind::{TiramiMindAgent, MindAgentSnapshot, PersonalAgent};
+use tirami_mind::{MindAgentSnapshot, PersonalAgent, TiramiMindAgent};
 
 use crate::bank_adapter::{BankServices, BankServicesSnapshot};
 
@@ -22,8 +22,8 @@ use crate::bank_adapter::{BankServices, BankServicesSnapshot};
 /// Persist the current `BankServices` state to `path` as compact JSON.
 pub fn save_bank(services: &BankServices, path: &Path) -> io::Result<()> {
     let snap = services.snapshot();
-    let json = serde_json::to_string(&snap)
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    let json =
+        serde_json::to_string(&snap).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
     fs::write(path, json)
 }
 
@@ -36,8 +36,8 @@ pub fn load_bank(path: &Path) -> io::Result<Option<BankServices>> {
         return Ok(None);
     }
     let raw = fs::read_to_string(path)?;
-    let snap: BankServicesSnapshot = serde_json::from_str(&raw)
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    let snap: BankServicesSnapshot =
+        serde_json::from_str(&raw).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
     let services = BankServices::from_snapshot(snap)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
     Ok(Some(services))
@@ -50,8 +50,8 @@ pub fn load_bank(path: &Path) -> io::Result<Option<BankServices>> {
 /// Persist the current `Marketplace` registry snapshot to `path` as compact JSON.
 pub fn save_marketplace(mp: &Marketplace, path: &Path) -> io::Result<()> {
     let snap = mp.registry.snapshot();
-    let json = serde_json::to_string(&snap)
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    let json =
+        serde_json::to_string(&snap).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
     fs::write(path, json)
 }
 
@@ -63,8 +63,8 @@ pub fn load_marketplace(path: &Path) -> io::Result<Option<Marketplace>> {
         return Ok(None);
     }
     let raw = fs::read_to_string(path)?;
-    let snap: tirami_agora::registry::RegistrySnapshot = serde_json::from_str(&raw)
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    let snap: tirami_agora::registry::RegistrySnapshot =
+        serde_json::from_str(&raw).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
     let registry = AgentRegistry::restore(snap);
     let mp = Marketplace {
         registry,
@@ -83,8 +83,8 @@ pub fn load_marketplace(path: &Path) -> io::Result<Option<Marketplace>> {
 /// The optimizer and benchmark are NOT included in the snapshot.
 pub fn save_mind(agent: &TiramiMindAgent, path: &Path) -> io::Result<()> {
     let snap = agent.snapshot();
-    let json = serde_json::to_string(&snap)
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    let json =
+        serde_json::to_string(&snap).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
     fs::write(path, json)
 }
 
@@ -98,8 +98,8 @@ pub fn load_mind_snapshot(path: &Path) -> io::Result<Option<MindAgentSnapshot>> 
         return Ok(None);
     }
     let raw = fs::read_to_string(path)?;
-    let snap: MindAgentSnapshot = serde_json::from_str(&raw)
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    let snap: MindAgentSnapshot =
+        serde_json::from_str(&raw).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
     Ok(Some(snap))
 }
 
@@ -109,8 +109,8 @@ pub fn load_mind_snapshot(path: &Path) -> io::Result<Option<MindAgentSnapshot>> 
 
 /// Persist the user-facing `PersonalAgent` state to `path` as compact JSON.
 pub fn save_personal_agent(agent: &PersonalAgent, path: &Path) -> io::Result<()> {
-    let json = serde_json::to_string(agent)
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    let json =
+        serde_json::to_string(agent).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
     fs::write(path, json)
 }
 
@@ -124,8 +124,8 @@ pub fn load_personal_agent(path: &Path) -> io::Result<Option<PersonalAgent>> {
         return Ok(None);
     }
     let raw = fs::read_to_string(path)?;
-    let agent: PersonalAgent = serde_json::from_str(&raw)
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    let agent: PersonalAgent =
+        serde_json::from_str(&raw).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
     agent
         .preferences
         .validate()
@@ -152,11 +152,7 @@ use tirami_mind::{AgentIdentity, AgentIdentityBundle};
 ///
 /// Caller must supply a non-trivial passphrase (≥ 8 chars); the
 /// export path enforces this and propagates the error if not.
-pub fn save_agent_identity(
-    id: &AgentIdentity,
-    path: &Path,
-    passphrase: &str,
-) -> io::Result<()> {
+pub fn save_agent_identity(id: &AgentIdentity, path: &Path, passphrase: &str) -> io::Result<()> {
     let bundle = id
         .export(passphrase)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e.to_string()))?;
@@ -183,16 +179,13 @@ pub fn save_agent_identity(
 /// - `Ok(Some(_))` if the file decrypts cleanly
 /// - `Err(_)` on I/O failure, malformed JSON, schema mismatch, or
 ///   wrong passphrase (the AEAD authentication failure)
-pub fn load_agent_identity(
-    path: &Path,
-    passphrase: &str,
-) -> io::Result<Option<AgentIdentity>> {
+pub fn load_agent_identity(path: &Path, passphrase: &str) -> io::Result<Option<AgentIdentity>> {
     if !path.exists() {
         return Ok(None);
     }
     let raw = fs::read_to_string(path)?;
-    let bundle: AgentIdentityBundle = serde_json::from_str(&raw)
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    let bundle: AgentIdentityBundle =
+        serde_json::from_str(&raw).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
     let id = AgentIdentity::import(&bundle, passphrase)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e.to_string()))?;
     Ok(Some(id))
@@ -309,7 +302,10 @@ mod tests {
         assert_eq!(snap.harness.system_prompt, "test system prompt");
         assert_eq!(snap.harness.version, agent.harness.version);
         assert_eq!(snap.history.len(), agent.history().len());
-        assert_eq!(snap.budget.max_trm_per_cycle, agent.runner_budget().max_trm_per_cycle);
+        assert_eq!(
+            snap.budget.max_trm_per_cycle,
+            agent.runner_budget().max_trm_per_cycle
+        );
 
         // Verify restore_from_snapshot works
         let harness2 = Harness::new("fresh start".to_string());
@@ -466,7 +462,11 @@ mod tests {
     #[test]
     fn sec_deep_load_marketplace_from_corrupt_json_returns_err() {
         let path = tmp_path("corrupt_marketplace");
-        std::fs::write(&path, r#"{"agents": [null, null, {"broken": true}], "incomplete"#).unwrap();
+        std::fs::write(
+            &path,
+            r#"{"agents": [null, null, {"broken": true}], "incomplete"#,
+        )
+        .unwrap();
 
         let result = load_marketplace(&path);
         assert!(
@@ -487,14 +487,22 @@ mod tests {
         let agent = TiramiMindAgent::new(harness, Box::new(bench), Box::new(opt), None);
 
         // Agent with no improvement cycles has empty history.
-        assert_eq!(agent.history().len(), 0, "fresh agent must have empty history");
+        assert_eq!(
+            agent.history().len(),
+            0,
+            "fresh agent must have empty history"
+        );
 
         save_mind(&agent, &path).expect("save_mind must succeed");
         let snap = load_mind_snapshot(&path)
             .expect("load must succeed")
             .expect("file must exist");
 
-        assert_eq!(snap.history.len(), 0, "empty history must roundtrip correctly");
+        assert_eq!(
+            snap.history.len(),
+            0,
+            "empty history must roundtrip correctly"
+        );
         assert_eq!(snap.harness.system_prompt, "empty history test");
 
         let _ = std::fs::remove_file(&path);
@@ -502,12 +510,16 @@ mod tests {
 
     #[test]
     fn sec_deep_strategy_kind_serialize_deserialize_all_variants() {
-        use tirami_bank::StrategyKind;
         use serde_json;
+        use tirami_bank::StrategyKind;
 
         for kind in [
-            StrategyKind::Conservative { max_commit_fraction: 0.30 },
-            StrategyKind::HighYield { base_commit_fraction: 0.50 },
+            StrategyKind::Conservative {
+                max_commit_fraction: 0.30,
+            },
+            StrategyKind::HighYield {
+                base_commit_fraction: 0.50,
+            },
             StrategyKind::Balanced { threshold: 0.50 },
         ] {
             let json = serde_json::to_string(&kind).expect("must serialize");
@@ -533,8 +545,7 @@ mod tests {
         let path = agent_id_tmp_path("rt");
         let _ = std::fs::remove_file(&path);
         let original = AgentIdentity::generate(1_000, Some("persist-test".into()));
-        save_agent_identity(&original, &path, "correct-horse-battery-staple")
-            .expect("save ok");
+        save_agent_identity(&original, &path, "correct-horse-battery-staple").expect("save ok");
         let loaded = load_agent_identity(&path, "correct-horse-battery-staple")
             .expect("load ok")
             .expect("must be Some");
@@ -571,7 +582,10 @@ mod tests {
         let err = save_agent_identity(&id, &path, "short").expect_err("must err");
         assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
         // File must NOT have been created on the rejection path.
-        assert!(!path.exists(), "save should not write on validation failure");
+        assert!(
+            !path.exists(),
+            "save should not write on validation failure"
+        );
     }
 
     #[test]

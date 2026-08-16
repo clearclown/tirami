@@ -1,19 +1,19 @@
+use std::collections::HashMap;
+use std::sync::Arc;
 use tirami_core::{Config, ModelManifest, NodeId, PipelineTopology};
+use tirami_ledger::ledger::TradeAttestation;
 use tirami_ledger::{
     ComputeLedger, InferenceIneligible, LoanRecord, LoanStatus, SignedTradeRecord, StakingPool,
     TradeRecord,
 };
-use tirami_ledger::ledger::TradeAttestation;
-use tirami_zkml_bench::{BenchSpec, EdAttestBackend, BenchBackend};
+use tirami_net::gossip::handle_reputation_gossip;
 use tirami_net::{ClusterManager, ForgeTransport, GossipState};
 use tirami_proto::{
     Envelope, ErrorCode, ErrorMsg, InferenceRequest, LoanAccept, Payload, PipelineTopologyMsg,
     RpcServerFailed, RpcServerReady, TokenStreamMsg, TradeAccept, TradeProposal, Welcome,
 };
-use tirami_net::gossip::handle_reputation_gossip;
-use std::collections::HashMap;
-use std::sync::Arc;
-use tokio::sync::{oneshot, Mutex, Semaphore};
+use tirami_zkml_bench::{BenchBackend, BenchSpec, EdAttestBackend};
+use tokio::sync::{Mutex, Semaphore, oneshot};
 
 /// Per-request TradeAccept dispatcher.
 ///
@@ -27,8 +27,7 @@ use tokio::sync::{oneshot, Mutex, Semaphore};
 ///
 /// Same problem applies to the borrow flow (`LoanAccept`) — a
 /// follow-up can adopt the same pattern.
-pub(crate) type TradeAcceptDispatcher =
-    Arc<Mutex<HashMap<u64, oneshot::Sender<Vec<u8>>>>>;
+pub(crate) type TradeAcceptDispatcher = Arc<Mutex<HashMap<u64, oneshot::Sender<Vec<u8>>>>>;
 
 /// The role of a node in the inference pipeline.
 #[derive(Debug, Clone, PartialEq)]
@@ -42,11 +41,35 @@ pub enum PipelineRole {
 /// Handles distributed inference requests over the P2P network.
 pub struct PipelineCoordinator {
     transport: Arc<ForgeTransport>,
+    /// #162 — where `start_split_session` waits for `RpcServerReady`. Owned
+    /// here because the seed recv loop is the only consumer of
+    /// `transport.recv()` and therefore the only thing that sees the reply.
+    rpc_ready: crate::split_inference::RpcReadyDispatcher,
 }
 
 impl PipelineCoordinator {
     pub fn new(transport: Arc<ForgeTransport>) -> Self {
-        Self { transport }
+        Self {
+            transport,
+            rpc_ready: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+
+    /// Construct with a dispatcher owned elsewhere, so a split-inference call
+    /// outside this loop can wait on the same map the loop resolves.
+    pub fn with_rpc_dispatcher(
+        transport: Arc<ForgeTransport>,
+        rpc_ready: crate::split_inference::RpcReadyDispatcher,
+    ) -> Self {
+        Self {
+            transport,
+            rpc_ready,
+        }
+    }
+
+    /// Handle a split-inference orchestrator uses to await peer replies.
+    pub fn rpc_ready_dispatcher(&self) -> crate::split_inference::RpcReadyDispatcher {
+        self.rpc_ready.clone()
     }
 
     /// Run the seed loop — accept and process inference requests.
@@ -89,8 +112,7 @@ impl PipelineCoordinator {
         // loop routes incoming TradeAccept messages to the matching
         // `handle_inference` task so the 5s timeout + penalty path
         // only fires when the consumer is truly unresponsive.
-        let trade_accept_dispatcher: TradeAcceptDispatcher =
-            Arc::new(Mutex::new(HashMap::new()));
+        let trade_accept_dispatcher: TradeAcceptDispatcher = Arc::new(Mutex::new(HashMap::new()));
 
         // #163 — rpc-server subprocesses this node started on behalf of a
         // peer, keyed by the requester's session id. Previously the spawning
@@ -101,6 +123,28 @@ impl PipelineCoordinator {
         // `RpcServer`'s existing `Drop` does the killing.
         let rpc_servers: Arc<Mutex<HashMap<u64, tirami_infer::rpc_manager::RpcServer>>> =
             Arc::new(Mutex::new(HashMap::new()));
+
+        // #162 — session id → local rpc-server port, consulted by the tunnel
+        // when a stream announces which session it belongs to.
+        let session_ports: tirami_net::tcp_tunnel::SessionPorts =
+            Arc::new(Mutex::new(HashMap::new()));
+
+        // Serve inbound tunnel connections. These arrive on their own ALPN so
+        // they never reach this recv loop; without something draining the
+        // channel a requester's dial would hang.
+        {
+            let transport = self.transport.clone();
+            let session_ports = session_ports.clone();
+            tokio::spawn(async move {
+                while let Some(conn) = transport.accept_rpc_tunnel().await {
+                    if let Err(e) =
+                        tirami_net::tcp_tunnel::start_peer_tunnel(conn, session_ports.clone()).await
+                    {
+                        tracing::warn!("rpc tunnel setup failed: {}", e);
+                    }
+                }
+            });
+        }
 
         loop {
             match self.transport.recv().await {
@@ -221,8 +265,7 @@ impl PipelineCoordinator {
                         // proof policy so the spawned task sees a
                         // consistent value across its own lifetime,
                         // even if governance ratchets mid-flight.
-                        let policy_snapshot =
-                            *current_proof_policy.read().await;
+                        let policy_snapshot = *current_proof_policy.read().await;
 
                         tokio::spawn(async move {
                             let _permit = permit;
@@ -299,6 +342,7 @@ impl PipelineCoordinator {
                         let node_id = node_id.clone();
                         let peer_id = peer_id.clone();
                         let rpc_servers = rpc_servers.clone();
+                        let session_ports = session_ports.clone();
                         tokio::spawn(async move {
                             // `spawn` polls the listening socket with
                             // `std::thread::sleep` for up to 10 s. Running
@@ -313,6 +357,11 @@ impl PipelineCoordinator {
                                 Ok(Ok(server)) => {
                                     let port = server.port();
                                     rpc_servers.lock().await.insert(req.session_id, server);
+                                    // Register before replying: the requester
+                                    // dials the tunnel as soon as it sees
+                                    // Ready, and an unregistered session is
+                                    // refused.
+                                    session_ports.lock().await.insert(req.session_id, port);
                                     tracing::info!(
                                         "rpc-server running on port {} for session {}",
                                         port,
@@ -346,6 +395,7 @@ impl PipelineCoordinator {
                         // Dropping the `RpcServer` kills the child via its
                         // `Drop` impl, which existed all along but could
                         // never run under the old `ctrl_c()` parking.
+                        session_ports.lock().await.remove(&stop.session_id);
                         match rpc_servers.lock().await.remove(&stop.session_id) {
                             Some(server) => tracing::info!(
                                 "Stopped rpc-server on port {} (session {}, requested by {})",
@@ -367,9 +417,12 @@ impl PipelineCoordinator {
                             ready.port,
                             ready.session_id
                         );
-                        // The requester side — tunnel setup and handing the
-                        // endpoint to the engine — lands with the sender
-                        // orchestrator (#162).
+                        // Hand the port to whoever is waiting in
+                        // `start_split_session` (#162). No waiter means a
+                        // late or unsolicited reply — drop it.
+                        if let Some(tx) = self.rpc_ready.lock().await.remove(&ready.session_id) {
+                            let _ = tx.send(Ok(ready.port));
+                        }
                     }
                     Payload::RpcServerFailed(failed) => {
                         tracing::warn!(
@@ -378,6 +431,9 @@ impl PipelineCoordinator {
                             failed.session_id,
                             failed.reason
                         );
+                        if let Some(tx) = self.rpc_ready.lock().await.remove(&failed.session_id) {
+                            let _ = tx.send(Err(failed.reason.clone()));
+                        }
                     }
                     Payload::TradeAccept(accept) => {
                         // Fix #80 — route the consumer signature to
@@ -485,11 +541,7 @@ impl PipelineCoordinator {
                                 }),
                             };
                             if let Err(e) = transport.send_to(&peer_id, &accept).await {
-                                tracing::warn!(
-                                    "failed to send LoanAccept to {}: {}",
-                                    peer_id,
-                                    e
-                                );
+                                tracing::warn!("failed to send LoanAccept to {}: {}", peer_id, e);
                             } else {
                                 tracing::info!(
                                     "LoanAccept sent to {} for {} CU principal",
@@ -518,7 +570,8 @@ impl PipelineCoordinator {
                         let policy_handle = current_proof_policy.clone();
                         tokio::spawn(async move {
                             if let Some(signed) =
-                                tirami_net::gossip::handle_trade_gossip(&gossip, &trade_gossip).await
+                                tirami_net::gossip::handle_trade_gossip(&gossip, &trade_gossip)
+                                    .await
                             {
                                 let mut ledger = ledger.lock().await;
                                 // Phase 21 Wave 3 — gate the gossip-
@@ -614,9 +667,7 @@ impl PipelineCoordinator {
                                         }
                                     }
                                     Err(e) => {
-                                        tracing::debug!(
-                                            "loan gossip create_loan skipped: {e:?}"
-                                        );
+                                        tracing::debug!("loan gossip create_loan skipped: {e:?}");
                                     }
                                 }
                             }
@@ -627,12 +678,7 @@ impl PipelineCoordinator {
                         let gossip = gossip.clone();
                         let transport = self.transport.clone();
                         tokio::spawn(async move {
-                            handle_reputation_gossip(
-                                obs,
-                                &ledger,
-                                &gossip,
-                                Some(&transport),
-                            ).await;
+                            handle_reputation_gossip(obs, &ledger, &gossip, Some(&transport)).await;
                         });
                     }
                     // Phase 14.1 — price signal gossip.
@@ -646,7 +692,8 @@ impl PipelineCoordinator {
                                 &ledger,
                                 &gossip,
                                 Some(&transport),
-                            ).await;
+                            )
+                            .await;
                         });
                     }
                     // Phase 14.3 — audit challenge: run deterministic
@@ -686,7 +733,8 @@ impl PipelineCoordinator {
                                                 challenge_id: challenge.challenge_id,
                                                 target: challenge.target.clone(),
                                                 output_hash: hash,
-                                                computation_time_ms: start.elapsed().as_millis() as u64,
+                                                computation_time_ms: start.elapsed().as_millis()
+                                                    as u64,
                                                 // Echo the layer back so the challenger
                                                 // can verify we computed the right one.
                                                 layer_index: requested_layer,
@@ -829,8 +877,7 @@ impl PipelineCoordinator {
         // BOTH; if the TradeProposal doesn't arrive within
         // `TRADE_PROPOSAL_WAIT`, we return the text anyway (the
         // seed's timeout path will still record a trade).
-        const TRADE_PROPOSAL_WAIT: std::time::Duration =
-            std::time::Duration::from_secs(3);
+        const TRADE_PROPOSAL_WAIT: std::time::Duration = std::time::Duration::from_secs(3);
         let mut result = String::new();
         let mut seen_final = false;
         let mut counter_signed = false;
@@ -862,59 +909,59 @@ impl PipelineCoordinator {
             let peer_id = &seed_peer_id;
             let response = envelope;
             match response.payload {
-                    Payload::TokenStream(ts) => {
-                        if ts.request_id == request_id {
-                            result.push_str(&ts.text);
-                            if ts.is_final {
-                                seen_final = true;
-                            }
+                Payload::TokenStream(ts) => {
+                    if ts.request_id == request_id {
+                        result.push_str(&ts.text);
+                        if ts.is_final {
+                            seen_final = true;
                         }
                     }
-                    Payload::Error(err) => {
-                        if err.request_id == request_id {
-                            anyhow::bail!("{:?}: {}", err.code, err.message);
-                        }
+                }
+                Payload::Error(err) => {
+                    if err.request_id == request_id {
+                        anyhow::bail!("{:?}: {}", err.code, err.message);
                     }
-                    Payload::TradeProposal(proposal) => {
-                        if proposal.request_id == request_id {
-                            // Counter-sign the trade. The nonce from the
-                            // proposal is part of the canonical bytes in v2;
-                            // a mismatch here breaks sig verification.
-                            let trade = TradeRecord {
-                                provider: proposal.provider,
-                                consumer: proposal.consumer,
-                                trm_amount: proposal.trm_amount,
-                                tokens_processed: proposal.tokens_processed,
-                                timestamp: proposal.timestamp,
-                                model_id: proposal.model_id,
-                                flops_estimated: 0,
-                                nonce: proposal.nonce,
-                            };
-                            let canonical = trade.canonical_bytes();
-                            let consumer_sig = transport.sign(&canonical).to_vec();
+                }
+                Payload::TradeProposal(proposal) => {
+                    if proposal.request_id == request_id {
+                        // Counter-sign the trade. The nonce from the
+                        // proposal is part of the canonical bytes in v2;
+                        // a mismatch here breaks sig verification.
+                        let trade = TradeRecord {
+                            provider: proposal.provider,
+                            consumer: proposal.consumer,
+                            trm_amount: proposal.trm_amount,
+                            tokens_processed: proposal.tokens_processed,
+                            timestamp: proposal.timestamp,
+                            model_id: proposal.model_id,
+                            flops_estimated: 0,
+                            nonce: proposal.nonce,
+                        };
+                        let canonical = trade.canonical_bytes();
+                        let consumer_sig = transport.sign(&canonical).to_vec();
 
-                            let accept = Envelope {
-                                msg_id: request_id * 10000 + 10000,
-                                sender: node_id.clone(),
-                                timestamp: now_millis(),
-                                payload: Payload::TradeAccept(TradeAccept {
-                                    request_id,
-                                    consumer_sig,
-                                }),
-                            };
-                            if let Err(e) = transport.send_to(peer_id, &accept).await {
-                                tracing::warn!("Failed to send TradeAccept: {}", e);
-                            } else {
-                                tracing::debug!(
-                                    "Trade accepted: {} CU for request {}",
-                                    trade.trm_amount,
-                                    request_id
-                                );
-                            }
-                            counter_signed = true;
+                        let accept = Envelope {
+                            msg_id: request_id * 10000 + 10000,
+                            sender: node_id.clone(),
+                            timestamp: now_millis(),
+                            payload: Payload::TradeAccept(TradeAccept {
+                                request_id,
+                                consumer_sig,
+                            }),
+                        };
+                        if let Err(e) = transport.send_to(peer_id, &accept).await {
+                            tracing::warn!("Failed to send TradeAccept: {}", e);
+                        } else {
+                            tracing::debug!(
+                                "Trade accepted: {} CU for request {}",
+                                trade.trm_amount,
+                                request_id
+                            );
                         }
+                        counter_signed = true;
                     }
-                    _ => {}
+                }
+                _ => {}
             }
         }
 
@@ -1013,7 +1060,8 @@ async fn handle_inference(
         if let Err(ineligible) = verdict {
             tracing::warn!(
                 "P2P inference denied by stake gate from {}: {}",
-                peer_id, ineligible
+                peer_id,
+                ineligible
             );
             send_protocol_error(
                 &transport,
@@ -1064,7 +1112,10 @@ async fn handle_inference(
         Ok(tokens) => tokens,
         Err(err) => {
             // Release reservation on failure
-            ledger.lock().await.release_reserve(&consumer_id, estimated_cost);
+            ledger
+                .lock()
+                .await
+                .release_reserve(&consumer_id, estimated_cost);
             send_protocol_error(
                 &transport,
                 peer_id,
@@ -1209,11 +1260,7 @@ async fn handle_inference(
     // Wait for TradeAccept with timeout (5 seconds). The
     // dispatcher delivers the consumer signature through the
     // oneshot channel when the main recv loop receives it.
-    let accept_result = tokio::time::timeout(
-        std::time::Duration::from_secs(5),
-        accept_rx,
-    )
-    .await;
+    let accept_result = tokio::time::timeout(std::time::Duration::from_secs(5), accept_rx).await;
     // Remove any remaining slot on timeout so the map doesn't grow.
     if accept_result.is_err() {
         let mut dispatch = trade_accept_dispatcher.lock().await;
@@ -1273,8 +1320,12 @@ async fn handle_inference(
                                 }
                             });
                             tirami_net::gossip::broadcast_trade(
-                                &transport, &gossip, &signed, bench_spec_hint,
-                            ).await;
+                                &transport,
+                                &gossip,
+                                &signed,
+                                bench_spec_hint,
+                            )
+                            .await;
                         }
                         Err(e) => {
                             // Replay or (very unlikely) a second-pass sig
@@ -1302,7 +1353,10 @@ async fn handle_inference(
         }
         _ => {
             // Timeout: 50% penalty on unsigned trades (Issue #3)
-            tracing::debug!("TradeAccept timeout from {}, recording penalized trade", peer_id);
+            tracing::debug!(
+                "TradeAccept timeout from {}, recording penalized trade",
+                peer_id
+            );
             let mut penalized = trade.clone();
             penalized.trm_amount /= 2;
             let mut ledger = ledger.lock().await;
@@ -1479,9 +1533,7 @@ pub(crate) fn check_gossip_trade_eligibility(
     }
     match ledger.inference_eligibility(provider, staking, now_ms) {
         Ok(_) => Ok(()),
-        Err(InferenceIneligible::PreviouslySlashed) => {
-            Err(InferenceIneligible::PreviouslySlashed)
-        }
+        Err(InferenceIneligible::PreviouslySlashed) => Err(InferenceIneligible::PreviouslySlashed),
         Err(stake_required @ InferenceIneligible::StakeRequired { .. }) => {
             // Issue #148: do NOT authoritatively reject — the
             // receiver's view of the provider's StakingPool is
@@ -1507,9 +1559,7 @@ mod gossip_gate_tests {
         let staking = StakingPool::new();
         let provider = NodeId([0xA1u8; 32]);
         ledger.record_slash_event(provider.clone(), 0.3, 100, "collusion", 0);
-        assert!(
-            check_gossip_trade_eligibility(&ledger, &staking, &provider, 1_000, false).is_ok()
-        );
+        assert!(check_gossip_trade_eligibility(&ledger, &staking, &provider, 1_000, false).is_ok());
     }
 
     #[test]
@@ -1517,9 +1567,7 @@ mod gossip_gate_tests {
         let ledger = ComputeLedger::new();
         let staking = StakingPool::new();
         let provider = NodeId([0xA2u8; 32]);
-        assert!(
-            check_gossip_trade_eligibility(&ledger, &staking, &provider, 1_000, true).is_ok()
-        );
+        assert!(check_gossip_trade_eligibility(&ledger, &staking, &provider, 1_000, true).is_ok());
     }
 
     #[test]
@@ -1528,8 +1576,7 @@ mod gossip_gate_tests {
         let staking = StakingPool::new();
         let provider = NodeId([0xA3u8; 32]);
         ledger.record_slash_event(provider.clone(), 0.3, 100, "collusion", 0);
-        let verdict =
-            check_gossip_trade_eligibility(&ledger, &staking, &provider, 1_000, true);
+        let verdict = check_gossip_trade_eligibility(&ledger, &staking, &provider, 1_000, true);
         assert_eq!(verdict, Err(InferenceIneligible::PreviouslySlashed));
     }
 
@@ -1544,7 +1591,9 @@ mod gossip_gate_tests {
         let provider = NodeId([0xA4u8; 32]);
         // Wall-clock now so the 72 h expiry is in the future.
         let now = now_millis();
-        ledger.grant_welcome_loan(provider.clone(), "", now).expect("grant");
+        ledger
+            .grant_welcome_loan(provider.clone(), "", now)
+            .expect("grant");
         let cap_buster = TradeRecord {
             provider: provider.clone(),
             consumer: NodeId([0x77u8; 32]),
@@ -1575,7 +1624,9 @@ mod gossip_gate_tests {
         let staking = StakingPool::new();
         let provider = NodeId([0xA5u8; 32]);
         let now = now_millis();
-        ledger.grant_welcome_loan(provider.clone(), "", now).expect("grant");
+        ledger
+            .grant_welcome_loan(provider.clone(), "", now)
+            .expect("grant");
         let cap_buster = TradeRecord {
             provider: provider.clone(),
             consumer: NodeId([0x77u8; 32]),
@@ -1597,8 +1648,7 @@ mod gossip_gate_tests {
             Err(InferenceIneligible::StakeRequired { .. })
         ));
         // …but the gossip-receive helper soft-accepts.
-        let verdict =
-            check_gossip_trade_eligibility(&ledger, &staking, &provider, now, true);
+        let verdict = check_gossip_trade_eligibility(&ledger, &staking, &provider, now, true);
         assert!(
             verdict.is_ok(),
             "stake-cap should NOT block inbound gossip; got {verdict:?}"
@@ -1613,11 +1663,14 @@ mod gossip_gate_tests {
         let provider = NodeId([0xA6u8; 32]);
         let now = now_millis();
         staking
-            .stake(provider.clone(), MIN_PROVIDER_STAKE_TRM, StakeDuration::Days7, now)
+            .stake(
+                provider.clone(),
+                MIN_PROVIDER_STAKE_TRM,
+                StakeDuration::Days7,
+                now,
+            )
             .expect("stake ok");
-        assert!(
-            check_gossip_trade_eligibility(&ledger, &staking, &provider, now, true).is_ok()
-        );
+        assert!(check_gossip_trade_eligibility(&ledger, &staking, &provider, now, true).is_ok());
     }
 }
 
@@ -1946,7 +1999,9 @@ mod tests {
                         Arc::new(Mutex::new(GossipState::new())),
                         Arc::new(Mutex::new(tirami_ledger::StakingPool::new())),
                         Arc::new(Mutex::new(None)),
-                        Arc::new(tokio::sync::RwLock::new(tirami_ledger::zk::ProofPolicy::Disabled)),
+                        Arc::new(tokio::sync::RwLock::new(
+                            tirami_ledger::zk::ProofPolicy::Disabled,
+                        )),
                     )
                     .await
                     .expect("seed loop");
@@ -2002,11 +2057,26 @@ mod tests {
     #[test]
     fn build_bench_spec_changes_with_any_input() {
         let base = build_bench_spec("p", &["o".to_string()], "m", 1, 0);
-        assert_ne!(base.prompt_hash, build_bench_spec("p2", &["o".to_string()], "m", 1, 0).prompt_hash);
-        assert_ne!(base.output_hash, build_bench_spec("p", &["o2".to_string()], "m", 1, 0).output_hash);
-        assert_ne!(base.model_hash, build_bench_spec("p", &["o".to_string()], "m2", 1, 0).model_hash);
-        assert_eq!(base.token_count + 1, build_bench_spec("p", &["o".to_string()], "m", 2, 0).token_count);
-        assert_eq!(base.flops + 1, build_bench_spec("p", &["o".to_string()], "m", 1, 1).flops);
+        assert_ne!(
+            base.prompt_hash,
+            build_bench_spec("p2", &["o".to_string()], "m", 1, 0).prompt_hash
+        );
+        assert_ne!(
+            base.output_hash,
+            build_bench_spec("p", &["o2".to_string()], "m", 1, 0).output_hash
+        );
+        assert_ne!(
+            base.model_hash,
+            build_bench_spec("p", &["o".to_string()], "m2", 1, 0).model_hash
+        );
+        assert_eq!(
+            base.token_count + 1,
+            build_bench_spec("p", &["o".to_string()], "m", 2, 0).token_count
+        );
+        assert_eq!(
+            base.flops + 1,
+            build_bench_spec("p", &["o".to_string()], "m", 1, 1).flops
+        );
     }
 
     #[test]
@@ -2014,7 +2084,13 @@ mod tests {
         let config = config_with_zkml_backend("mock");
         let agent = tirami_mind::AgentIdentity::generate(0, None);
         let att = produce_ed_attest_attestation(
-            &config, Some(&agent), "p", &["o".to_string()], "m", 1, 0,
+            &config,
+            Some(&agent),
+            "p",
+            &["o".to_string()],
+            "m",
+            1,
+            0,
         );
         assert!(att.is_none());
     }
@@ -2022,9 +2098,7 @@ mod tests {
     #[test]
     fn produce_ed_attest_skips_without_agent_identity() {
         let config = config_with_zkml_backend("ed-attest");
-        let att = produce_ed_attest_attestation(
-            &config, None, "p", &["o".to_string()], "m", 1, 0,
-        );
+        let att = produce_ed_attest_attestation(&config, None, "p", &["o".to_string()], "m", 1, 0);
         assert!(att.is_none());
     }
 
@@ -2032,9 +2106,7 @@ mod tests {
     fn produce_ed_attest_skips_when_token_count_is_zero() {
         let config = config_with_zkml_backend("ed-attest");
         let agent = tirami_mind::AgentIdentity::generate(0, None);
-        let att = produce_ed_attest_attestation(
-            &config, Some(&agent), "p", &[], "m", 0, 0,
-        );
+        let att = produce_ed_attest_attestation(&config, Some(&agent), "p", &[], "m", 0, 0);
         assert!(att.is_none());
     }
 
@@ -2043,8 +2115,15 @@ mod tests {
         let config = config_with_zkml_backend("ed-attest");
         let agent = tirami_mind::AgentIdentity::generate(0, None);
         let att = produce_ed_attest_attestation(
-            &config, Some(&agent), "hello", &["world".to_string()], "m", 1, 0,
-        ).expect("must produce attestation");
+            &config,
+            Some(&agent),
+            "hello",
+            &["world".to_string()],
+            "m",
+            1,
+            0,
+        )
+        .expect("must produce attestation");
         assert_eq!(att.backend, "ed-attest");
         let signer = att.ed_attest_signer().expect("96-byte ed-attest");
         assert_eq!(signer, agent.public_key_bytes());
@@ -2055,7 +2134,13 @@ mod tests {
         let config = config_with_zkml_backend("Ed-Attest");
         let agent = tirami_mind::AgentIdentity::generate(0, None);
         let att = produce_ed_attest_attestation(
-            &config, Some(&agent), "p", &["o".to_string()], "m", 1, 0,
+            &config,
+            Some(&agent),
+            "p",
+            &["o".to_string()],
+            "m",
+            1,
+            0,
         );
         assert!(att.is_some());
     }
@@ -2068,19 +2153,16 @@ mod tests {
         let agent = tirami_mind::AgentIdentity::generate(0, None);
         let prompt = "p";
         let outputs = vec!["o".to_string()];
-        let att = produce_ed_attest_attestation(
-            &config, Some(&agent), prompt, &outputs, "m", 1, 0,
-        ).expect("produce");
+        let att = produce_ed_attest_attestation(&config, Some(&agent), prompt, &outputs, "m", 1, 0)
+            .expect("produce");
         let spec = build_bench_spec(prompt, &outputs, "m", 1, 0);
         // Correct signer passes.
-        tirami_zkml_bench::verify_trade_attestation(
-            &spec, &att, &agent.public_key_bytes(),
-        ).expect("correct signer");
+        tirami_zkml_bench::verify_trade_attestation(&spec, &att, &agent.public_key_bytes())
+            .expect("correct signer");
         // Wrong signer fails.
         let other = tirami_mind::AgentIdentity::generate(0, None);
-        let err = tirami_zkml_bench::verify_trade_attestation(
-            &spec, &att, &other.public_key_bytes(),
-        );
+        let err =
+            tirami_zkml_bench::verify_trade_attestation(&spec, &att, &other.public_key_bytes());
         assert!(err.is_err());
     }
 }

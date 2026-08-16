@@ -21,6 +21,10 @@ pub struct TiramiNode {
     pub advertised_topology: Arc<Mutex<Option<PipelineTopology>>>,
     transport: Option<Arc<ForgeTransport>>,
     cluster: Option<Arc<ClusterManager>>,
+    /// #162 — where `start_split_session` waits for peers to report their
+    /// rpc-server. Lives here rather than inside `run_seed` so an orchestrator
+    /// call can reach it while the seed loop is running.
+    rpc_ready: crate::split_inference::RpcReadyDispatcher,
     /// Shared gossip state — used by both the HTTP API (to broadcast loans
     /// and trades from endpoint handlers) and the pipeline coordinator (to
     /// broadcast trades completed during inference). Must be a single
@@ -208,6 +212,7 @@ impl TiramiNode {
             advertised_topology: Arc::new(Mutex::new(None)),
             transport: None,
             cluster: None,
+            rpc_ready: Arc::new(Mutex::new(std::collections::HashMap::new())),
             gossip: Arc::new(Mutex::new(tirami_net::GossipState::with_capacity(
                 gossip_max_seen,
             ))),
@@ -292,6 +297,8 @@ impl TiramiNode {
             // Phase 25 #161 — share the persistent wallet so HTTP
             // handlers can sign as this node.
             self.wallet.clone(),
+            // #162 — split orchestration, when a transport exists.
+            self.split_inference_context(),
         );
         let addr = self.config.api_socket_addr();
         tracing::info!("API server listening on {}", addr);
@@ -328,6 +335,7 @@ impl TiramiNode {
         let agent_identity_api = self.agent_identity.clone();
         let current_proof_policy_api = self.current_proof_policy.clone();
         let wallet_api = self.wallet.clone();
+        let split_ctx_api = self.split_inference_context();
         let api_config = self.config.clone();
         tokio::spawn(async move {
             let app = crate::api::create_router_with_services(
@@ -354,6 +362,8 @@ impl TiramiNode {
                 current_proof_policy_api,
                 // Phase 25 #161 — shared persistent wallet.
                 wallet_api,
+                // #162 — split orchestration, when a transport exists.
+                split_ctx_api,
             );
             let addr = api_config.api_socket_addr();
             if let Ok(listener) = tokio::net::TcpListener::bind(&addr).await {
@@ -506,12 +516,14 @@ impl TiramiNode {
         };
         let secret_key = iroh::SecretKey::from_bytes(wallet.seed());
         let transport = match p2p_bind_addr {
-            Some(bind_addr) => ForgeTransport::new_with_max_connections_secret_key_and_bind_addr(
-                max_connections,
-                secret_key,
-                bind_addr,
-            )
-            .await,
+            Some(bind_addr) => {
+                ForgeTransport::new_with_max_connections_secret_key_and_bind_addr(
+                    max_connections,
+                    secret_key,
+                    bind_addr,
+                )
+                .await
+            }
             None => {
                 ForgeTransport::new_with_max_connections_and_secret_key(max_connections, secret_key)
                     .await
@@ -530,6 +542,103 @@ impl TiramiNode {
     }
 
     /// Run as a Seed node — holds model, serves inference, earns CU.
+    /// Handles the HTTP layer needs to orchestrate a split (#162).
+    ///
+    /// `None` until `init_transport` has run — there is nothing to orchestrate
+    /// over, and the endpoint says so rather than guessing.
+    pub(crate) fn split_inference_context(&self) -> Option<crate::api::SplitInferenceContext> {
+        self.transport
+            .as_ref()
+            .map(|transport| crate::api::SplitInferenceContext {
+                transport: transport.clone(),
+                rpc_ready: self.rpc_ready.clone(),
+            })
+    }
+
+    /// Run one inference split across the peers in the current topology plan
+    /// (#162).
+    ///
+    /// Requires the seed loop to be running: it is the only consumer of
+    /// `transport.recv()`, so it is what resolves `RpcServerReady` back to the
+    /// waiting session. Returns an error rather than falling back to local
+    /// inference when the plan has no remote stage — a caller asking to split
+    /// should hear that it did not, not silently get a single-machine run.
+    /// That is the same failure shape #164 documented for ggml-rpc.
+    pub async fn run_split_inference(
+        &self,
+        model_path: std::path::PathBuf,
+        prompt: String,
+        max_tokens: u32,
+        temperature: f32,
+    ) -> Result<(String, usize), tirami_core::TiramiError> {
+        let transport = self.transport.clone().ok_or_else(|| {
+            tirami_core::TiramiError::NetworkError("P2P transport not initialised".to_string())
+        })?;
+        let local = transport.tirami_node_id();
+
+        let plan = self
+            .advertised_topology
+            .lock()
+            .await
+            .clone()
+            .ok_or_else(|| {
+                tirami_core::TiramiError::ShardAssignmentError(
+                    "no topology plan — load a model and connect peers first".to_string(),
+                )
+            })?;
+
+        let session = crate::split_inference::start_split_session(
+            &transport,
+            &self.rpc_ready,
+            &plan,
+            &local,
+            &plan.model_id,
+        )
+        .await?;
+
+        let Some(session) = session else {
+            return Err(tirami_core::TiramiError::ShardAssignmentError(
+                "the plan has no remote stage — this model fits locally, so there is \
+                 nothing to split. Run it normally."
+                    .to_string(),
+            ));
+        };
+
+        let llama_cli = tirami_infer::distributed::find_llama_cli().ok_or_else(|| {
+            tirami_core::TiramiError::InferenceError(
+                "llama-cli not found. Set TIRAMI_LLAMA_CLI_PATH".to_string(),
+            )
+        })?;
+
+        let config = tirami_infer::distributed::DistributedConfig {
+            model_path,
+            rpc_endpoints: session.rpc_endpoints(),
+            n_gpu_layers: 99,
+            llama_cli_path: llama_cli,
+            tensor_split: Some(crate::split_inference::tensor_split_for(&plan)),
+            context_size: None,
+            no_mmap: true,
+        };
+
+        // `run_distributed_inference` shells out and blocks until llama-cli
+        // exits, which for a large model is minutes.
+        let result = tokio::task::spawn_blocking(move || {
+            tirami_infer::distributed::run_distributed_inference(
+                &config,
+                &prompt,
+                max_tokens,
+                temperature,
+            )
+        })
+        .await
+        .map_err(|e| tirami_core::TiramiError::InferenceError(format!("join: {e}")))?;
+
+        // Release the peers' subprocesses whether or not inference worked.
+        session.shutdown(&transport, &local).await;
+
+        result
+    }
+
     pub async fn run_seed(&mut self) -> Result<(), tirami_core::TiramiError> {
         let transport = self.init_transport().await?;
 
@@ -608,7 +717,8 @@ impl TiramiNode {
         self.spawn_agent_loop();
 
         // Run pipeline coordinator with ledger
-        let coordinator = PipelineCoordinator::new(transport);
+        let coordinator =
+            PipelineCoordinator::with_rpc_dispatcher(transport, self.rpc_ready.clone());
         coordinator
             .run_seed(
                 self.engine.clone(),
@@ -1457,7 +1567,10 @@ pub fn parse_bootstrap_peer_spec(spec: &str) -> Result<iroh::EndpointAddr, Strin
             addr.addrs.insert(iroh::TransportAddr::Ip(socket_addr));
         } else {
             let relay_url: iroh::RelayUrl = addr_suffix.parse().map_err(|relay_err| {
-                format!("invalid relay URL or IP:PORT '{}': {}", addr_suffix, relay_err)
+                format!(
+                    "invalid relay URL or IP:PORT '{}': {}",
+                    addr_suffix, relay_err
+                )
             })?;
             addr.addrs.insert(iroh::TransportAddr::Relay(relay_url));
         }
@@ -1614,9 +1727,8 @@ mod tests {
     fn parse_bootstrap_peer_accepts_relay_suffix() {
         let secret_key = iroh::SecretKey::from_bytes(&[12u8; 32]);
         let public_key = secret_key.public();
-        let addr =
-            parse_bootstrap_peer_spec(&format!("{}@https://relay.example.com", public_key))
-                .unwrap();
+        let addr = parse_bootstrap_peer_spec(&format!("{}@https://relay.example.com", public_key))
+            .unwrap();
 
         assert_eq!(addr.id, public_key);
         assert!(addr.addrs.iter().any(iroh::TransportAddr::is_relay));

@@ -1,12 +1,12 @@
 //! /v1/tirami/anchor — build an OP_RETURN anchor for the current trade Merkle root.
 
 use crate::api::{AppState, check_forge_rate_limit};
-use axum::extract::{Query, State};
 use axum::Json;
+use axum::extract::{Query, State};
 use axum::http::StatusCode;
 use bitcoin::Network;
-use tirami_ledger::anchor::AnchorRequest;
 use serde::Deserialize;
+use tirami_ledger::anchor::AnchorRequest;
 
 #[derive(Debug, Deserialize)]
 pub(crate) struct AnchorQuery {
@@ -34,7 +34,7 @@ pub(crate) async fn anchor_handler(
             return Err((
                 StatusCode::BAD_REQUEST,
                 format!("unknown network: {}", other),
-            ))
+            ));
         }
     };
 
@@ -70,7 +70,9 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
-        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let req: AnchorRequest = serde_json::from_slice(&body).unwrap();
         assert_eq!(req.payload_len, 40);
         assert_eq!(req.merkle_root_hex.len(), 64);

@@ -55,7 +55,7 @@ use tokio::sync::Mutex;
 
 use tirami_core::NodeId;
 use tirami_ledger::ledger::TradeRecord;
-use tirami_lightning::payment::{decode_bolt11, DecodedInvoice, msats_to_cu};
+use tirami_lightning::payment::{DecodedInvoice, decode_bolt11, msats_to_cu};
 
 use crate::api::{AppState, check_forge_rate_limit, now_millis_pub};
 
@@ -128,7 +128,9 @@ impl PurchaseIntentRegistry {
     }
 
     pub fn insert(&mut self, intent: PurchaseIntent) -> bool {
-        self.intents.insert(intent.intent_id.clone(), intent).is_none()
+        self.intents
+            .insert(intent.intent_id.clone(), intent)
+            .is_none()
     }
 
     pub fn get(&self, id: &str) -> Option<&PurchaseIntent> {
@@ -241,8 +243,7 @@ fn parse_sender(headers: &HeaderMap) -> Result<NodeId, (StatusCode, String)> {
             StatusCode::BAD_REQUEST,
             "X-Tirami-Node-Id header required".to_string(),
         ))?;
-    parse_hex_node_id(raw)
-        .map_err(|e| (StatusCode::BAD_REQUEST, format!("X-Tirami-Node-Id: {e}")))
+    parse_hex_node_id(raw).map_err(|e| (StatusCode::BAD_REQUEST, format!("X-Tirami-Node-Id: {e}")))
 }
 
 /// Extract `(amount_sats, external_ref, invoice_bolt11)` from either a
@@ -350,9 +351,7 @@ pub(crate) async fn create_purchase_intent(
                     format!(
                         "purchase would exceed PersonalAgent daily limit: \
                          spent_today={} + amount={} > limit={}",
-                        agent.spent_today_trm,
-                        amount_trm,
-                        agent.preferences.daily_spend_limit_trm
+                        agent.spent_today_trm, amount_trm, agent.preferences.daily_spend_limit_trm
                     ),
                 ));
             }

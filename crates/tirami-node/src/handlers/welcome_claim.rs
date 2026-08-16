@@ -15,7 +15,11 @@
 //! On success the response carries the full [`WelcomeLoanGrant`] so
 //! the agent can plan around the 72-hour expiry.
 
-use axum::{Json, extract::State, http::{HeaderMap, StatusCode}};
+use axum::{
+    Json,
+    extract::State,
+    http::{HeaderMap, StatusCode},
+};
 use serde::{Deserialize, Serialize};
 
 use tirami_core::NodeId;
@@ -73,8 +77,7 @@ fn parse_sender(headers: &HeaderMap) -> Result<NodeId, (StatusCode, String)> {
             StatusCode::BAD_REQUEST,
             "X-Tirami-Node-Id header required (claimant node id)".into(),
         ))?;
-    parse_hex_node_id(raw)
-        .map_err(|e| (StatusCode::BAD_REQUEST, format!("X-Tirami-Node-Id: {e}")))
+    parse_hex_node_id(raw).map_err(|e| (StatusCode::BAD_REQUEST, format!("X-Tirami-Node-Id: {e}")))
 }
 
 /// `POST /v1/tirami/agent/claim-welcome`

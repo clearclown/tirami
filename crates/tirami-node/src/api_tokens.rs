@@ -306,7 +306,12 @@ mod tests {
 
     #[test]
     fn scope_parse_round_trips() {
-        for s in [ApiScope::ReadOnly, ApiScope::Inference, ApiScope::Economy, ApiScope::Admin] {
+        for s in [
+            ApiScope::ReadOnly,
+            ApiScope::Inference,
+            ApiScope::Economy,
+            ApiScope::Admin,
+        ] {
             assert_eq!(ApiScope::parse(s.as_str()), Some(s));
         }
         assert_eq!(ApiScope::parse("bogus"), None);
@@ -356,7 +361,10 @@ mod tests {
     #[test]
     fn verify_rejects_unknown_and_expired() {
         let mut store = TokenStore::new();
-        assert_eq!(store.verify("not-a-token", ApiScope::ReadOnly, 0), TokenVerdict::Unknown);
+        assert_eq!(
+            store.verify("not-a-token", ApiScope::ReadOnly, 0),
+            TokenVerdict::Unknown
+        );
         let (raw, _) = store.issue(nid(4), ApiScope::ReadOnly, 10, "tmp", 1_000);
         // 10 s ttl → expires at 11 000 ms; querying at 20 000 is expired.
         assert_eq!(
@@ -380,7 +388,10 @@ mod tests {
         let mut store = TokenStore::new();
         let (raw, tok) = store.issue(nid(6), ApiScope::Economy, 3_600, "lost", 1_000);
         assert!(store.revoke(&tok.token_hash));
-        assert_eq!(store.verify(&raw, ApiScope::ReadOnly, 1_500), TokenVerdict::Unknown);
+        assert_eq!(
+            store.verify(&raw, ApiScope::ReadOnly, 1_500),
+            TokenVerdict::Unknown
+        );
         // Double-revoke is idempotent.
         assert!(!store.revoke(&tok.token_hash));
     }
@@ -402,8 +413,7 @@ mod tests {
     #[test]
     fn rotate_mints_fresh_token_and_shortens_old_expiry() {
         let mut store = TokenStore::new();
-        let (raw_old, old) =
-            store.issue(nid(10), ApiScope::Economy, 3_600, "before", 1_000);
+        let (raw_old, old) = store.issue(nid(10), ApiScope::Economy, 3_600, "before", 1_000);
         let now = 2_000;
         let (raw_new, fresh) = store
             .rotate(&old.token_hash, 60, 3_600, now)
@@ -415,15 +425,17 @@ mod tests {
         assert_eq!(fresh.scope, ApiScope::Economy);
         assert_eq!(fresh.node_id, old.node_id);
         // Old token's expiry is shortened to (now + grace).
-        let store_old = store.tokens.get(&old.token_hash).expect("old still present");
+        let store_old = store
+            .tokens
+            .get(&old.token_hash)
+            .expect("old still present");
         assert_eq!(store_old.expires_at_ms, now + 60 * 1_000);
     }
 
     #[test]
     fn rotate_overlap_window_lets_old_token_still_verify_within_grace() {
         let mut store = TokenStore::new();
-        let (raw_old, old) =
-            store.issue(nid(11), ApiScope::ReadOnly, 3_600, "ol", 1_000);
+        let (raw_old, old) = store.issue(nid(11), ApiScope::ReadOnly, 3_600, "ol", 1_000);
         let now = 2_000;
         let _ = store.rotate(&old.token_hash, 30, 3_600, now).unwrap();
         // Within the 30s grace window, the OLD raw still verifies.
@@ -448,8 +460,7 @@ mod tests {
     #[test]
     fn rotate_label_records_origin() {
         let mut store = TokenStore::new();
-        let (_, old) =
-            store.issue(nid(12), ApiScope::Admin, 3_600, "orig", 1_000);
+        let (_, old) = store.issue(nid(12), ApiScope::Admin, 3_600, "orig", 1_000);
         let (_, fresh) = store.rotate(&old.token_hash, 60, 3_600, 2_000).unwrap();
         assert!(fresh.label.starts_with("rotated-from-"));
     }

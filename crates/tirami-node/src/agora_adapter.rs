@@ -1,8 +1,8 @@
 //! Adapter from forge-ledger trade log to forge-agora marketplace observations.
 
+use std::sync::Arc;
 use tirami_agora::{Marketplace, ModelTier, TradeObservation};
 use tirami_ledger::{ComputeLedger, TradeRecord};
-use std::sync::Arc;
 use tokio::sync::Mutex;
 
 /// Convert a single TradeRecord to a TradeObservation.
@@ -98,7 +98,7 @@ mod tests {
             timestamp: 1_700_000_000_000,
             model_id: "test-model".to_string(),
             flops_estimated: 0,
-                    nonce: [0u8; 16],
+            nonce: [0u8; 16],
         }
     }
 
@@ -122,7 +122,10 @@ mod tests {
     fn sec_deep_observation_from_valid_trade_returns_some() {
         let trade = make_trade([1u8; 32], [2u8; 32], 100);
         let obs = observation_from_trade(&trade);
-        assert!(obs.is_some(), "valid distinct-party trade must produce Some observation");
+        assert!(
+            obs.is_some(),
+            "valid distinct-party trade must produce Some observation"
+        );
     }
 
     #[test]
@@ -130,7 +133,10 @@ mod tests {
         // TradeRecord with trm_amount = 0 — the adapter should not panic.
         let trade = make_trade([3u8; 32], [4u8; 32], 0);
         let result = std::panic::catch_unwind(|| observation_from_trade(&trade));
-        assert!(result.is_ok(), "zero-cu trade must not cause panic in observation_from_trade");
+        assert!(
+            result.is_ok(),
+            "zero-cu trade must not cause panic in observation_from_trade"
+        );
     }
 
     #[test]

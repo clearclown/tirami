@@ -3,10 +3,10 @@
 //! forge-mind stays forge-ledger-independent. CU recording is done here
 //! in forge-node after improve() returns.
 
-use tirami_core::NodeId;
-use tirami_ledger::{ComputeLedger, TradeRecord};
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
+use tirami_core::NodeId;
+use tirami_ledger::{ComputeLedger, TradeRecord};
 use tokio::sync::Mutex;
 
 /// Deterministic NodeId representing a frontier model "provider".

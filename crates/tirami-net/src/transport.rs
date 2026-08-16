@@ -187,6 +187,28 @@ impl ForgeTransport {
             .await?)
     }
 
+    /// Dial the RPC tunnel for an already-connected peer, by hex node id.
+    ///
+    /// Uses the address saved when we dialed them; for peers that dialed us
+    /// there is none, so fall back to the id alone and let discovery resolve
+    /// it — the same path `--bootstrap-peer HEX` takes.
+    pub async fn connect_rpc_tunnel_to(
+        &self,
+        peer_id: &str,
+    ) -> anyhow::Result<iroh::endpoint::Connection> {
+        if let Some(addr) = self.peer_addrs.lock().await.get(peer_id).cloned() {
+            return self.connect_rpc_tunnel(addr).await;
+        }
+        let bytes = hex::decode(peer_id)
+            .map_err(|e| anyhow::anyhow!("peer id is not hex: {e}"))?;
+        let bytes: [u8; 32] = bytes
+            .try_into()
+            .map_err(|_| anyhow::anyhow!("peer id must be 32 bytes"))?;
+        let endpoint_id = iroh::EndpointId::from_bytes(&bytes)
+            .map_err(|e| anyhow::anyhow!("invalid endpoint id: {e}"))?;
+        self.connect_rpc_tunnel(endpoint_id.into()).await
+    }
+
     /// Await the next inbound RPC-tunnel connection.
     ///
     /// Returns `None` once the endpoint is closed.

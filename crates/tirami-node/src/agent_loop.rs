@@ -170,7 +170,9 @@ pub fn spawn_agent_tick_loop(
 mod tests {
     use super::*;
     use tirami_core::NodeId;
-    use tirami_mind::{AgentPreferences, PersonalAgent, ServingRequest, TaskCostEstimate, TaskSize};
+    use tirami_mind::{
+        AgentPreferences, PersonalAgent, ServingRequest, TaskCostEstimate, TaskSize,
+    };
 
     fn make_slot(agent: Option<PersonalAgent>) -> Arc<Mutex<Option<PersonalAgent>>> {
         Arc::new(Mutex::new(agent))
@@ -309,8 +311,7 @@ mod tests {
 
     #[tokio::test]
     async fn reset_daily_tally_clears_agent_counters() {
-        let mut agent =
-            PersonalAgent::new(NodeId([0xAAu8; 32]), Default::default(), 0);
+        let mut agent = PersonalAgent::new(NodeId([0xAAu8; 32]), Default::default(), 0);
         agent.record_spend(5);
         agent.record_earn(10);
         let slot = make_slot(Some(agent));
@@ -334,12 +335,8 @@ mod tests {
         let agent = PersonalAgent::new(NodeId([0xAAu8; 32]), Default::default(), now_ms());
         let slot = make_slot(Some(agent));
         let stats = make_stats();
-        let handle = spawn_agent_tick_loop(
-            slot.clone(),
-            stats.clone(),
-            1,
-            || AgentTickInput::default(),
-        );
+        let handle =
+            spawn_agent_tick_loop(slot.clone(), stats.clone(), 1, || AgentTickInput::default());
         tokio::time::sleep(Duration::from_millis(2_300)).await;
         handle.abort();
         let s = stats.lock().await;

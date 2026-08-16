@@ -4,11 +4,11 @@
 //! await improve() in the handler and then record CU costs in the ledger.
 
 use axum::{Json, extract::State, http::StatusCode};
-use tirami_mind::{
-    TrmPaidOptimizer, EchoMetaOptimizer, TiramiMindAgent, Harness, InMemoryBenchmark,
-    MindStats, PromptRewriteOptimizer,
-};
 use serde::{Deserialize, Serialize};
+use tirami_mind::{
+    EchoMetaOptimizer, Harness, InMemoryBenchmark, MindStats, PromptRewriteOptimizer,
+    TiramiMindAgent, TrmPaidOptimizer,
+};
 
 use crate::api::{AppState, check_forge_rate_limit, now_millis_pub};
 use crate::mind_adapter::record_frontier_consumption;
@@ -125,7 +125,9 @@ pub(crate) async fn mind_init(
             format!("{} Be concise and helpful.", p)
         })),
         "cu_paid" => {
-            let api_url = req.api_url.unwrap_or_else(|| "https://api.anthropic.com".to_string());
+            let api_url = req
+                .api_url
+                .unwrap_or_else(|| "https://api.anthropic.com".to_string());
             let api_key = req.api_key.unwrap_or_default();
             let model = req.model.unwrap_or_else(|| "claude-sonnet-4-6".to_string());
             Box::new(TrmPaidOptimizer::new(api_url, api_key, model))
@@ -151,7 +153,11 @@ pub(crate) async fn mind_init(
             }
             Ok(None) => {}
             Err(e) => {
-                tracing::warn!("Failed to load mind snapshot from {}: {}", path.display(), e);
+                tracing::warn!(
+                    "Failed to load mind snapshot from {}: {}",
+                    path.display(),
+                    e
+                );
             }
         }
     }
@@ -174,12 +180,7 @@ pub(crate) async fn mind_state(
     let mind = state.mind_agent.lock().await;
     let agent = mind.as_ref().ok_or_else(agent_not_initialized)?;
 
-    let preview: String = agent
-        .harness
-        .system_prompt
-        .chars()
-        .take(80)
-        .collect();
+    let preview: String = agent.harness.system_prompt.chars().take(80).collect();
 
     Ok(Json(MindStateResponse {
         harness_version: agent.harness.version,
@@ -293,7 +294,9 @@ mod tests {
             .method("POST")
             .uri("/v1/tirami/mind/init")
             .header("content-type", "application/json")
-            .body(Body::from(r#"{"system_prompt":"hello world","optimizer":"echo"}"#))
+            .body(Body::from(
+                r#"{"system_prompt":"hello world","optimizer":"echo"}"#,
+            ))
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
@@ -344,7 +347,9 @@ mod tests {
             .method("POST")
             .uri("/v1/tirami/mind/init")
             .header("content-type", "application/json")
-            .body(Body::from(r#"{"system_prompt":"hello","optimizer":"echo"}"#))
+            .body(Body::from(
+                r#"{"system_prompt":"hello","optimizer":"echo"}"#,
+            ))
             .unwrap();
         app.clone().oneshot(init_req).await.unwrap();
 
@@ -398,7 +403,9 @@ mod tests {
             .method("POST")
             .uri("/v1/tirami/mind/init")
             .header("content-type", "application/json")
-            .body(Body::from(r#"{"system_prompt":"hi","optimizer":"unknown"}"#))
+            .body(Body::from(
+                r#"{"system_prompt":"hi","optimizer":"unknown"}"#,
+            ))
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);

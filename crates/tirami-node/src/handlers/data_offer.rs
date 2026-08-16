@@ -27,7 +27,11 @@
 //! - Actual data delivery — the fetch URL is the seller's
 //!   responsibility; this protocol only proves payment.
 
-use axum::{Json, extract::State, http::{HeaderMap, StatusCode}};
+use axum::{
+    Json,
+    extract::State,
+    http::{HeaderMap, StatusCode},
+};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
@@ -51,7 +55,7 @@ use crate::api::{AppState, check_forge_rate_limit, now_millis_pub};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DataOffer {
     pub offer_id: String,
-    pub seller: String,        // hex-encoded NodeId
+    pub seller: String, // hex-encoded NodeId
     pub description: String,
     pub sha256_digest: String, // hex, 64 chars
     pub price_trm: u64,
@@ -180,8 +184,7 @@ fn parse_sender(headers: &HeaderMap) -> Result<NodeId, (StatusCode, String)> {
             StatusCode::BAD_REQUEST,
             "X-Tirami-Node-Id header required".to_string(),
         ))?;
-    parse_hex_node_id(raw)
-        .map_err(|e| (StatusCode::BAD_REQUEST, format!("X-Tirami-Node-Id: {e}")))
+    parse_hex_node_id(raw).map_err(|e| (StatusCode::BAD_REQUEST, format!("X-Tirami-Node-Id: {e}")))
 }
 
 // ---------------------------------------------------------------------------
@@ -207,10 +210,7 @@ pub(crate) async fn publish_offer(
     }
     // Price must be strictly positive (no free offers — they would amplify spam).
     if req.price_trm == 0 {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            "price_trm must be > 0".into(),
-        ));
+        return Err((StatusCode::BAD_REQUEST, "price_trm must be > 0".into()));
     }
     // Description and URL length caps to prevent registry bloat.
     if req.description.len() > 512 {
@@ -320,8 +320,8 @@ pub(crate) async fn purchase_offer(
     let short_id: String = offer.offer_id.chars().take(16).collect();
     let model_id = format!("data_offer:{short_id}");
     let trade = TradeRecord {
-        provider: seller_node_id,    // seller earns
-        consumer: buyer_id.clone(),  // buyer pays
+        provider: seller_node_id,   // seller earns
+        consumer: buyer_id.clone(), // buyer pays
         trm_amount: offer.price_trm,
         tokens_processed: 0,
         timestamp: now,
@@ -405,10 +405,7 @@ mod tests {
             fetch_url: "SECRET_URL".into(),
         };
         let s = serde_json::to_string(&o).expect("ok");
-        assert!(
-            !s.contains("SECRET_URL"),
-            "fetch_url leaked into JSON: {s}"
-        );
+        assert!(!s.contains("SECRET_URL"), "fetch_url leaked into JSON: {s}");
         assert!(!s.contains("fetch_url"), "fetch_url field leaked: {s}");
     }
 }

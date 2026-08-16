@@ -120,7 +120,10 @@ impl WalletKey {
 impl std::fmt::Debug for WalletKey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("WalletKey")
-            .field("verifying_key_hex", &hex::encode(self.verifying_key_bytes()))
+            .field(
+                "verifying_key_hex",
+                &hex::encode(self.verifying_key_bytes()),
+            )
             .field("seed", &"<redacted>")
             .finish()
     }

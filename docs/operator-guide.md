@@ -136,6 +136,53 @@ echo 'stake_gate_enabled = false' >> ~/.tirami/config.toml   # per-machine
 
 Leave it on for any mesh you do not own end to end.
 
+### Contributing memory to a model split
+
+A node only forks a llama.cpp `rpc-server` for a peer when it has been told to:
+
+```toml
+# ~/.tirami/config.toml on the machine lending its memory
+rpc_server_enabled = true
+```
+
+Default is `false`. Before #163 the receive handler honoured the request from
+any connected peer, on any port ≥ 1024, with no authorization check — so this
+is opt-in rather than something a node does because it was asked.
+
+Useful environment variables on the contributing side:
+
+| Variable | Effect |
+|---|---|
+| `TIRAMI_RPC_SERVER_PATH` | Path to `ggml-rpc-server` (or the older `rpc-server`) |
+| `TIRAMI_RPC_DEVICE` | ggml device to bind, e.g. `MTL0`, `CUDA0`. **Without it llama.cpp picks its own backend, and a Metal machine can serve from the CPU while looking healthy.** |
+| `TIRAMI_RPC_CACHE=0` | Disable the local tensor cache (on by default; measured 210 s cold → 156 s warm on a 17 GiB shard) |
+
+On the coordinating side, `POST /v1/tirami/split-inference` runs one prompt
+across the peers in the current topology plan:
+
+```bash
+curl -X POST localhost:3000/v1/tirami/split-inference \
+  -H 'Content-Type: application/json' \
+  -d '{"model_path":"/path/to/model.gguf","prompt":"...","max_tokens":256}'
+```
+
+Two responses worth knowing:
+
+- **409 with "no remote stage"** — the model fits on this machine, so there is
+  nothing to split. This is deliberate: quietly running single-machine is the
+  failure shape that made the underlying bug hard to notice.
+- **502 with "distribution did not take effect"** — an rpc-server was
+  unreachable. `ggml-rpc` reports 0/0 capacity instead of an error in that
+  case, so llama.cpp assigns it no layers and inference *succeeds* on one
+  machine. The node now checks the load lines and fails instead.
+
+**Scope: LAN and Thunderbolt.** #164 measured weight transfer as
+latency-bound — 17 GiB took 139 s at 0.755 ms RTT and 867 s at 6.97 ms,
+extrapolating to roughly 40 minutes at 20 ms. Splitting a model over a WAN is
+not viable with llama.cpp RPC alone. Inference itself is far less sensitive
+(about 3.83 round-trips per token), which is why forwarding a whole request to
+a peer that already holds the model works fine over a WAN.
+
 | Field | Default | Impact |
 |---|---|---|
 | `api_port` | `3000` | Port the HTTP API binds to. Change with `--port`. |

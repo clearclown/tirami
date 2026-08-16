@@ -171,12 +171,9 @@ pub(crate) async fn nostr_sign_event(
         StatusCode::PRECONDITION_FAILED,
         "no NostrIdentity bootstrapped; POST /v1/tirami/agora/nostr/init first".to_string(),
     ))?;
-    let signed = id.sign_event(req.event).map_err(|e| {
-        (
-            StatusCode::BAD_REQUEST,
-            format!("sign_event failed: {e}"),
-        )
-    })?;
+    let signed = id
+        .sign_event(req.event)
+        .map_err(|e| (StatusCode::BAD_REQUEST, format!("sign_event failed: {e}")))?;
     Ok(Json(SignEventResponse { event: signed }))
 }
 
@@ -251,38 +248,36 @@ mod tests {
 
     #[test]
     fn publish_request_dry_run_default_is_false() {
-        let body: PublishAdvertisementRequest =
-            serde_json::from_value(json!({
-                "advertisement": {
-                    "node_pubkey_hex": "a".repeat(64),
-                    "models": ["m"],
-                    "tier": "small",
-                    "trm_per_token": 1u64,
-                    "reputation": 0.5f64,
-                    "accepted_payment": ["cu"],
-                    "relays": []
-                }
-            }))
-            .unwrap();
+        let body: PublishAdvertisementRequest = serde_json::from_value(json!({
+            "advertisement": {
+                "node_pubkey_hex": "a".repeat(64),
+                "models": ["m"],
+                "tier": "small",
+                "trm_per_token": 1u64,
+                "reputation": 0.5f64,
+                "accepted_payment": ["cu"],
+                "relays": []
+            }
+        }))
+        .unwrap();
         assert!(!body.dry_run);
     }
 
     #[test]
     fn publish_request_dry_run_can_be_set_to_true() {
-        let body: PublishAdvertisementRequest =
-            serde_json::from_value(json!({
-                "advertisement": {
-                    "node_pubkey_hex": "a".repeat(64),
-                    "models": ["m"],
-                    "tier": "small",
-                    "trm_per_token": 1u64,
-                    "reputation": 0.5f64,
-                    "accepted_payment": ["cu"],
-                    "relays": []
-                },
-                "dry_run": true
-            }))
-            .unwrap();
+        let body: PublishAdvertisementRequest = serde_json::from_value(json!({
+            "advertisement": {
+                "node_pubkey_hex": "a".repeat(64),
+                "models": ["m"],
+                "tier": "small",
+                "trm_per_token": 1u64,
+                "reputation": 0.5f64,
+                "accepted_payment": ["cu"],
+                "relays": []
+            },
+            "dry_run": true
+        }))
+        .unwrap();
         assert!(body.dry_run);
     }
 }

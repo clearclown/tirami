@@ -18,7 +18,11 @@
 //! Future waves can switch to dynamic pricing per kind, but the simple
 //! constant lets us iterate without changing the semantic shape.
 
-use axum::{Json, extract::State, http::{HeaderMap, StatusCode}};
+use axum::{
+    Json,
+    extract::State,
+    http::{HeaderMap, StatusCode},
+};
 use serde::{Deserialize, Serialize};
 use tirami_core::NodeId;
 use tirami_ledger::ledger::TradeRecord;
@@ -63,7 +67,10 @@ pub struct AgentMessageResponse {
 
 fn parse_hex_node_id(hex: &str) -> Result<NodeId, String> {
     if hex.len() != 64 || !hex.chars().all(|c| c.is_ascii_hexdigit()) {
-        return Err(format!("node id must be exactly 64 hex characters, got {}", hex.len()));
+        return Err(format!(
+            "node id must be exactly 64 hex characters, got {}",
+            hex.len()
+        ));
     }
     let bytes = hex::decode(hex).map_err(|e| format!("hex decode failed: {e}"))?;
     let mut arr = [0u8; 32];
@@ -108,8 +115,8 @@ pub(crate) async fn agent_message(
     }
 
     // Parse + validate addresses.
-    let to = parse_hex_node_id(&req.to)
-        .map_err(|e| (StatusCode::BAD_REQUEST, format!("to: {e}")))?;
+    let to =
+        parse_hex_node_id(&req.to).map_err(|e| (StatusCode::BAD_REQUEST, format!("to: {e}")))?;
     let from = parse_sender(&headers)?;
 
     if from == to {
@@ -134,8 +141,12 @@ pub(crate) async fn agent_message(
     // Body size cap (Wave 1: keep small; this is the payment primitive,
     // not a bulk-transfer mechanism). 4 KB is generous for a request_action
     // payload and protects the ledger from amplification.
-    let body_bytes = serde_json::to_vec(&req.body)
-        .map_err(|e| (StatusCode::BAD_REQUEST, format!("body serialize failed: {e}")))?;
+    let body_bytes = serde_json::to_vec(&req.body).map_err(|e| {
+        (
+            StatusCode::BAD_REQUEST,
+            format!("body serialize failed: {e}"),
+        )
+    })?;
     if body_bytes.len() > 4096 {
         return Err((
             StatusCode::PAYLOAD_TOO_LARGE,
@@ -152,7 +163,7 @@ pub(crate) async fn agent_message(
     let timestamp = now_millis_pub();
     let model_id = format!("agent_message:{}", req.kind);
     let trade = TradeRecord {
-        provider: to.clone(), // receiver earns
+        provider: to.clone(),   // receiver earns
         consumer: from.clone(), // sender spends
         trm_amount: trm_cost,
         tokens_processed: 0,

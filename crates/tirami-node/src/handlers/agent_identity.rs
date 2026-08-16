@@ -75,9 +75,7 @@ pub struct ImportRequest {
 
 fn map_err(e: AgentIdentityError) -> (StatusCode, String) {
     match e {
-        AgentIdentityError::PassphraseTooShort => {
-            (StatusCode::BAD_REQUEST, e.to_string())
-        }
+        AgentIdentityError::PassphraseTooShort => (StatusCode::BAD_REQUEST, e.to_string()),
         AgentIdentityError::Aead(_) => {
             // AEAD decrypt failures during import are 400-class —
             // most plausibly the passphrase is wrong.
@@ -86,12 +84,8 @@ fn map_err(e: AgentIdentityError) -> (StatusCode, String) {
         AgentIdentityError::BundleSchema(_) | AgentIdentityError::DidFormat(_) => {
             (StatusCode::BAD_REQUEST, e.to_string())
         }
-        AgentIdentityError::SignatureInvalid(_) => {
-            (StatusCode::BAD_REQUEST, e.to_string())
-        }
-        AgentIdentityError::Kdf(_) => {
-            (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
-        }
+        AgentIdentityError::SignatureInvalid(_) => (StatusCode::BAD_REQUEST, e.to_string()),
+        AgentIdentityError::Kdf(_) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
     }
 }
 
@@ -200,10 +194,7 @@ pub(crate) async fn import_identity(
 /// Returns silently when path or passphrase env var is unset; logs at
 /// `warn` on any I/O / serialization / encryption error. The in-memory
 /// identity remains valid regardless.
-fn persist_agent_identity_if_configured(
-    state: &AppState,
-    id: &AgentIdentity,
-) {
+fn persist_agent_identity_if_configured(state: &AppState, id: &AgentIdentity) {
     let Some(path) = state.config.agent_identity_path.as_ref() else {
         return;
     };

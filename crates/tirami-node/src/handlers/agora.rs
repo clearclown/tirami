@@ -3,12 +3,18 @@
 //! All handlers are 100% sync internally — forge-agora has no async code.
 //! We call sync forge-agora methods while holding tokio Mutex guards.
 
-use axum::{Json, extract::{Path, State}, http::StatusCode};
-use tirami_agora::{AgentProfile, CapabilityMatch, CapabilityQuery, RegistrySnapshot, ReputationScore};
+use axum::{
+    Json,
+    extract::{Path, State},
+    http::StatusCode,
+};
 use serde::{Deserialize, Serialize};
+use tirami_agora::{
+    AgentProfile, CapabilityMatch, CapabilityQuery, RegistrySnapshot, ReputationScore,
+};
 
-use crate::api::{AppState, check_forge_rate_limit, now_millis_pub};
 use crate::agora_adapter::refresh_marketplace_from_ledger;
+use crate::api::{AppState, check_forge_rate_limit, now_millis_pub};
 // tirami_core::NodeId used for anti-collusion reputation lookup (Phase 9 A5)
 use tirami_core;
 
@@ -45,7 +51,10 @@ pub(crate) async fn agora_register(
     if profile.agent_hex.len() != 64 || !profile.agent_hex.chars().all(|c| c.is_ascii_hexdigit()) {
         return Err((
             StatusCode::BAD_REQUEST,
-            format!("agent_hex must be exactly 64 hex characters, got {} chars", profile.agent_hex.len()),
+            format!(
+                "agent_hex must be exactly 64 hex characters, got {} chars",
+                profile.agent_hex.len()
+            ),
         ));
     }
     let mut mp = state.marketplace.lock().await;
@@ -72,7 +81,8 @@ pub(crate) async fn agora_reputation(
     Path(hex): Path<String>,
 ) -> Result<Json<ReputationScore>, (StatusCode, String)> {
     check_forge_rate_limit(&state).await?;
-    refresh_marketplace_from_ledger(&state.ledger, &state.marketplace, &state.agora_last_seen).await;
+    refresh_marketplace_from_ledger(&state.ledger, &state.marketplace, &state.agora_last_seen)
+        .await;
     let mp = state.marketplace.lock().await;
     let mut score = mp.reputation_of(&hex, now_millis_pub());
     // Apply anti-collusion penalty from the ComputeLedger (Phase 9 A5).
@@ -95,7 +105,10 @@ pub(crate) async fn agora_find(
     check_forge_rate_limit(&state).await?;
     let min_rep = req.min_reputation.unwrap_or(0.0);
     if !(0.0..=1.0).contains(&min_rep) {
-        return Err((StatusCode::BAD_REQUEST, "min_reputation must be in [0.0, 1.0]".into()));
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "min_reputation must be in [0.0, 1.0]".into(),
+        ));
     }
     let query = CapabilityQuery::new(
         req.model_patterns,
@@ -104,7 +117,8 @@ pub(crate) async fn agora_find(
         min_rep,
     )
     .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
-    refresh_marketplace_from_ledger(&state.ledger, &state.marketplace, &state.agora_last_seen).await;
+    refresh_marketplace_from_ledger(&state.ledger, &state.marketplace, &state.agora_last_seen)
+        .await;
     let mp = state.marketplace.lock().await;
     let matches = mp.find(&query, now_millis_pub());
     Ok(Json(matches))
@@ -175,7 +189,9 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(resp.into_body(), 10_000).await.unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), 10_000)
+            .await
+            .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert!(json.is_array());
         assert_eq!(json.as_array().unwrap().len(), 0);
@@ -219,7 +235,9 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(resp.into_body(), 10_000).await.unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), 10_000)
+            .await
+            .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert!(json["agent_count"].is_u64());
         assert!(json["trade_count"].is_u64());
@@ -239,7 +257,9 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(resp.into_body(), 10_000).await.unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), 10_000)
+            .await
+            .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert!(json["profiles"].is_array());
         assert!(json["trades"].is_array());
@@ -261,7 +281,9 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(resp.into_body(), 10_000).await.unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), 10_000)
+            .await
+            .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(json["ok"], true);
     }
@@ -286,7 +308,9 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(resp.into_body(), 10_000).await.unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), 10_000)
+            .await
+            .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert!(json.is_array());
     }
@@ -306,7 +330,9 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(resp.into_body(), 10_000).await.unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), 10_000)
+            .await
+            .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert!(json["overall"].is_f64());
     }

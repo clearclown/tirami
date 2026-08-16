@@ -310,8 +310,9 @@ pub(crate) async fn well_known_agent_manifest(
             // contended, advertise `true` (the default for a fresh
             // network) rather than blocking the manifest GET.
             welcome_loan_available: match state.ledger.try_lock() {
-                Ok(l) => (l.current_epoch() as u64)
-                    < tirami_ledger::lending::WELCOME_LOAN_SUNSET_EPOCH,
+                Ok(l) => {
+                    (l.current_epoch() as u64) < tirami_ledger::lending::WELCOME_LOAN_SUNSET_EPOCH
+                }
                 Err(_) => true,
             },
             // Phase 22 Wave 3 — non-blocking read of the optional

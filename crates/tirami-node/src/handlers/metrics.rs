@@ -10,8 +10,8 @@ use crate::api::{AppState, now_millis_pub};
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::IntoResponse;
-use tirami_ledger::metrics::TiramiMetrics;
 use std::sync::OnceLock;
+use tirami_ledger::metrics::TiramiMetrics;
 
 fn metrics_instance() -> &'static TiramiMetrics {
     static INSTANCE: OnceLock<TiramiMetrics> = OnceLock::new();
@@ -98,7 +98,9 @@ pub(crate) async fn metrics_handler(
     body.push_str("# HELP tirami_process_started_at_secs Unix epoch when this process began serving /metrics\n");
     body.push_str("# TYPE tirami_process_started_at_secs gauge\n");
     body.push_str(&format!("tirami_process_started_at_secs {started_at}\n"));
-    body.push_str("# HELP tirami_process_uptime_secs Seconds since this process began serving /metrics\n");
+    body.push_str(
+        "# HELP tirami_process_uptime_secs Seconds since this process began serving /metrics\n",
+    );
     body.push_str("# TYPE tirami_process_uptime_secs gauge\n");
     body.push_str(&format!("tirami_process_uptime_secs {uptime_secs}\n"));
     body.push_str("# HELP tirami_protocol_version Wire protocol version this binary advertises\n");
@@ -107,10 +109,7 @@ pub(crate) async fn metrics_handler(
         "tirami_protocol_version {}\n",
         tirami_core::TIRAMI_PROTOCOL_VERSION,
     ));
-    Ok((
-        [(header::CONTENT_TYPE, "text/plain; version=0.0.4")],
-        body,
-    ))
+    Ok(([(header::CONTENT_TYPE, "text/plain; version=0.0.4")], body))
 }
 
 // ===========================================================================
@@ -140,10 +139,9 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
-        let body =
-            axum::body::to_bytes(resp.into_body(), usize::MAX)
-                .await
-                .unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let text = String::from_utf8_lossy(&body);
         // Global counter always emits even when the ledger is empty (no nodes yet).
         assert!(

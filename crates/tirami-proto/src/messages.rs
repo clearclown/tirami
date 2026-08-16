@@ -67,6 +67,12 @@ pub enum Payload {
     /// Phase 14.3 — Target's response with their computed output hash.
     /// Verdict is formed by comparing expected vs response hash.
     AuditResponse(AuditResponseMsg),
+    /// #163 — Seed releases an rpc-server it previously started.
+    ///
+    /// Appended at the end deliberately: bincode encodes the variant by
+    /// index, so inserting anywhere above would renumber every message
+    /// after it and break the wire for all of them.
+    StopRpcServer(StopRpcServer),
 }
 
 /// Phase 14.3 — Audit challenge. Unsigned over wire; sender identity comes
@@ -297,6 +303,12 @@ pub struct Rebalance {
 }
 
 // --- RPC Distributed Inference ---
+//
+// `session_id` was added in the #163 pass. The envelope is bincode, which is
+// not self-describing, so adding a field is a wire break — `#[serde(default)]`
+// would not save an old peer. That is acceptable here only because these four
+// messages have never been sent: nothing in the workspace constructs a
+// `StartRpcServer`, so there is no deployed sender to break.
 
 /// Seed tells a peer to start an rpc-server subprocess.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -304,18 +316,35 @@ pub struct StartRpcServer {
     pub model_id: ModelId,
     pub layer_range: LayerRange,
     pub port: u16,
+    /// Correlates `RpcServerReady` / `RpcServerFailed` back to the request.
+    ///
+    /// Without it the only handle on a reply is `peer_id`, which caps a peer
+    /// at one in-flight session and lets concurrent requests cross wires.
+    pub session_id: u64,
 }
 
 /// Peer confirms rpc-server is running and ready.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RpcServerReady {
     pub port: u16,
+    pub session_id: u64,
 }
 
 /// Peer reports rpc-server failed to start.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RpcServerFailed {
     pub reason: String,
+    pub session_id: u64,
+}
+
+/// Seed tells a peer to shut a previously-started rpc-server down.
+///
+/// Before this existed the subprocess lived until the whole node process
+/// exited, so the port could never be reused and a crashed requester left an
+/// orphan behind.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StopRpcServer {
+    pub session_id: u64,
 }
 
 // --- Trade Signing (Proof of Useful Work) ---
@@ -589,6 +618,8 @@ pub enum ProtocolValidationError {
     ReasonTooLarge { chars: usize, limit: usize },
     #[error("rpc port must be unprivileged and non-zero")]
     InvalidRpcPort,
+    #[error("rpc session_id must be non-zero")]
+    MissingRpcSessionId,
     #[error("invalid loan field {field}: {reason}")]
     InvalidLoanField { field: String, reason: String },
 }
@@ -717,11 +748,17 @@ impl Payload {
                 if start.port == 0 || start.port < 1024 {
                     return Err(ProtocolValidationError::InvalidRpcPort);
                 }
+                if start.session_id == 0 {
+                    return Err(ProtocolValidationError::MissingRpcSessionId);
+                }
                 Ok(())
             }
             Payload::RpcServerReady(ready) => {
                 if ready.port == 0 || ready.port < 1024 {
                     return Err(ProtocolValidationError::InvalidRpcPort);
+                }
+                if ready.session_id == 0 {
+                    return Err(ProtocolValidationError::MissingRpcSessionId);
                 }
                 Ok(())
             }
@@ -732,6 +769,15 @@ impl Payload {
                         chars,
                         limit: MAX_PROTOCOL_REASON_CHARS,
                     });
+                }
+                if failed.session_id == 0 {
+                    return Err(ProtocolValidationError::MissingRpcSessionId);
+                }
+                Ok(())
+            }
+            Payload::StopRpcServer(stop) => {
+                if stop.session_id == 0 {
+                    return Err(ProtocolValidationError::MissingRpcSessionId);
                 }
                 Ok(())
             }
@@ -956,6 +1002,104 @@ mod serde_bytes {
 mod tests {
     use super::*;
     use ed25519_dalek::SigningKey;
+
+    fn rpc_envelope(sender: NodeId, payload: Payload) -> Envelope {
+        Envelope {
+            msg_id: 1,
+            sender,
+            timestamp: 1_700_000_000_000,
+            payload,
+        }
+    }
+
+    /// Without a correlation id a reply can only be matched by `peer_id`,
+    /// which caps a peer at one in-flight session and lets two concurrent
+    /// requests to the same peer cross wires (#163).
+    #[test]
+    fn rpc_messages_require_a_session_id() {
+        let sender = NodeId([7u8; 32]);
+        let range = LayerRange { start: 0, end: 4 };
+
+        let zero = [
+            Payload::StartRpcServer(StartRpcServer {
+                model_id: ModelId("m".to_string()),
+                layer_range: range,
+                port: 50052,
+                session_id: 0,
+            }),
+            Payload::RpcServerReady(RpcServerReady {
+                port: 50052,
+                session_id: 0,
+            }),
+            Payload::RpcServerFailed(RpcServerFailed {
+                reason: "nope".to_string(),
+                session_id: 0,
+            }),
+            Payload::StopRpcServer(StopRpcServer { session_id: 0 }),
+        ];
+        for payload in zero {
+            assert!(
+                matches!(
+                    rpc_envelope(sender.clone(), payload).validate_for_peer(&sender),
+                    Err(ProtocolValidationError::MissingRpcSessionId)
+                ),
+                "session_id 0 must be rejected"
+            );
+        }
+
+        // Same messages with a real session id are accepted.
+        let ok = [
+            Payload::StartRpcServer(StartRpcServer {
+                model_id: ModelId("m".to_string()),
+                layer_range: range,
+                port: 50052,
+                session_id: 9,
+            }),
+            Payload::RpcServerReady(RpcServerReady {
+                port: 50052,
+                session_id: 9,
+            }),
+            Payload::RpcServerFailed(RpcServerFailed {
+                reason: "nope".to_string(),
+                session_id: 9,
+            }),
+            Payload::StopRpcServer(StopRpcServer { session_id: 9 }),
+        ];
+        for payload in ok {
+            rpc_envelope(sender.clone(), payload)
+                .validate_for_peer(&sender)
+                .expect("valid rpc message");
+        }
+    }
+
+    /// bincode encodes an enum by variant index, so `StopRpcServer` had to go
+    /// at the end of `Payload`. If someone inserts a variant above it, this
+    /// catches the renumbering before it reaches a wire.
+    #[test]
+    fn stop_rpc_server_is_the_last_payload_variant() {
+        let stop = Payload::StopRpcServer(StopRpcServer { session_id: 1 });
+        let bytes = bincode::serialize(&stop).unwrap();
+        let index = u32::from_le_bytes(bytes[..4].try_into().unwrap());
+
+        // Every other variant must encode below it.
+        let audit_response = Payload::AuditResponse(AuditResponseMsg {
+            challenge_id: 1,
+            target: NodeId([1u8; 32]),
+            output_hash: [0u8; 32],
+            computation_time_ms: 1,
+            layer_index: None,
+            timestamp: 1_700_000_000_000,
+        });
+        let other = u32::from_le_bytes(
+            bincode::serialize(&audit_response).unwrap()[..4]
+                .try_into()
+                .unwrap(),
+        );
+        assert!(
+            index > other,
+            "StopRpcServer must stay last: index {index} vs AuditResponse {other}"
+        );
+    }
 
     #[test]
     fn loan_proposal_round_trips_via_bincode() {

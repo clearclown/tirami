@@ -22,13 +22,17 @@
 
 **Tirami est un protocole d'inférence distribuée où le calcul est de l'argent.** Les nœuds gagnent des TRM (Tirami Resource Merit) en exécutant de l'inférence LLM utile pour d'autres. Contrairement à Bitcoin — qui brûle de l'électricité sur des hachages sans sens — chaque joule dépensé sur un nœud Tirami produit de l'intelligence réelle dont quelqu'un a besoin.
 
-Le moteur d'inférence distribuée est construit sur [mesh-llm](https://github.com/michaelneale/mesh-llm) de Michael Neale. Tirami ajoute une économie du calcul par-dessus : comptabilité TRM, Proof of Useful Work, tarification dynamique, budgets d'agents autonomes, contrôles fail-safe. Voir [CREDITS.md](../../../CREDITS.md).
+Le moteur d'inférence distribuée est construit sur [mesh-llm](https://github.com/Mesh-LLM/mesh-llm) de Michael Neale. Tirami ajoute une économie du calcul par-dessus : comptabilité TRM, Proof of Useful Work, tarification dynamique, budgets d'agents autonomes, contrôles fail-safe. Voir [CREDITS.md](../../../CREDITS.md).
 
 **Fork intégré :** [forge-mesh](https://github.com/nm-arealnormalman/mesh-llm) — mesh-llm avec la couche économique Tirami incorporée.
 
 ---
 
 ## ⚠️ Status Honesty (2026-04-19 / Phase 19)
+
+> ⚠️ **This translation is a Phase 19 (2026-04-19) snapshot and is out of date.**
+> The repository is at Phase 25 — 1,574 tests passing as of 2026-08-16.
+> See [README.md](../../../README.md) for the current status.
 
 Avant toute autre chose, voici exactement **ce qui fonctionne** et **ce qui ne fonctionne pas**. Tirami est un logiciel open source sous licence MIT, **pas une vente de tokens**. Pas d'ICO, pas de pré-minage, pas de trésorerie d'équipe, pas d'airdrop. TRM est une unité de comptabilité du calcul (1 TRM = 10⁹ FLOP), pas un produit financier — voir [`SECURITY.md § Secondary Markets`](../../../SECURITY.md#secondary-markets--third-party-tokenization).
 
@@ -241,4 +245,4 @@ Texte complet : [`SECURITY.md`](../../../SECURITY.md#secondary-markets--third-pa
 
 ## Remerciements
 
-L'inférence distribuée de Tirami est bâtie sur [mesh-llm](https://github.com/michaelneale/mesh-llm) de Michael Neale. Voir [CREDITS.md](../../../CREDITS.md).
+L'inférence distribuée de Tirami est bâtie sur [mesh-llm](https://github.com/Mesh-LLM/mesh-llm) de Michael Neale. Voir [CREDITS.md](../../../CREDITS.md).

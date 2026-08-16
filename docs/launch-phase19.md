@@ -203,7 +203,8 @@ fixed at 21 B in a Rust `const` that governance proposals cannot rewrite.
 
 - Protocol (Rust, MIT): https://github.com/clearclown/tirami
 - Theory (CC-BY-4.0): https://github.com/clearclown/tirami-economics
-- Upstream inference fork: https://github.com/nm-arealnormalman/mesh-llm
+- Upstream local-LLM runtime: https://github.com/Mesh-LLM/mesh-llm
+- Historical Tirami inference fork: https://github.com/nm-arealnormalman/mesh-llm
 
 Feedback especially welcome on: the `ProofPolicy` ratchet, the Kani
 invariants (10 so far, `crates/tirami-ledger/kani/`), and whether the

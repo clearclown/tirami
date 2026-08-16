@@ -1,7 +1,10 @@
-# Tirami — Release Readiness (2026-04-27, public testnet prep)
+# Tirami — Release Readiness (2026-08-16, Phase 25)
 
 A concise, honest assessment of "can we publish this now?"
-Updated after the public-testnet preparation pass:
+Numbers re-verified on 2026-08-16: `cargo test --workspace` = 1,574 passing,
+`scripts/verify-impl.sh` = 123/123 GREEN, `repos/tirami-contracts` = 20/20 Foundry.
+
+Landed in the public-testnet hardening pass:
 
 - Peer auto-discovery via `PriceSignal.http_endpoint` (#114).
 - Agent remote dispatch can auto-select a provider from PriceSignal
@@ -11,16 +14,22 @@ Updated after the public-testnet preparation pass:
   `--bootstrap-peer`, and `TIRAMI_BOOTSTRAP_PEERS`.
 - Public/wildcard HTTP binds now fail closed unless `--api-token` or
   `TIRAMI_API_TOKEN` is set.
+- `tirami worker --daemon` now runs a background inbound loop that
+  ingests gossip while routing request-scoped inference responses to
+  the waiting HTTP handler.
 - `ProofPolicy` default promoted `Disabled → Optional` (#115).
 - Base Sepolia deployment Makefile + gated mainnet target (#116).
+- `TiramiBridge` now gates batch roots by owner-approved validators,
+  verifies mint claims against stored Merkle roots, and prevents
+  duplicate claim mints.
 - Secondary-market + audit-gated disclaimer in `SECURITY.md`
   and `README.md` (#117).
 
-Follow-up known gap — filed as #88 (P2, not a blocker): worker
-`--daemon` has no gossip recv loop. Full `tirami start` seed-style
-nodes do receive + ingest gossip, advertise HTTP endpoints when bound
-to concrete reachable addresses, and can auto-dispatch agent remote
-tasks without explicit `peer.url` hints.
+Full `tirami start` seed-style nodes receive + ingest gossip, advertise
+HTTP endpoints when bound to concrete reachable addresses, and can
+auto-dispatch agent remote tasks without explicit `peer.url` hints.
+Daemon workers now share the same gossip-ingestion path, but still need
+a multi-day soak in the public-testnet environment.
 
 The 2026-04-26 live 2-node Tailscale E2E on `100.112.10.128`
 and `100.107.30.86` confirmed agent remote dispatch without an
@@ -37,8 +46,8 @@ ASUS agent `spent_today_trm=18`, and both ledgers reported
 |---|---|---|---|
 | **A — OSS public preview** | Repo public, tweet, blog, Hacker News; devs run `tirami start` locally | ✅ **READY** | MIT licensed, no real money, workspace tests green, transparent SECURITY.md, placeholder PGP marked as such. |
 | **B — Invited testnet** | ≤100 node operators, TRM stays virtual (no external value), you track uptime | ✅ **READY** with caveats below | 2-node agent remote spend/earn is live-verified over Tailscale with persisted ledgers. |
-| **C — Open public testnet** | 1 000+ nodes, open registration, still virtual TRM | 🟡 **Bootstrap plumbing READY, operational blockers remain** | Public join strings are supported (`PUBLIC_KEY@RELAY_URL` and `PUBLIC_KEY@IP:PORT`). Still pending: ≥ 7-day stress at 10+ nodes, published seed list/status page, bug bounty live with real PGP, worker daemon gossip loop (#88). |
-| **D — Mainnet with real value** | Base L2 TRM ERC-20, real capital | 🟡 **Infrastructure READY, audit gate active** | Sepolia deploy Makefile + mainnet target gated on `AUDIT_CLEARANCE=yes` + `MULTISIG_OWNER` + interactive confirmation (Phase 19). Mainnet deploy still blocked on external audit. Secondary-market disclaimer landed in SECURITY.md / README / deployments/README. |
+| **C — Open public testnet** | 1 000+ nodes, open registration, still virtual TRM | 🟡 **Bootstrap plumbing READY, operational blockers remain** | Public join strings are supported (`PUBLIC_KEY@RELAY_URL` and `PUBLIC_KEY@IP:PORT`). Still pending: ≥ 7-day stress at 10+ nodes, published seed list/status page, bug bounty live with real PGP. |
+| **D — Mainnet with real value** | Base L2 TRM ERC-20, real capital | 🟡 **Infrastructure READY, audit gate active** | Sepolia deploy Makefile + mainnet target gated on `AUDIT_CLEARANCE=yes` + `MULTISIG_OWNER` + interactive confirmation (Phase 19). `TiramiBridge` minting now requires a stored Merkle root + proof, but mainnet deploy is still blocked on external audit. Secondary-market disclaimer landed in SECURITY.md / README / deployments/README. |
 
 ## What's ready now (Tier A + B)
 
@@ -56,6 +65,10 @@ ASUS agent `spent_today_trm=18`, and both ledgers reported
 - **Agent remote auto-dispatch** from advertised peer HTTP endpoints on
   full nodes. Shared-token private labs can omit `peer.url`; the local
   bearer is forwarded to the selected provider.
+- **Worker daemon gossip ingestion**: `tirami worker --daemon` now has a
+  single background P2P recv loop. Gossip is ingested continuously, while
+  `TokenStream`, `Error`, and `TradeProposal` messages are routed to the
+  matching in-flight HTTP request.
 - **Scoped API tokens** via `/v1/tirami/tokens/issue` with `node_id` auto-defaulting.
 - **Prometheus `/metrics`** using `tirami_*` prefix, anonymous sentinel filtered out, pricing rounded to 6 dp.
 - **Rate-limited** economic endpoints (30 req/s token bucket).
@@ -78,8 +91,6 @@ ASUS agent `spent_today_trm=18`, and both ledgers reported
 - Public bootstrap joins are wired, but the project has not yet run a
   7-day, 10+ node public mesh using the new bootstrap list.
 - No published canonical seed list or public status page exists yet.
-- `worker --daemon` still has no gossip recv loop (#88), so some
-  flows need a full `tirami start` node or an explicit peer hint.
 
 ### zkML / proof-of-inference
 - `ProofPolicy` default is `Optional`. Lazy providers are not yet
@@ -101,7 +112,7 @@ ASUS agent `spent_today_trm=18`, and both ledgers reported
 ### Long-running stability
 - No ≥ 7-day testnet run of 10+ nodes.
 - No ≥ 30-day Sepolia contracts deployment.
-- `tirami-contracts` has 15 Foundry tests passing but hasn't been deployed to Base Sepolia from this branch.
+- `tirami-contracts` has 20 Foundry tests passing but hasn't been deployed to Base Sepolia from this branch.
 
 ### Bug bounty
 - SECURITY.md framework drafted; **active payouts NOT live**. PGP block is a placeholder (self-documented).
@@ -126,7 +137,7 @@ ASUS agent `spent_today_trm=18`, and both ledgers reported
 - [x] All 6 previously-surfaced issues (#73–#78) closed
 - [x] SECURITY.md present + honest (PGP placeholder marked)
 - [x] LICENSE (MIT)
-- [x] README status current for 2026-04-27 / Phase 19
+- [x] README status current for 2026-08-16 / Phase 25
 - [x] CHANGELOG [Unreleased] covers the 2026-04-26 private-lab result
 - [x] 2-node remote-agent TRM spend/earn verified live
 - [ ] Blog post / HN submission text drafted — **follow-up**

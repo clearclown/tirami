@@ -2,7 +2,7 @@
 
 ## El Problema No Es la Inferencia Distribuida
 
-Proyectos como [mesh-llm](https://github.com/michaelneale/mesh-llm), Petals y Exo han demostrado que se puede dividir la inferencia de LLM en múltiples dispositivos a través de una red. La ingeniería difícil del paralelismo de pipeline, el sharding de expertos y la coordinación de la red está en gran medida resuelta.
+Proyectos como [mesh-llm](https://github.com/Mesh-LLM/mesh-llm), Petals y Exo han demostrado que se puede dividir la inferencia de LLM en múltiples dispositivos a través de una red. La ingeniería difícil del paralelismo de pipeline, el sharding de expertos y la coordinación de la red está en gran medida resuelta.
 
 El problema sin resolver es: **¿por qué alguien contribuiría con su hardware?**
 

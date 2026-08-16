@@ -235,9 +235,11 @@ history.
 ### 9.2 TiramiBridge
 
 - `storeBatch(merkleRoot, batchId, nodeId)` — records an off-chain
-  batch root. Idempotent by `batchId`.
-- `mintForProvider(nodeId, to, flops)` — Principle-1 mint
-  (`flops × 10⁹ × 10⁻⁹ = 1 TRM per 10⁹ FLOP`). Cooldown: 10 min.
+  batch root. Idempotent by `batchId`; caller must be an
+  owner-approved validator.
+- `mintForProvider(nodeId, to, flops, batchId, proof)` —
+  Principle-1 mint (`1 TRM per 10⁹ FLOP`) after verifying the claim
+  against the stored Merkle root. Cooldown: 10 min.
 - `deposit` / `requestWithdrawal` / `claimWithdrawal` — bridge
   flow with 60-minute withdrawal delay.
 - Pausable by owner; mint-cooldown first-mint carve-out.

@@ -4,7 +4,7 @@
 
 Forge は、**推論 (Inference)** と **経済 (Economy)** の2つの層からなるシステムです。
 
-推論層は、モデルの配布、メッシュネットワーク、および API サービングを処理します。これは [mesh-llm](https://github.com/michaelneale/mesh-llm) に基づいて構築されています。
+推論層は、モデルロード、P2P 転送、pipeline protocol message、および API サービングを処理します。設計は mesh-llm 由来です。現役 upstream の分散 local LLM ランタイムは [Mesh-LLM/mesh-llm](https://github.com/Mesh-LLM/mesh-llm) です。
 
 経済層は、CU 会計、取引記録、価格設定、およびエージェント予算を処理します。これが Forge 独自の貢献です。
 

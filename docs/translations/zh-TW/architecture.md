@@ -4,7 +4,7 @@
 
 Forge 是一個雙層系統：**推理層**和**經濟層**。
 
-推理層處理模型分發、網格網絡和 API 服務。它基於 [mesh-llm](https://github.com/michaelneale/mesh-llm) 建構。
+推理層處理模型分發、網格網絡和 API 服務。它基於 [mesh-llm](https://github.com/Mesh-LLM/mesh-llm) 建構。
 
 經濟層處理 CU 核算、交易記錄、定價和代理預算。這是 Forge 的原創貢獻。
 

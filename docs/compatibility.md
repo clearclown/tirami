@@ -179,11 +179,12 @@ cargo build --release -p tirami-cli
 # TRM accounting starts immediately. Welcome loan = 1,000 TRM at 0% interest.
 ```
 
-The `clearclown/tirami` workspace **also publishes** a synced fork at
-[nm-arealnormalman/mesh-llm](https://github.com/nm-arealnormalman/mesh-llm)
-with the full economic layer ported into mesh-llm's directory layout. Use
-whichever entry point feels more natural — both are at Phase 10 parity, both
-expose the same 45 economic endpoints.
+The `clearclown/tirami` workspace also has a historical integration fork at
+[nm-arealnormalman/mesh-llm](https://github.com/nm-arealnormalman/mesh-llm),
+where the economic layer was ported into mesh-llm's directory layout. That fork
+is not the canonical launch repo today. Use `clearclown/tirami` for the Tirami
+protocol/economy, and upstream [Mesh-LLM/mesh-llm](https://github.com/Mesh-LLM/mesh-llm)
+for the newest standalone distributed local-LLM runtime.
 
 ---
 
@@ -312,8 +313,8 @@ your own GPU.
           │ (PyPI)   │      │ (PyPI + MCP)  │
           └──────────┘      └───────────────┘
 
-Plus a synced production runtime fork at:
-nm-arealnormalman/mesh-llm — same 5 layers, different binary entry point
+Historical integration fork:
+nm-arealnormalman/mesh-llm — Tirami economic-layer port into mesh-llm layout
 ```
 
 ---

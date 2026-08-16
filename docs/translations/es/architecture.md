@@ -4,7 +4,7 @@
 
 Forge es un sistema de dos capas: **inferencia** y **economía**.
 
-La capa de inferencia gestiona la distribución del modelo, la red mesh y el servicio de la API. Está construida sobre [mesh-llm](https://github.com/michaelneale/mesh-llm).
+La capa de inferencia gestiona la distribución del modelo, la red mesh y el servicio de la API. Está construida sobre [mesh-llm](https://github.com/Mesh-LLM/mesh-llm).
 
 La capa económica gestiona la contabilidad de CU, el registro de transacciones, los precios y los presupuestos de los agentes. Esta es la contribución original de Forge.
 

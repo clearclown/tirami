@@ -78,7 +78,7 @@ cargo build --release -p tirami-cli
 # Welcome loan = 1,000 TRM at 0% interest (parameters.md §3).
 ```
 
-The `nm-arealnormalman/mesh-llm` fork is kept at Phase 10 parity with `clearclown/tirami` — both expose the same 45 economic endpoints under `/v1/tirami/*` and `/api/forge/*` respectively. Use whichever directory layout feels more natural. For new deployments, `clearclown/tirami` is the recommended entry point.
+The historical `nm-arealnormalman/mesh-llm` fork carried the Phase 10 economic endpoint port into mesh-llm's directory layout. It is useful for understanding the integration path, but it is no longer the canonical launch repo. For new Tirami deployments, use `clearclown/tirami`; for the latest standalone distributed local-LLM runtime, track upstream `Mesh-LLM/mesh-llm`.
 
 ---
 

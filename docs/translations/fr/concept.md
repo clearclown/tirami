@@ -2,7 +2,7 @@
 
 ## Le Problème n'est pas l'Inférence Distribuée
 
-Des projets comme [mesh-llm](https://github.com/michaelneale/mesh-llm), Petals et Exo ont montré qu'il est possible de répartir l'inférence LLM sur plusieurs appareils via un réseau. L'ingénierie complexe du parallélisme de pipeline, du sharding d'experts et de la coordination du maillage est largement résolue.
+Des projets comme [mesh-llm](https://github.com/Mesh-LLM/mesh-llm), Petals et Exo ont montré qu'il est possible de répartir l'inférence LLM sur plusieurs appareils via un réseau. L'ingénierie complexe du parallélisme de pipeline, du sharding d'experts et de la coordination du maillage est largement résolue.
 
 Le problème non résolu est le suivant : **pourquoi quelqu'un contribuerait-il avec son matériel ?**
 

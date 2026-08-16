@@ -22,13 +22,17 @@
 
 **Tirami 是一個計算即貨幣的分散式推理協議。** 節點透過為他人執行有用的 LLM 推理來賺取 TRM (Tirami Resource Merit)。與 Bitcoin 燒電做無意義雜湊運算不同，Tirami 節點消耗的每一焦耳都在產生某人真正需要的智能。
 
-分散式推理引擎基於 Michael Neale 的 [mesh-llm](https://github.com/michaelneale/mesh-llm)。Tirami 在其上加入了計算經濟——TRM 會計、Proof of Useful Work、動態定價、自主代理預算、失效安全控制。參見 [CREDITS.md](../../../CREDITS.md)。
+分散式推理引擎基於 Michael Neale 的 [mesh-llm](https://github.com/Mesh-LLM/mesh-llm)。Tirami 在其上加入了計算經濟——TRM 會計、Proof of Useful Work、動態定價、自主代理預算、失效安全控制。參見 [CREDITS.md](../../../CREDITS.md)。
 
 **整合分支：** [forge-mesh](https://github.com/nm-arealnormalman/mesh-llm) — 內嵌 Tirami 經濟層的 mesh-llm。
 
 ---
 
 ## ⚠️ Status Honesty (2026-04-19 / Phase 19)
+
+> ⚠️ **This translation is a Phase 19 (2026-04-19) snapshot and is out of date.**
+> The repository is at Phase 25 — 1,574 tests passing as of 2026-08-16.
+> See [README.md](../../../README.md) for the current status.
 
 在討論其他任何事之前，首先明確**現在能用**和**還不能用**的部分。Tirami 是 MIT 授權的開源軟體，**不是代幣銷售**。沒有 ICO，沒有預挖，沒有團隊金庫，沒有空投。TRM 是計算的會計單位 (1 TRM = 10⁹ FLOP)，不是金融商品——參見 [`SECURITY.md § Secondary Markets`](../../../SECURITY.md#secondary-markets--third-party-tokenization)。
 
@@ -241,4 +245,4 @@ TRM 是**計算的會計單位**，不是金融商品。協議維護者不銷售
 
 ## 致謝
 
-Tirami 的分散式推理基於 Michael Neale 的 [mesh-llm](https://github.com/michaelneale/mesh-llm)。參見 [CREDITS.md](../../../CREDITS.md)。
+Tirami 的分散式推理基於 Michael Neale 的 [mesh-llm](https://github.com/Mesh-LLM/mesh-llm)。參見 [CREDITS.md](../../../CREDITS.md)。

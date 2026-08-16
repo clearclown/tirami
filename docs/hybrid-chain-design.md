@@ -57,8 +57,8 @@ v1 の "No blockchain in core" 原則は**推論のホットパス**では正し
    │                                                           │
    │   Tirami Bridge Contract (Base L2)                        │
    │   ┌───────────────────────────────────────────┐           │
-   │   │  storeBatch(merkle_root, batch_id, sig)   │           │
-   │   │  mintForProvider(node_id, flops, proof)   │           │
+   │   │  storeBatch(root, batch_id, node_id)      │           │
+   │   │  mintForProvider(node_id, to, flops, ...) │           │
    │   │  withdraw(off_chain_balance_proof)        │           │
    │   │  deposit(erc20_transfer_event)            │           │
    │   └───────────────────────────────────────────┘           │
@@ -147,19 +147,19 @@ contract TiramiBridge {
     event WithdrawalRequested(bytes32 indexed nodeId, address indexed to, uint256 amount, uint256 unlockAt);
     event WithdrawalClaimed(bytes32 indexed nodeId, address indexed to, uint256 amount);
 
-    /// 10 分バッチの Merkle root を記録。重複排除のため batchId で dedup。
+    /// 10 分バッチの Merkle root を記録。validator のみ、batchId で dedup。
     function storeBatch(
         bytes32 merkleRoot,
         uint64 batchId,
-        bytes32 nodeId,
-        bytes calldata sig
+        bytes32 nodeId
     ) external;
 
-    /// PoUW proof を検証して新規 TRM を mint。flops 量に応じて付与。
+    /// 保存済み batch root に対する PoUW proof を検証して新規 TRM を mint。
     function mintForProvider(
         bytes32 nodeId,
+        address to,
         uint256 flops,
-        bytes32 proofRoot,
+        uint64 batchId,
         bytes32[] calldata merkleProof
     ) external;
 
@@ -240,7 +240,8 @@ Provider Node                 Bridge
       │   merkle proof           │
       │                          │
       │ mintForProvider(         │
-      │   nodeId, flops, proof)  │
+      │   nodeId, to, flops,     │
+      │   batchId, proof)        │
       │───────────────────────►  │
       │                          │ verify proof
       │                          │ mint TRM to provider's
@@ -306,7 +307,7 @@ impl Anchorer {
 #[async_trait]
 pub trait ChainClient: Send + Sync {
     async fn store_batch(&self, root: [u8; 32], batch_id: u64, deltas: BatchDeltas) -> Result<TxHash>;
-    async fn mint_for_provider(&self, node: NodeId, flops: u64, proof: MerkleProof) -> Result<TxHash>;
+    async fn mint_for_provider(&self, node: NodeId, to: Address, flops: u64, batch_id: u64, proof: MerkleProof) -> Result<TxHash>;
     async fn subscribe_deposits(&self) -> mpsc::Receiver<DepositEvent>;
     async fn request_withdrawal(&self, node: NodeId, amount: u64, proof: MerkleProof) -> Result<TxHash>;
 }

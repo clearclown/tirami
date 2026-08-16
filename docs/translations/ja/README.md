@@ -8,7 +8,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-brightgreen.svg)](../../../LICENSE)
 [![Tests](https://img.shields.io/badge/tests-targeted_pass-brightgreen)]()
 [![verify-impl](https://img.shields.io/badge/verify--impl-123%2F123_GREEN-brightgreen)]()
-[![foundry test](https://img.shields.io/badge/foundry_test-15%2F15_GREEN-brightgreen)]()
+[![foundry test](https://img.shields.io/badge/foundry_test-20%2F20_GREEN-brightgreen)]()
 [![Phase](https://img.shields.io/badge/phase-19_hardened-blue)]()
 [![Mainnet](https://img.shields.io/badge/mainnet-audit_gated-orange)]()
 
@@ -22,13 +22,13 @@
 
 **Tirami は計算がそのまま通貨になる分散推論プロトコルです。** ノードは他者のために有用な LLM 推論を実行することで TRM (Tirami Resource Merit) を稼ぎます。Bitcoin が意味のないハッシュ計算のために電力を燃やすのとは異なり、Tirami ノードで消費される 1 ジュールすべてが、実際に誰かが必要とした知性を生み出します。
 
-分散推論エンジンは Michael Neale の [mesh-llm](https://github.com/michaelneale/mesh-llm) をベースにしています。Tirami はその上に計算経済を追加しました——TRM 会計、Proof of Useful Work、動的価格、自律エージェント予算、フェイルセーフ制御。[CREDITS.md](../../../CREDITS.md) を参照。
+推論基盤は、Michael Neale が始め、現在は Mesh-LLM organization で保守されている [mesh-llm](https://github.com/Mesh-LLM/mesh-llm) をベースにしています。Tirami はその上に計算経済を追加しました——TRM 会計、Proof of Useful Work、動的価格、自律エージェント予算、フェイルセーフ制御。[CREDITS.md](../../../CREDITS.md) を参照。
 
-**統合フォーク:** [forge-mesh](https://github.com/nm-arealnormalman/mesh-llm) — mesh-llm に Tirami 経済層を組み込んだもの。
+**Tirami フォーク:** [forge-mesh](https://github.com/nm-arealnormalman/mesh-llm) は、mesh-llm のディレクトリ構成へ Tirami 経済層を移植した履歴的フォークです。現在の Tirami プロトコル作業の推奨入口はこの `clearclown/tirami` ワークスペースです。最新の分散 local LLM ランタイムそのものを追う場合は upstream の Mesh-LLM を見てください。
 
 ---
 
-## ⚠️ Status Honesty (2026-04-27 / Phase 19)
+## ⚠️ Status Honesty (2026-08-16 / Phase 25)
 
 他の何より先に、**動いているもの**と**動いていないもの**を明示します。Tirami は MIT ライセンスの OSS であり、**トークン販売ではありません**。ICO なし、プレマインなし、チームトレジャリーなし、エアドロップなし。TRM は計算の会計単位 (1 TRM = 10⁹ FLOP) であり、金融商品ではありません — [`SECURITY.md § Secondary Markets`](../../../SECURITY.md#secondary-markets--third-party-tokenization) 参照。
 
@@ -46,16 +46,17 @@
 - `PriceSignal` gossip から PersonalAgent が provider を自動選択し、共有トークンの private testnet では caller bearer token を継承して remote dispatch できる
 - provider / consumer 双方の台帳が remote agent trade を mirror し、台帳と PersonalAgent state は経済イベント後に永続化される
 - `--bootstrap-peer` / `TIRAMI_BOOTSTRAP_PEERS` による public testnet bootstrap join。公開 HTTP bind には API token が必須
+- `tirami worker --daemon` は background P2P inbound loop を持ち、gossip を継続的に取り込みつつ、request-scoped な推論レスポンスを待機中 HTTP request へ戻せる
 - `tirami start` 起動時の PersonalAgent 自動構成 (Phase 18.5-pt3e)、tick-loop 観測
 - Prometheus `/metrics` エンドポイント (`tirami_*` プレフィックス)
-- Base Sepolia/mainnet デプロイ `Makefile` — Sepolia は無料で実行可、mainnet はゲート制 (後述)
+- `TiramiBridge` は batch anchoring を validator-gated にし、PoUW mint は保存済み batch root に対する Merkle proof を検証し、重複 claim mint を拒否する
+- Base Sepolia/mainnet デプロイ `Makefile` — Sepolia は無料で実行可、mainnet は audit-gated (後述)
 
 ### 🟡 設計済み (仕様と型は存在、production 配線は未完)
 
 - zkML 推論証明: `tirami-zkml-bench` は `MockBackend` のみ。実 `ezkl` / `risc0` バックエンドは Phase 20+。現状デフォルトの `ProofPolicy = Optional` (Phase 19) は「証明があれば受理され reputation ボーナス、証明なしでも trade は valid」状態
 - ML-DSA (Dilithium) ポスト量子ハイブリッド署名: 構造体と verify パスは存在、`Config::pq_signatures = false` がデフォルト (iroh 0.97 依存衝突のため)
 - TEE attestation (Apple Secure Enclave / NVIDIA H100 CC): `tirami-attestation` スカフォールドのみ
-- daemon モード worker の gossip-recv ループ ([issue #88](https://github.com/clearclown/tirami/issues/88)): full `tirami start` node は gossip を受信・反映できる。`worker --daemon` は recv loop が未完
 
 ### ❌ 未着手
 
@@ -171,11 +172,12 @@ Phase 18.5 で追加された `PersonalAgent` は、ユーザーの代わりに 
 │  L2: Finance (tirami-bank)                      │
 │  戦略、ポートフォリオ、先物、保険、リスク            │
 ├─────────────────────────────────────────────────┤
-│  L1: Economy (tirami このリポジトリ) ✅ Phase 1-19 │
+│  L1: Economy (tirami このリポジトリ) ✅ Phase 25  │
 │  TRM 台帳、trade、lending、staking、governance   │
 ├─────────────────────────────────────────────────┤
-│  L0: Inference (forge-mesh / mesh-llm) ✅       │
-│  分散 LLM 推論、llama.cpp、GGUF、Metal/CUDA       │
+│  L0: Inference (Tirami + Mesh-LLM upstream) 🟡  │
+│  Tirami: local GGUF/P2P forwarding/pipeline proto│
+│  Upstream Mesh-LLM: full mesh runtime           │
 └─────────────────────────────────────────────────┘
          │
          │  Phase 16: periodic 10-min batches
@@ -187,7 +189,7 @@ Phase 18.5 で追加された `PersonalAgent` は、ユーザーの代わりに 
 └─────────────────────────────────────────────────┘
 ```
 
-5 層全て Rust、16 workspace crates。**1 192 tests passing** + 15 Solidity tests。123/123 verify-impl GREEN。詳細は [`docs/release-readiness.md`](../../../docs/release-readiness.md) 参照。
+5 層全て Rust、16 workspace crates。**1 574 tests passing** + 20 Solidity tests。123/123 verify-impl GREEN。詳細は [`docs/release-readiness.md`](../../../docs/release-readiness.md) 参照。
 
 ---
 
@@ -374,13 +376,13 @@ tirami/  (このリポジトリ — 全 5 層、16 Rust crates)
 │   ├── tirami-zkml-bench/   # zkML ベンチハーネス (MockBackend + ezkl/risc0/halo2 stubs, Phase 18.3)
 │   └── tirami-attestation/  # TEE attestation scaffold (Apple SE / NVIDIA H100 CC, Phase 17 Wave 3.1)
 ├── repos/tirami-contracts/  # Foundry workspace (TRM ERC-20 + TiramiBridge)
-│   ├── src/                 # 15 Solidity tests passing
+│   ├── src/                 # 20 Solidity tests passing
 │   └── Makefile             # Base Sepolia deploy + mainnet gated (AUDIT_CLEARANCE 連鎖)
 ├── scripts/verify-impl.sh   # TDD 適合性 (123 assertions)
 └── docs/                    # Specs, whitepaper, threat model, roadmap, release-readiness
 ```
 
-約 25,000 行の Rust。**1 192 tests passing** + 15 Solidity tests。Phase 1-19 完了。
+約 25,000 行の Rust。**1 574 tests passing** + 20 Solidity tests。Phase 25 完了。
 
 ---
 
@@ -388,10 +390,11 @@ tirami/  (このリポジトリ — 全 5 層、16 Rust crates)
 
 | Repo | 層 | Tests | 状態 |
 |---|---|---|---|
-| [clearclown/tirami](https://github.com/clearclown/tirami) (本リポジトリ) | L1-L4 | 1 192 | Phase 1-19 ✅ |
+| [clearclown/tirami](https://github.com/clearclown/tirami) (本リポジトリ) | L1-L4 | 1 574 | Phase 25 ✅ |
 | [clearclown/tirami-economics](https://github.com/clearclown/tirami-economics) | 理論 | 16/16 verify-audit GREEN | Spec §1-§25、chapters §1-§18、papers PDF + arXiv tarball |
-| [repos/tirami-contracts](https://github.com/clearclown/tirami/tree/main/repos/tirami-contracts) (本リポジトリ内) | on-chain | 15 forge tests | TRM ERC-20 + TiramiBridge、mainnet デプロイはゲート制 |
-| [nm-arealnormalman/mesh-llm](https://github.com/nm-arealnormalman/mesh-llm) | L0 Inference | 646 | forge-economy 移植 ✅ |
+| [repos/tirami-contracts](https://github.com/clearclown/tirami/tree/main/repos/tirami-contracts) (本リポジトリ内) | on-chain | 20 forge tests | TRM ERC-20 + TiramiBridge、validator-gated Merkle mint、mainnet デプロイはゲート制 |
+| [Mesh-LLM/mesh-llm](https://github.com/Mesh-LLM/mesh-llm) | L0 upstream | external | public/private mesh、OpenAI 互換 API、pipeline split、MoE expert sharding を持つ現役 local LLM ランタイム |
+| [nm-arealnormalman/mesh-llm](https://github.com/nm-arealnormalman/mesh-llm) | L0 Tirami fork | 履歴的 fork | Tirami 経済層の移植。現在の canonical launch repo ではない |
 
 ---
 
@@ -444,4 +447,4 @@ TRM は**計算の会計単位**であり、金融商品ではありません。
 
 ## 謝辞
 
-Tirami の分散推論は Michael Neale の [mesh-llm](https://github.com/michaelneale/mesh-llm) に基づいて構築されています。[CREDITS.md](../../../CREDITS.md) を参照。
+Tirami の推論基盤は Michael Neale が始めた [mesh-llm](https://github.com/Mesh-LLM/mesh-llm) に基づいて構築されています。[CREDITS.md](../../../CREDITS.md) を参照。

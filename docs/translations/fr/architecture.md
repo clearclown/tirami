@@ -4,7 +4,7 @@
 
 Forge est un système à deux couches : **l'inférence** et **l'économie**.
 
-La couche d'inférence gère la distribution des modèles, le réseau maillé (mesh) et le service API. Elle est basée sur [mesh-llm](https://github.com/michaelneale/mesh-llm).
+La couche d'inférence gère la distribution des modèles, le réseau maillé (mesh) et le service API. Elle est basée sur [mesh-llm](https://github.com/Mesh-LLM/mesh-llm).
 
 La couche économique gère la comptabilité des CU, l'enregistrement des transactions, la tarification et les budgets des agents. C'est la contribution originale de Forge.
 

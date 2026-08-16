@@ -2,7 +2,7 @@
 
 ## 问题不在于分布式推理
 
-[mesh-llm](https://github.com/michaelneale/mesh-llm)、Petals 和 Exo 等项目已经表明，你可以通过网络在多个设备上拆分 LLM 推理。流水线并行、专家分片和网格协调等硬核工程问题已基本解决。
+[mesh-llm](https://github.com/Mesh-LLM/mesh-llm)、Petals 和 Exo 等项目已经表明，你可以通过网络在多个设备上拆分 LLM 推理。流水线并行、专家分片和网格协调等硬核工程问题已基本解决。
 
 未解决的问题是：**为什么会有人贡献他们的硬件？**
 

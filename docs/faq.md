@@ -161,9 +161,9 @@ export OPENAI_BASE_URL=http://127.0.0.1:3001/v1
 
 ### Is Tirami production-ready?
 
-The codebase is well-tested: 426 unit and integration tests, 95/95 conformance assertions (verify-impl.sh), and empirically validated on Apple Silicon via the demo script. The economic model has been run end-to-end with real llama.cpp inference and real trade records.
+The codebase is well-tested: 1,574 Rust tests, 123/123 conformance assertions (`verify-impl.sh`), and 20/20 Foundry bridge tests. The economic model has been run end-to-end with real llama.cpp inference and real trade records in a private two-node lab.
 
-However: this is v0.3, intended for single-operator deployments and research use. There are no production SLAs. The codebase has not had a third-party security audit. Phase 13+ work (real zkML proofs, real BitVM dispute resolution, forge-mesh full sync with production CI) is required before recommending Tirami for high-value deployments.
+However: this is still pre-mainnet software. There are no production SLAs. The codebase has not had a third-party security audit. Real zkML proof backends, a public 10+ node / 7-day soak, bug bounty launch, and audit-cleared bridge deployment are required before recommending Tirami for high-value deployments.
 
 Run it for curiosity, research, and small-scale experiments. Treat TRM balances accordingly.
 

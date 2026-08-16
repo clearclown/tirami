@@ -24,13 +24,17 @@
 
 **Tirami הוא פרוטוקול היסק LLM מבוזר שבו חישוב הוא כסף.** צמתים מרוויחים TRM (Tirami Resource Merit) בהרצת היסק LLM מועיל עבור אחרים. בניגוד ל-Bitcoin — השורף חשמל עבור hashes חסרי משמעות — כל ג'אול שמוצא על צומת Tirami מייצר בינה אמיתית שמישהו זקוק לה באותו רגע.
 
-מנוע ההיסק המבוזר בנוי על [mesh-llm](https://github.com/michaelneale/mesh-llm) מאת Michael Neale. Tirami מוסיף מעליו כלכלת חישוב: הנהלת חשבונות TRM, Proof of Useful Work, תמחור דינמי, תקציבי סוכנים אוטונומיים, בקרי fail-safe. ראה [CREDITS.md](../../../CREDITS.md).
+מנוע ההיסק המבוזר בנוי על [mesh-llm](https://github.com/Mesh-LLM/mesh-llm) מאת Michael Neale. Tirami מוסיף מעליו כלכלת חישוב: הנהלת חשבונות TRM, Proof of Useful Work, תמחור דינמי, תקציבי סוכנים אוטונומיים, בקרי fail-safe. ראה [CREDITS.md](../../../CREDITS.md).
 
 **Fork משולב:** [forge-mesh](https://github.com/nm-arealnormalman/mesh-llm) — mesh-llm עם שכבת הכלכלה של Tirami משובצת.
 
 ---
 
 ## ⚠️ Status Honesty (2026-04-19 / Phase 19)
+
+> ⚠️ **This translation is a Phase 19 (2026-04-19) snapshot and is out of date.**
+> The repository is at Phase 25 — 1,574 tests passing as of 2026-08-16.
+> See [README.md](../../../README.md) for the current status.
 
 לפני כל דבר אחר, הנה בדיוק **מה שעובד** ו**מה שלא**. Tirami היא תוכנת קוד פתוח ברישיון MIT, **לא מכירת טוקנים**. אין ICO, אין pre-mine, אין team treasury, אין airdrop. TRM היא יחידת חשבונאות חישוב (1 TRM = 10⁹ FLOP), לא מוצר פיננסי — ראה [`SECURITY.md § Secondary Markets`](../../../SECURITY.md#secondary-markets--third-party-tokenization).
 
@@ -263,6 +267,6 @@ TRM היא **חשבונאות חישוב**, לא מוצר פיננסי. ה-maint
 
 ## תודות
 
-ההיסק המבוזר של Tirami בנוי על [mesh-llm](https://github.com/michaelneale/mesh-llm) מאת Michael Neale. ראה [CREDITS.md](../../../CREDITS.md).
+ההיסק המבוזר של Tirami בנוי על [mesh-llm](https://github.com/Mesh-LLM/mesh-llm) מאת Michael Neale. ראה [CREDITS.md](../../../CREDITS.md).
 
 </div>

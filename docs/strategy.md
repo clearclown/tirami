@@ -58,29 +58,29 @@ Tirami's `/v1/tirami/balance`, `/pricing`, `/credit`, and `/borrow` endpoints le
 │  TRM ledger, dual-signed trades, dynamic pricing,│
 │  lending primitives, safety controls            │
 ├─────────────────────────────────────────────────┤
-│  Layer 0: Inference (forge-mesh / mesh-llm)     │
-│  Pipeline parallelism, MoE sharding,            │
-│  iroh mesh, Nostr discovery, MLX/llama.cpp      │
+│  Layer 0: Inference (Tirami + Mesh-LLM upstream)│
+│  Tirami protocol + upstream mesh runtime        │
 └─────────────────────────────────────────────────┘
 ```
 
-**Separation principle:** Layers 0-1 are the protocol core (this repo + forge-mesh). Layer 2 lending primitives live in tirami-ledger (protocol-level). Advanced Layer 2 instruments and Layers 3-4 are separate repositories built on top of the protocol.
+**Separation principle:** Layer 0 has two tracks: upstream Mesh-LLM for the newest distributed local-LLM runtime, and Tirami's in-tree mesh-llm-derived runtime for TRM accounting and settlement. Layer 1 lives in this repo. Layer 2 lending primitives live in tirami-ledger (protocol-level). Advanced Layer 2 instruments and Layers 3-4 are now in-tree crates, with the old standalone repos kept for history.
 
 ## Repository Ecosystem
 
 | Repository | Language | Status | Layer | Purpose |
 |-----------|----------|--------|-------|---------|
 | **tirami** | Rust | Active | L1 | Protocol core: TRM ledger, trades, lending primitives, safety |
-| **forge-mesh** | Rust | Active | L0 | mesh-llm + Tirami economic layer = production runtime |
-| **tirami-sdk** | Python | Published (PyPI) | Client | Python SDK for Tirami API |
-| **forge-cu-mcp** | Python | Published (PyPI) | Client | MCP server for AI tools (Claude, ChatGPT, Cursor) |
-| **tirami-bank** | Rust + Python | Planned | L2 | Advanced financial instruments (futures, insurance) |
-| **tirami-mind** | Python | Planned | L3 | AutoAgent self-improvement + TRM economy |
-| **tirami-agora** | Python/TypeScript | Planned | L4 | Agent marketplace, Nostr NIP-90, A2A |
+| **Mesh-LLM/mesh-llm** | Rust | Active upstream | L0 | Standalone distributed local-LLM runtime: public/private meshes, OpenAI API, pipeline split, MoE sharding |
+| **nm-arealnormalman/mesh-llm** | Rust | Historical fork | L0 | Tirami economic-layer port into the old mesh-llm layout |
+| **tirami-sdk** | Rust | In-tree | Client | Async HTTP client for Tirami API |
+| **tirami-mcp** | Rust | In-tree | Client | MCP server for AI tools |
+| **tirami-bank** | Rust | In-tree | L2 | Strategies, portfolios, futures, insurance, risk |
+| **tirami-mind** | Rust | In-tree | L3 | PersonalAgent, self-improvement, federated training |
+| **tirami-agora** | Rust | In-tree | L4 | Agent marketplace, reputation, NIP-90 |
 
 **Naming rationale:**
 - **tirami** — The foundry. Where value is created from raw compute.
-- **forge-mesh** — The network mesh. Physical inference execution.
+- **Mesh-LLM / forge-mesh** — The network mesh. Physical inference execution.
 - **tirami-bank** — Financial services layer.
 - **tirami-mind** — Intelligence. Self-improving agents.
 - **tirami-agora** — Ancient Greek marketplace. No advertising, pure merit-based trade.

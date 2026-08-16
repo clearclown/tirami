@@ -30,3 +30,6 @@ bitcoin = { workspace = true }
 # Phase 22 Wave 1 — BIP-340 Schnorr signatures for NIP-01 Nostr
 # event signing in `nostr::NostrIdentity`.
 secp256k1 = { workspace = true }
+
+[dev-dependencies]
+tracing-subscriber = { workspace = true }

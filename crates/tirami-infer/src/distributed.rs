@@ -199,10 +199,17 @@ pub fn run_distributed_inference(
         cmd.arg("--no-mmap");
     }
 
-    // NOTE: `--log-disable` used to be passed here. It suppressed exactly the
-    // `load_tensors: RPC0[...] model buffer size` lines that
-    // `verify_layers_distributed` needs — see that function for why silence
-    // is dangerous rather than tidy.
+    // `-st` so a build whose llama-cli defaults to conversation mode exits
+    // after one turn instead of blocking on an empty stdin — measured on
+    // b10360, where the run hung until killed.
+    cmd.arg("-st");
+
+    // `--log-disable` used to be passed here, and removing it was not enough:
+    // on b10360 the per-device load lines only appear at verbose level, so
+    // without `-v` stderr comes back **empty** and every split would be
+    // reported as "not distributed". See `verify_layers_distributed`.
+    cmd.arg("-v");
+
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
 
     let child = cmd
@@ -225,8 +232,8 @@ pub fn run_distributed_inference(
 
     verify_layers_distributed(&stderr, config.rpc_endpoints.len())?;
 
-    let text = String::from_utf8_lossy(&output.stdout).to_string();
-    let text = text.trim().to_string();
+    let raw = String::from_utf8_lossy(&output.stdout);
+    let text = extract_generated_text(&raw, prompt);
 
     // Estimate token count from output length (rough approximation)
     let token_count = text.split_whitespace().count().max(1);
@@ -234,68 +241,168 @@ pub fn run_distributed_inference(
     Ok((text, token_count))
 }
 
-/// Confirm llama.cpp actually placed weights on every RPC device.
+/// Pull the model's completion out of llama-cli's stdout.
 ///
-/// `ggml-rpc` does not return an error when it cannot reach a server: it
-/// reports `free = 0, total = 0` (ggml-rpc.cpp:828-833). llama.cpp reads that
-/// as a device with no capacity and assigns it zero layers. Inference then
-/// **succeeds**, on one machine, and the logs look normal — you are simply not
-/// distributed, and nothing says so (#164).
+/// b10360's llama-cli prints a terminal UI regardless of `-no-cnv`,
+/// `--no-display-prompt`, or `--simple-io`: a loading spinner, an ASCII
+/// banner, build/model/ftype lines, a `available commands:` block, then the
+/// echoed prompt, the completion, a timing line, and `Exiting...`.
 ///
-/// The load line is the only place the truth appears:
+/// Returning that whole blob as the answer is what the first version did — a
+/// real split-inference call came back with 111 "tokens" of banner. So the
+/// completion is bracketed out instead:
 ///
 /// ```text
-/// load_tensors: RPC0[127.0.0.1:50052] model buffer size = 17434.00 MiB
+/// > The capital of France is        <- echoed prompt, last `> ` line
+/// The capital of France is Paris.   <- what we want
+///
+/// [ Prompt: 585.8 t/s | Generation: 213.6 t/s ]   <- end marker
 /// ```
 ///
-/// A missing line, or one reading 0, means that peer contributed nothing.
+/// Builds that print only the completion have neither marker, so an unmarked
+/// output is returned trimmed and unchanged.
+pub fn extract_generated_text(stdout: &str, prompt: &str) -> String {
+    // The spinner writes backspaces; strip control characters other than
+    // newline and tab so they cannot end up in an API response.
+    let cleaned: String = stdout
+        .chars()
+        .filter(|c| !c.is_control() || *c == '\n' || *c == '\t')
+        .collect();
+
+    let lines: Vec<&str> = cleaned.lines().collect();
+
+    // Start after the last echoed-prompt line, if there is one.
+    let start = lines
+        .iter()
+        .rposition(|l| l.starts_with("> "))
+        .map(|i| i + 1);
+
+    // Stop at the timing line or the exit banner.
+    let end = lines.iter().position(|l| {
+        let l = l.trim_start();
+        l.starts_with("[ Prompt:") || l == "Exiting..."
+    });
+
+    let body = match (start, end) {
+        (Some(s), Some(e)) if s < e => lines[s..e].join("\n"),
+        (Some(s), None) => lines[s..].join("\n"),
+        (None, Some(e)) => lines[..e].join("\n"),
+        // No markers: an older build that printed only the completion.
+        (None, None) => cleaned.clone(),
+        // Markers out of order — do not guess.
+        _ => cleaned.clone(),
+    };
+
+    let body = body.trim();
+
+    // `--no-display-prompt` is passed, but this build echoes the prompt into
+    // the completion line anyway. Drop it when it leads.
+    let prompt = prompt.trim();
+    if !prompt.is_empty() {
+        if let Some(rest) = body.strip_prefix(prompt) {
+            return rest.trim().to_string();
+        }
+    }
+
+    body.to_string()
+}
+
+/// Confirm llama.cpp actually placed layers on every RPC device.
+///
+/// `ggml-rpc` does not return an error when it cannot reach a server: it
+/// reports `free = 0, total = 0` (ggml-rpc.cpp:828-833). llama.cpp then assigns
+/// that device nothing and runs on one machine — **exit 0, normal output**.
+/// Reproduced on an Apple M4 against llama.cpp b10360 by pointing `--rpc` at a
+/// dead port: 62 of 62 layers landed on the local Metal device, generation ran
+/// at 190.7 tok/s, and `RPC0` never appeared in the log at all.
+///
+/// The signal is per-layer device assignment:
+///
+/// ```text
+/// 0.00.079.606 D load_tensors: layer   0 assigned to device RPC0, is_swa = 0
+/// ```
+///
+/// Two things this deliberately does **not** rely on:
+///
+/// - **The `model buffer size` line.** Issue #164 quoted it, and it is present,
+///   but on b10360 it reads `0.00 MiB` for *every* device — including the local
+///   Metal one — on a split that demonstrably worked (32 layers on RPC0, 30 on
+///   MTL0, 176.9 tok/s). Treating 0 as "contributed nothing" rejects healthy
+///   runs, so a positive size is accepted as corroboration and a zero proves
+///   nothing.
+/// - **A bare `starts_with("load_tensors:")`.** Real lines carry a
+///   `TIMESTAMP LEVEL` prefix; matching the start of the line never fires.
+///
+/// Requires llama-cli to run with `-v`. Without it stderr is empty.
 pub fn verify_layers_distributed(
     llama_stderr: &str,
     expected_devices: usize,
 ) -> Result<(), TiramiError> {
-    let mut live = 0usize;
-    let mut zeroed = Vec::new();
+    use std::collections::BTreeSet;
+
+    let mut with_layers: BTreeSet<String> = BTreeSet::new();
+    let mut sized: BTreeSet<String> = BTreeSet::new();
 
     for line in llama_stderr.lines() {
-        let line = line.trim();
-        if !line.starts_with("load_tensors:") || !line.contains("model buffer size") {
-            continue;
-        }
-        // Only RPC devices matter; the local backend always has layers.
-        let Some(device) = line
-            .split_whitespace()
-            .find(|tok| tok.starts_with("RPC"))
-        else {
+        // `load_tensors:` is mid-line, after a timestamp and level.
+        let Some(rest) = line.split_once("load_tensors:").map(|(_, r)| r) else {
             continue;
         };
 
-        let size: f64 = line
-            .rsplit('=')
-            .next()
-            .and_then(|tail| tail.split_whitespace().next())
-            .and_then(|n| n.parse().ok())
-            .unwrap_or(0.0);
+        if let Some(device) = rest
+            .split_once("assigned to device ")
+            .map(|(_, d)| d.trim_start())
+        {
+            let device: String = device
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric())
+                .collect();
+            if device.starts_with("RPC") {
+                with_layers.insert(device);
+            }
+            continue;
+        }
 
-        if size > 0.0 {
-            live += 1;
-        } else {
-            zeroed.push(device.to_string());
+        if rest.contains("model buffer size") {
+            if let Some(device) = rest.split_whitespace().find(|t| t.starts_with("RPC")) {
+                let device: String = device
+                    .chars()
+                    .take_while(|c| c.is_ascii_alphanumeric())
+                    .collect();
+                let size: f64 = rest
+                    .rsplit('=')
+                    .next()
+                    .and_then(|tail| tail.split_whitespace().next())
+                    .and_then(|n| n.parse().ok())
+                    .unwrap_or(0.0);
+                if size > 0.0 {
+                    sized.insert(device);
+                }
+            }
         }
     }
 
-    if live == expected_devices {
+    // Either signal is enough: b10360 gives per-layer assignment, older builds
+    // give a non-zero buffer size.
+    let live: BTreeSet<&String> = with_layers.union(&sized).collect();
+
+    if live.len() >= expected_devices {
         return Ok(());
     }
 
     Err(TiramiError::InferenceError(format!(
-        "distribution did not take effect: {live} of {expected_devices} RPC devices \
+        "distribution did not take effect: {} of {expected_devices} RPC devices \
          received layers{}. A ggml-rpc server that cannot be reached reports 0/0 \
          capacity instead of failing, so inference would have run on one machine \
-         while appearing healthy.",
-        if zeroed.is_empty() {
+         while exiting 0 and looking healthy.",
+        live.len(),
+        if live.is_empty() {
             String::new()
         } else {
-            format!(" (zero-sized: {})", zeroed.join(", "))
+            format!(
+                " (only: {})",
+                live.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ")
+            )
         }
     )))
 }
@@ -332,54 +439,110 @@ mod tests {
         let _ = find_llama_cli();
     }
 
-    /// Shape taken from a real two-machine run (#164): local Metal device
-    /// plus one RPC device, both loaded.
-    const LOADED: &str = "\
-llama_model_loader: loaded meta data with 30 key-value pairs
-load_tensors: offloading 62 repeating layers to GPU
-load_tensors:      Metal model buffer size = 35021.00 MiB
-load_tensors: RPC0[127.0.0.1:50052] model buffer size = 17434.00 MiB
-llama_context: n_ctx = 8192";
+    /// Captured from a real run: Apple M4, llama.cpp b10360, `ggml-rpc-server
+    /// -d MTL0` on loopback. 32 layers landed on RPC0, 30 on MTL0, generation
+    /// ran at 176.9 tok/s.
+    const REAL_SPLIT_OK: &str = include_str!("../tests/fixtures/split-ok-b10360.log");
 
-    /// The dangerous case. `ggml-rpc` returns free/total = 0/0 rather than an
-    /// error when it cannot reach a server, so llama.cpp assigns the device no
-    /// layers, inference succeeds on one machine, and nothing says so.
-    const SILENTLY_NOT_DISTRIBUTED: &str = "\
-load_tensors:      Metal model buffer size = 52455.00 MiB
-load_tensors: RPC0[127.0.0.1:50052] model buffer size = 0.00 MiB
-llama_context: n_ctx = 8192";
+    /// Same command with `--rpc` pointed at a dead port. llama-cli **exits 0**,
+    /// puts all 62 layers on MTL0, generates at 190.7 tok/s, and never mentions
+    /// RPC0 — the silent degradation #164 describes.
+    const REAL_SILENTLY_LOCAL: &str =
+        include_str!("../tests/fixtures/split-silently-local-b10360.log");
 
-    /// Worse still: the device may not appear at all.
-    const RPC_DEVICE_ABSENT: &str = "\
-load_tensors:      Metal model buffer size = 52455.00 MiB
-llama_context: n_ctx = 8192";
+    /// Real stdout from b10360: spinner, ASCII banner, build info, a command
+    /// list, the echoed prompt, the completion, a timing line, `Exiting...`.
+    const REAL_STDOUT: &str = include_str!("../tests/fixtures/llama-cli-stdout-b10360.txt");
 
+    /// The first version returned this whole blob as the answer — a live
+    /// split-inference call came back with 111 "tokens" of banner.
     #[test]
-    fn distribution_is_confirmed_when_every_rpc_device_has_layers() {
-        verify_layers_distributed(LOADED, 1).expect("one loaded RPC device");
+    fn the_completion_is_pulled_out_of_the_terminal_ui() {
+        let text = extract_generated_text(REAL_STDOUT, "The capital of France is");
+
+        assert_eq!(text, "Paris.", "got: {text:?}");
+        assert!(!text.contains("build"), "banner leaked: {text:?}");
+        assert!(!text.contains("Prompt:"), "timing line leaked: {text:?}");
+        assert!(!text.contains("Exiting"), "exit banner leaked: {text:?}");
     }
 
+    /// The spinner writes backspaces; they must not reach an API response.
     #[test]
-    fn a_zero_sized_rpc_device_is_an_error() {
-        let err = verify_layers_distributed(SILENTLY_NOT_DISTRIBUTED, 1)
-            .expect_err("0.00 MiB means the peer contributed nothing");
-        let msg = err.to_string();
-        assert!(msg.contains("0 of 1"), "{msg}");
-        assert!(msg.contains("RPC0"), "{msg}");
-    }
-
-    #[test]
-    fn a_missing_rpc_device_is_an_error() {
+    fn control_characters_are_stripped() {
+        let text = extract_generated_text(REAL_STDOUT, "The capital of France is");
         assert!(
-            verify_layers_distributed(RPC_DEVICE_ABSENT, 1).is_err(),
-            "a device that never reported must not pass as distributed"
+            !text.chars().any(|c| c.is_control() && c != '\n' && c != '\t'),
+            "control characters survived: {text:?}"
+        );
+    }
+
+    /// A build that prints only the completion has neither marker.
+    #[test]
+    fn output_without_markers_passes_through() {
+        assert_eq!(extract_generated_text("  Paris.\n", "irrelevant"), "Paris.");
+    }
+
+    /// This build echoes the prompt into the completion line despite
+    /// `--no-display-prompt`.
+    #[test]
+    fn a_leading_prompt_echo_is_removed() {
+        let out = "> Hello\nHello world\n\n[ Prompt: 1.0 t/s | Generation: 2.0 t/s ]";
+        assert_eq!(extract_generated_text(out, "Hello"), "world");
+    }
+
+    #[test]
+    fn a_real_working_split_is_accepted() {
+        verify_layers_distributed(REAL_SPLIT_OK, 1)
+            .expect("32 layers on RPC0 is a working split");
+    }
+
+    /// The case the check exists for. Nothing else in the output distinguishes
+    /// it from success.
+    #[test]
+    fn a_real_silent_fallback_to_local_is_rejected() {
+        let err = verify_layers_distributed(REAL_SILENTLY_LOCAL, 1)
+            .expect_err("no RPC device took layers");
+        assert!(err.to_string().contains("0 of 1"), "{err}");
+    }
+
+    /// b10360 reports `0.00 MiB` for *every* device, local included, on a split
+    /// that worked. Treating a zero as "contributed nothing" would reject every
+    /// healthy run on this build.
+    #[test]
+    fn a_zero_buffer_size_does_not_by_itself_mean_failure() {
+        assert!(
+            REAL_SPLIT_OK.contains("RPC0[127.0.0.1:50052] model buffer size =     0.00 MiB"),
+            "fixture should still contain the zero-sized line"
+        );
+        verify_layers_distributed(REAL_SPLIT_OK, 1).expect("layer assignment outweighs the zero");
+    }
+
+    /// Older builds (the shape #164 quoted) report a real size and may not emit
+    /// per-layer assignment. Both signals have to work.
+    #[test]
+    fn a_non_zero_buffer_size_alone_is_accepted() {
+        let legacy = "\
+load_tensors:      Metal model buffer size = 35021.00 MiB
+load_tensors: RPC0[127.0.0.1:50052] model buffer size = 17434.00 MiB";
+        verify_layers_distributed(legacy, 1).expect("a sized RPC device counts");
+    }
+
+    /// The timestamp + level prefix is why matching the start of the line fails.
+    #[test]
+    fn the_log_prefix_does_not_hide_the_signal() {
+        assert!(
+            REAL_SPLIT_OK
+                .lines()
+                .filter(|l| l.contains("load_tensors:"))
+                .all(|l| !l.trim_start().starts_with("load_tensors:")),
+            "real lines carry a prefix; a starts_with match would never fire"
         );
     }
 
     #[test]
     fn fewer_loaded_devices_than_requested_is_an_error() {
         // Two peers were asked for; only one took layers.
-        assert!(verify_layers_distributed(LOADED, 2).is_err());
+        assert!(verify_layers_distributed(REAL_SPLIT_OK, 2).is_err());
     }
 
     #[test]

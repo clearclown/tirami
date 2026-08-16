@@ -22,13 +22,17 @@
 
 **Tirami — це розподілений протокол LLM-висновування, де обчислення є грошима.** Вузли заробляють TRM (Tirami Resource Merit), виконуючи корисні обчислення для інших. На відміну від Bitcoin, який спалює електрику заради безглуздих хешів, кожен джоуль, витрачений у Tirami, породжує реальний інтелект, потрібний комусь у цей момент.
 
-Рушій розподіленого висновування побудовано на [mesh-llm](https://github.com/michaelneale/mesh-llm) від Майкла Ніла. Tirami надбудовує над ним економіку обчислень: TRM-бухгалтерія, Proof of Useful Work, динамічне ціноутворення, автономні бюджети агентів, fail-safe контролі. Див. [CREDITS.md](../../../CREDITS.md).
+Рушій розподіленого висновування побудовано на [mesh-llm](https://github.com/Mesh-LLM/mesh-llm) від Майкла Ніла. Tirami надбудовує над ним економіку обчислень: TRM-бухгалтерія, Proof of Useful Work, динамічне ціноутворення, автономні бюджети агентів, fail-safe контролі. Див. [CREDITS.md](../../../CREDITS.md).
 
 **Інтегрований fork:** [forge-mesh](https://github.com/nm-arealnormalman/mesh-llm) — mesh-llm з вбудованим економічним шаром Tirami.
 
 ---
 
 ## ⚠️ Status Honesty (2026-04-19 / Phase 19)
+
+> ⚠️ **This translation is a Phase 19 (2026-04-19) snapshot and is out of date.**
+> The repository is at Phase 25 — 1,574 tests passing as of 2026-08-16.
+> See [README.md](../../../README.md) for the current status.
 
 Перш ніж щось інше, ось точно те, **що працює** і **що не працює**. Tirami — це open-source програмне забезпечення під ліцензією MIT, **не продаж токенів**. Немає ICO, pre-mine, командної скарбниці чи airdrop. TRM — одиниця обліку обчислень (1 TRM = 10⁹ FLOP), а не фінансовий продукт — див. [`SECURITY.md § Secondary Markets`](../../../SECURITY.md#secondary-markets--third-party-tokenization).
 
@@ -241,4 +245,4 @@ TRM — це **бухгалтерія обчислень**, не фінансо�
 
 ## Подяки
 
-Розподілене висновування Tirami побудовано на [mesh-llm](https://github.com/michaelneale/mesh-llm) від Майкла Ніла. Див. [CREDITS.md](../../../CREDITS.md).
+Розподілене висновування Tirami побудовано на [mesh-llm](https://github.com/Mesh-LLM/mesh-llm) від Майкла Ніла. Див. [CREDITS.md](../../../CREDITS.md).

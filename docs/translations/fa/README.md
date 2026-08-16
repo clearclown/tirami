@@ -24,13 +24,17 @@
 
 **Tirami یک پروتکل استنتاج LLM توزیع‌شده است که در آن محاسبه همان پول است.** گره‌ها با اجرای استنتاج LLM مفید برای دیگران، TRM (Tirami Resource Merit) کسب می‌کنند. برخلاف Bitcoin — که برق را برای hashهای بی‌معنا می‌سوزاند — هر ژولی که روی یک گرهٔ Tirami خرج می‌شود، هوش واقعی تولید می‌کند که کسی در همان لحظه به آن نیاز دارد.
 
-موتور استنتاج توزیع‌شده روی [mesh-llm](https://github.com/michaelneale/mesh-llm) از Michael Neale ساخته شده است. Tirami روی آن اقتصاد محاسبات را می‌افزاید: حسابداری TRM، Proof of Useful Work، قیمت‌گذاری پویا، بودجهٔ عامل‌های خودمختار، کنترل‌های fail-safe. به [CREDITS.md](../../../CREDITS.md) مراجعه کنید.
+موتور استنتاج توزیع‌شده روی [mesh-llm](https://github.com/Mesh-LLM/mesh-llm) از Michael Neale ساخته شده است. Tirami روی آن اقتصاد محاسبات را می‌افزاید: حسابداری TRM، Proof of Useful Work، قیمت‌گذاری پویا، بودجهٔ عامل‌های خودمختار، کنترل‌های fail-safe. به [CREDITS.md](../../../CREDITS.md) مراجعه کنید.
 
 **Fork یکپارچه:** [forge-mesh](https://github.com/nm-arealnormalman/mesh-llm) — mesh-llm با لایهٔ اقتصادی Tirami تعبیه‌شده.
 
 ---
 
 ## ⚠️ Status Honesty (2026-04-19 / Phase 19)
+
+> ⚠️ **This translation is a Phase 19 (2026-04-19) snapshot and is out of date.**
+> The repository is at Phase 25 — 1,574 tests passing as of 2026-08-16.
+> See [README.md](../../../README.md) for the current status.
 
 پیش از هر چیز، این دقیقاً همان چیزی است که **کار می‌کند** و **کار نمی‌کند**. Tirami نرم‌افزار open-source تحت مجوز MIT است، **نه فروش توکن**. نه ICO، نه pre-mine، نه خزانهٔ تیمی، نه airdrop. TRM یک واحد حسابداری محاسبات است (1 TRM = 10⁹ FLOP)، نه محصول مالی — به [`SECURITY.md § Secondary Markets`](../../../SECURITY.md#secondary-markets--third-party-tokenization) مراجعه کنید.
 
@@ -263,6 +267,6 @@ TRM **حسابداری محاسبات** است، نه محصول مالی. Maint
 
 ## سپاسگزاری
 
-استنتاج توزیع‌شدهٔ Tirami روی [mesh-llm](https://github.com/michaelneale/mesh-llm) از Michael Neale ساخته شده است. به [CREDITS.md](../../../CREDITS.md) مراجعه کنید.
+استنتاج توزیع‌شدهٔ Tirami روی [mesh-llm](https://github.com/Mesh-LLM/mesh-llm) از Michael Neale ساخته شده است. به [CREDITS.md](../../../CREDITS.md) مراجعه کنید.
 
 </div>

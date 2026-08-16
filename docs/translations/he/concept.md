@@ -2,7 +2,7 @@
 
 ## הבעיה אינה הסקה מבוזרת
 
-פרויקטים כמו [mesh-llm](https://github.com/michaelneale/mesh-llm), Petals ו-Exo הראו שניתן לפצל הסקת LLM בין מכשירים מרובים על פני רשת. ההנדסה הקשה של מקביליות צינור (pipeline parallelism), שיתוף מומחים (expert sharding) ותיאום רשת מש (mesh coordination) נפתרה במידה רבה.
+פרויקטים כמו [mesh-llm](https://github.com/Mesh-LLM/mesh-llm), Petals ו-Exo הראו שניתן לפצל הסקת LLM בין מכשירים מרובים על פני רשת. ההנדסה הקשה של מקביליות צינור (pipeline parallelism), שיתוף מומחים (expert sharding) ותיאום רשת מש (mesh coordination) נפתרה במידה רבה.
 
 הבעיה הלא פתורה היא: **למה שמישהו יתרום את החומרה שלו?**
 

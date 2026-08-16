@@ -4,7 +4,7 @@
 
 Tirami is a two-layer system: **inference** and **economy**.
 
-The inference layer handles model distribution, mesh networking, and API serving. It is built on [mesh-llm](https://github.com/michaelneale/mesh-llm).
+The inference layer handles model loading, P2P forwarding, pipeline protocol messages, and API serving. Its design is mesh-llm-derived; the active upstream distributed local-LLM runtime is [Mesh-LLM/mesh-llm](https://github.com/Mesh-LLM/mesh-llm).
 
 The economy layer handles TRM accounting, trade recording, pricing, and agent budgets. This is Tirami's original contribution.
 
@@ -33,7 +33,7 @@ The economy layer handles TRM accounting, trade recording, pricing, and agent bu
 └──────────────────┬──────────────────────────────┘
                    │
 ┌──────────────────▼──────────────────────────────┐
-│  Inference Layer (mesh-llm-derived)             │
+│  Inference Layer (mesh-llm-derived + Tirami)    │
 │                                                  │
 │  ┌────────────┐ ┌───────────┐ ┌──────────────┐ │
 │  │ iroh mesh  │ │ llama.cpp │ │ OpenAI API   │ │
@@ -43,17 +43,18 @@ The economy layer handles TRM accounting, trade recording, pricing, and agent bu
 └─────────────────────────────────────────────────┘
 ```
 
-## Inference Layer (mesh-llm)
+## Inference Layer (mesh-llm-derived)
 
-The inference layer is responsible for:
+The Tirami inference layer is responsible for:
 
 - **Mesh networking**: iroh-based QUIC connections with Noise encryption
-- **Peer discovery**: Nostr relays for public meshes, mDNS for LAN
-- **Model distribution**: Pipeline parallelism for dense models, expert sharding for MoE
-- **Inference execution**: llama.cpp via llama-server and rpc-server subprocesses
+- **Peer discovery**: Tirami `PriceSignal.http_endpoint` gossip, bootstrap peers, and operator-provided peers
+- **Request forwarding**: OpenAI-compatible HTTP requests can be forwarded to connected providers and settled as dual-signed trades
+- **Pipeline protocol**: topology, activation, and stage messages exist for layer-split execution; production self-sharding still requires the open-testnet soak and full runtime integration described in `docs/release-readiness.md`
+- **Inference execution**: llama.cpp / GGUF through `tirami-infer`
 - **API serving**: OpenAI-compatible `/v1/chat/completions` and `/v1/models`
 
-Tirami inherits all of this from mesh-llm. The inference layer does not know about TRM, trades, or pricing.
+For the latest standalone distributed local-LLM runtime — public/private meshes, public discovery, multi-model routing, pipeline split, and MoE expert sharding — use upstream [Mesh-LLM/mesh-llm](https://github.com/Mesh-LLM/mesh-llm). Tirami's current canonical launch repo is this workspace, which focuses on the TRM protocol, ledger, economic API, and settlement path.
 
 ## Economic Layer (Tirami)
 

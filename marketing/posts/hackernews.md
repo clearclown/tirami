@@ -26,4 +26,4 @@ The target user isn't humans — it's AI agents. Agents check their balance (`GE
 Python SDK: `pip install forge-sdk`
 MCP server: `pip install forge-mcp` (for Claude Code / Cursor)
 
-[1] https://github.com/michaelneale/mesh-llm
+[1] https://github.com/Mesh-LLM/mesh-llm

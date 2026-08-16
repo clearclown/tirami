@@ -22,13 +22,17 @@
 
 **Tirami एक वितरित LLM इन्फ़रेंस प्रोटोकॉल है जहाँ गणना ही पैसा है।** नोड्स दूसरों के लिए उपयोगी LLM इन्फ़रेंस चला कर TRM (Tirami Resource Merit) कमाते हैं। Bitcoin के विपरीत — जो अर्थहीन हैश के लिए बिजली जलाता है — Tirami नोड पर खर्च किया गया हर जूल वास्तविक बुद्धिमत्ता पैदा करता है जिसकी किसी को उसी क्षण ज़रूरत है।
 
-वितरित इन्फ़रेंस इंजन Michael Neale के [mesh-llm](https://github.com/michaelneale/mesh-llm) पर बना है। Tirami इसके ऊपर गणना की अर्थव्यवस्था जोड़ता है: TRM लेखांकन, Proof of Useful Work, गतिशील मूल्य निर्धारण, स्वायत्त एजेंट बजट, fail-safe नियंत्रण। देखें [CREDITS.md](../../../CREDITS.md)।
+वितरित इन्फ़रेंस इंजन Michael Neale के [mesh-llm](https://github.com/Mesh-LLM/mesh-llm) पर बना है। Tirami इसके ऊपर गणना की अर्थव्यवस्था जोड़ता है: TRM लेखांकन, Proof of Useful Work, गतिशील मूल्य निर्धारण, स्वायत्त एजेंट बजट, fail-safe नियंत्रण। देखें [CREDITS.md](../../../CREDITS.md)।
 
 **एकीकृत fork:** [forge-mesh](https://github.com/nm-arealnormalman/mesh-llm) — mesh-llm के साथ Tirami की आर्थिक परत अंतर्निहित।
 
 ---
 
 ## ⚠️ Status Honesty (2026-04-19 / Phase 19)
+
+> ⚠️ **This translation is a Phase 19 (2026-04-19) snapshot and is out of date.**
+> The repository is at Phase 25 — 1,574 tests passing as of 2026-08-16.
+> See [README.md](../../../README.md) for the current status.
 
 किसी और बात से पहले, यहाँ ठीक-ठीक वही है **जो काम करता है** और **जो नहीं करता**। Tirami MIT लाइसेंस के तहत open-source सॉफ़्टवेयर है, **कोई टोकन बिक्री नहीं**। न ICO, न pre-mine, न team treasury, न airdrop। TRM गणना की एक लेखांकन इकाई है (1 TRM = 10⁹ FLOP), कोई वित्तीय उत्पाद नहीं — देखें [`SECURITY.md § Secondary Markets`](../../../SECURITY.md#secondary-markets--third-party-tokenization)।
 
@@ -241,4 +245,4 @@ TRM **गणना लेखांकन** है, कोई वित्ती�
 
 ## आभार
 
-Tirami का वितरित इन्फ़रेंस Michael Neale के [mesh-llm](https://github.com/michaelneale/mesh-llm) पर बना है। देखें [CREDITS.md](../../../CREDITS.md)।
+Tirami का वितरित इन्फ़रेंस Michael Neale के [mesh-llm](https://github.com/Mesh-LLM/mesh-llm) पर बना है। देखें [CREDITS.md](../../../CREDITS.md)।

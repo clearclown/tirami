@@ -2,7 +2,7 @@
 
 ## समस्या वितरित इन्फरेंस नहीं है
 
-[mesh-llm](https://github.com/michaelneale/mesh-llm), Petals और Exo जैसे प्रोजेक्ट्स ने दिखाया है कि आप एक नेटवर्क पर कई उपकरणों के बीच LLM इन्फरेंस को विभाजित कर सकते हैं। पाइपलाइन समानता (pipeline parallelism), एक्सपर्ट शार्डिंग (expert sharding) और मेश समन्वय (mesh coordination) की कठिन इंजीनियरिंग काफी हद तक हल हो चुकी है।
+[mesh-llm](https://github.com/Mesh-LLM/mesh-llm), Petals और Exo जैसे प्रोजेक्ट्स ने दिखाया है कि आप एक नेटवर्क पर कई उपकरणों के बीच LLM इन्फरेंस को विभाजित कर सकते हैं। पाइपलाइन समानता (pipeline parallelism), एक्सपर्ट शार्डिंग (expert sharding) और मेश समन्वय (mesh coordination) की कठिन इंजीनियरिंग काफी हद तक हल हो चुकी है।
 
 अनसुलझी समस्या यह है: **कोई अपना हार्डवेयर क्यों योगदान देगा?**
 

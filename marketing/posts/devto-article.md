@@ -124,4 +124,4 @@ Whitepaper: [WHITEPAPER.md](https://github.com/clearclown/forge/blob/main/WHITEP
 
 ---
 
-*Built on [mesh-llm](https://github.com/michaelneale/mesh-llm) by Michael Neale for distributed inference. Forge adds the economic layer.*
+*Built on [mesh-llm](https://github.com/Mesh-LLM/mesh-llm) by Michael Neale for distributed inference. Forge adds the economic layer.*

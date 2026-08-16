@@ -4,7 +4,7 @@
 
 מערכת Forge היא מערכת דו-שכבתית: **הסקה (inference)** ו-**כלכלה (economy)**.
 
-שכבת ההסקה מטפלת בהפצת מודלים, רשת מש (mesh networking), והגשת API. היא בנויה על בסיס [mesh-llm](https://github.com/michaelneale/mesh-llm).
+שכבת ההסקה מטפלת בהפצת מודלים, רשת מש (mesh networking), והגשת API. היא בנויה על בסיס [mesh-llm](https://github.com/Mesh-LLM/mesh-llm).
 
 שכבת הכלכלה מטפלת בחשבונאות CU, רישום עסקאות, תמחור ותקציבי סוכנים (agent budgets). זוהי התרומה המקורית של Forge.
 

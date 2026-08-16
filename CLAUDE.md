@@ -2,7 +2,7 @@
 
 ## What This Project Is
 
-Tirami is a distributed LLM inference protocol where **compute is currency**. The inference layer is built on [mesh-llm](https://github.com/michaelneale/mesh-llm). Tirami's original contribution is the **economic layer**: TRM (Tirami Resource Merit) accounting, Proof of Useful Work, dynamic pricing, and autonomous agent budgets.
+Tirami is a distributed LLM inference protocol where **compute is currency**. The inference layer is built on [mesh-llm](https://github.com/Mesh-LLM/mesh-llm). Tirami's original contribution is the **economic layer**: TRM (Tirami Resource Merit) accounting, Proof of Useful Work, dynamic pricing, and autonomous agent budgets.
 
 **Three pillars:**
 1. CU-native economy — compute is the currency, not Bitcoin

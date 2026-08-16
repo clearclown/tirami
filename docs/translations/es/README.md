@@ -22,13 +22,17 @@
 
 **Tirami es un protocolo de inferencia distribuida donde el cómputo es dinero.** Los nodos ganan TRM (Tirami Resource Merit) ejecutando inferencia LLM útil para otros. A diferencia de Bitcoin — que quema electricidad en hashes sin sentido — cada julio gastado en un nodo Tirami produce inteligencia real que alguien necesita.
 
-El motor de inferencia distribuida está construido sobre [mesh-llm](https://github.com/michaelneale/mesh-llm) de Michael Neale. Tirami agrega una economía de cómputo encima: contabilidad TRM, Proof of Useful Work, precios dinámicos, presupuestos de agentes autónomos y controles fail-safe. Ver [CREDITS.md](../../../CREDITS.md).
+El motor de inferencia distribuida está construido sobre [mesh-llm](https://github.com/Mesh-LLM/mesh-llm) de Michael Neale. Tirami agrega una economía de cómputo encima: contabilidad TRM, Proof of Useful Work, precios dinámicos, presupuestos de agentes autónomos y controles fail-safe. Ver [CREDITS.md](../../../CREDITS.md).
 
 **Fork integrado:** [forge-mesh](https://github.com/nm-arealnormalman/mesh-llm) — mesh-llm con la capa económica Tirami incorporada.
 
 ---
 
 ## ⚠️ Status Honesty (2026-04-19 / Phase 19)
+
+> ⚠️ **This translation is a Phase 19 (2026-04-19) snapshot and is out of date.**
+> The repository is at Phase 25 — 1,574 tests passing as of 2026-08-16.
+> See [README.md](../../../README.md) for the current status.
 
 Antes que nada, aquí está exactamente **qué funciona** y **qué no**. Tirami es software de código abierto con licencia MIT, **no una venta de tokens**. Sin ICO, sin pre-minería, sin tesorería del equipo, sin airdrop. TRM es unidad contable de cómputo (1 TRM = 10⁹ FLOP), no un producto financiero — ver [`SECURITY.md § Secondary Markets`](../../../SECURITY.md#secondary-markets--third-party-tokenization).
 
@@ -241,4 +245,4 @@ Texto completo: [`SECURITY.md`](../../../SECURITY.md#secondary-markets--third-pa
 
 ## Agradecimientos
 
-La inferencia distribuida de Tirami está construida sobre [mesh-llm](https://github.com/michaelneale/mesh-llm) de Michael Neale. Ver [CREDITS.md](../../../CREDITS.md).
+La inferencia distribuida de Tirami está construida sobre [mesh-llm](https://github.com/Mesh-LLM/mesh-llm) de Michael Neale. Ver [CREDITS.md](../../../CREDITS.md).

@@ -31,7 +31,7 @@ export BASESCAN_KEY=...           # from https://basescan.org/myapikey
 
 cd repos/tirami-contracts
 make preflight                    # fail-fast env check
-make test                         # 15/15 forge tests GREEN
+make test                         # 20/20 forge tests GREEN
 make deploy-base-sepolia          # free testnet ETH
 ```
 

@@ -24,13 +24,17 @@
 
 **Tirami بروتوكول استدلال LLM موزّع حيث الحوسبة هي المال.** تكسب العقد TRM (Tirami Resource Merit) بتشغيل استدلال LLM مفيد لغيرها. على خلاف Bitcoin — الذي يحرق الكهرباء من أجل hashes بلا معنى — كل جول يُنفَق على عقدة Tirami يُنتج ذكاءً حقيقيًا يحتاجه شخص ما في تلك اللحظة.
 
-محرك الاستدلال الموزّع مبني على [mesh-llm](https://github.com/michaelneale/mesh-llm) لـ Michael Neale. يضيف Tirami فوقه اقتصاد الحوسبة: محاسبة TRM، Proof of Useful Work، التسعير الديناميكي، ميزانيات الوكلاء المستقلين، ضوابط fail-safe. انظر [CREDITS.md](../../../CREDITS.md).
+محرك الاستدلال الموزّع مبني على [mesh-llm](https://github.com/Mesh-LLM/mesh-llm) لـ Michael Neale. يضيف Tirami فوقه اقتصاد الحوسبة: محاسبة TRM، Proof of Useful Work، التسعير الديناميكي، ميزانيات الوكلاء المستقلين، ضوابط fail-safe. انظر [CREDITS.md](../../../CREDITS.md).
 
 **Fork مُدمَج:** [forge-mesh](https://github.com/nm-arealnormalman/mesh-llm) — mesh-llm مع دمج طبقة Tirami الاقتصادية.
 
 ---
 
 ## ⚠️ Status Honesty (2026-04-19 / Phase 19)
+
+> ⚠️ **This translation is a Phase 19 (2026-04-19) snapshot and is out of date.**
+> The repository is at Phase 25 — 1,574 tests passing as of 2026-08-16.
+> See [README.md](../../../README.md) for the current status.
 
 قبل أي شيء آخر، هذا بالضبط **ما يعمل** و**ما لا يعمل**. Tirami برنامج مفتوح المصدر برخصة MIT، **ليس بيع رموز**. لا ICO، لا pre-mine، لا خزينة فريق، لا airdrop. TRM وحدة محاسبة للحوسبة (1 TRM = 10⁹ FLOP)، وليس منتجًا ماليًا — انظر [`SECURITY.md § Secondary Markets`](../../../SECURITY.md#secondary-markets--third-party-tokenization).
 
@@ -263,6 +267,6 @@ TRM هو **محاسبة حوسبة**، وليس منتجًا ماليًا. ال�
 
 ## شكر وتقدير
 
-استدلال Tirami الموزّع مبني على [mesh-llm](https://github.com/michaelneale/mesh-llm) لـ Michael Neale. انظر [CREDITS.md](../../../CREDITS.md).
+استدلال Tirami الموزّع مبني على [mesh-llm](https://github.com/Mesh-LLM/mesh-llm) لـ Michael Neale. انظر [CREDITS.md](../../../CREDITS.md).
 
 </div>

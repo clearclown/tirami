@@ -2,7 +2,7 @@
 
 ## The Problem Is Not Distributed Inference
 
-Projects like [mesh-llm](https://github.com/michaelneale/mesh-llm), Petals, and Exo have shown that you can split LLM inference across multiple devices over a network. The hard engineering of pipeline parallelism, expert sharding, and mesh coordination is largely solved.
+Projects like [mesh-llm](https://github.com/Mesh-LLM/mesh-llm), Petals, and Exo have shown that you can split LLM inference across multiple devices over a network. The hard engineering of pipeline parallelism, expert sharding, and mesh coordination is largely solved.
 
 The unsolved problem is: **why would anyone contribute their hardware?**
 

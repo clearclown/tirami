@@ -36,7 +36,7 @@ $ bash scripts/demo-e2e.sh
 All Phase 1-10 endpoints verified with live data.
 ```
 
-**Stats**: 1,048 passing tests across 4 repos, 72/72 verify-impl assertions GREEN, 7,000-word academic paper synthesizing the theory.
+**Stats**: 1,574 Rust tests + 20 Foundry tests passing locally, 123/123 verify-impl assertions GREEN, 7,000-word academic paper synthesizing the theory.
 
 The thesis in one sentence: *every other compute-economy project (Bittensor, Akash, Render, Ollama, Together.ai) either burns electricity on non-useful work, inserts a speculative token between compute and value, or runs as a centralized commercial service. Tirami is the only project where the unit of account is the FLOP, the unit of work is the inference, and the only way to get more units is to do more useful work.*
 
@@ -77,12 +77,12 @@ export OPENAI_BASE_URL=http://localhost:3000/v1
 
 Plus you get `/v1/tirami/{balance,trades,pool,bank,mind,agora,anchor,...}` — 45 economic endpoints.
 
-**6/12** Phase 10 closeout metrics:
+**6/12** Current local metrics:
 
-• 1,048 passing tests (tirami 359 + forge-mesh 646 + tirami-sdk 27 + forge-economics 16)
-• 72/72 verify-impl assertions GREEN
+• 1,574 Rust tests passing in `clearclown/tirami` + 20 Foundry tests in `repos/tirami-contracts`
+• 123/123 verify-impl assertions GREEN
 • Theory ↔ code audit: 43 match, 0 drift
-• 12 Rust crates + 1 Python SDK + 1 MCP server + 1 paper
+• 16 Rust crates + in-tree contracts + economics/spec repo
 
 **7/12** Verified end-to-end TODAY on Apple Silicon Metal GPU:
 
@@ -154,7 +154,7 @@ If you're already running Bittensor / Akash:
 
 - Code: github.com/clearclown/tirami (MIT)
 - One-command demo: `bash scripts/demo-e2e.sh` — downloads SmolLM2-135M, starts the node, walks every endpoint
-- Verified end-to-end TODAY with SmolLM2 on Metal GPU. 1,048 tests passing across 4 repos.
+- Verified end-to-end locally with SmolLM2 on Metal GPU. 1,574 Rust tests + 20 Foundry tests passing.
 - Theory paper: github.com/clearclown/forge-economics/papers/compute-standard.md (7,000 words)
 
 **What it isn't yet**

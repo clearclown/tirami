@@ -154,7 +154,7 @@ Forge is implemented in ~10,000 lines of Rust across 9 crates:
 
 76 tests. 2 completed security audits. MIT licensed.
 
-Distributed inference (pipeline parallelism, MoE expert sharding) is provided by [mesh-llm](https://github.com/michaelneale/mesh-llm).
+Distributed inference (pipeline parallelism, MoE expert sharding) is provided by [mesh-llm](https://github.com/Mesh-LLM/mesh-llm).
 
 ## 9. Related Work
 

@@ -22,13 +22,17 @@
 
 **Tirami — это распределённый протокол LLM-инференса, где вычисления являются деньгами.** Узлы зарабатывают TRM (Tirami Resource Merit), выполняя полезный LLM-инференс для других. В отличие от Bitcoin, сжигающего электричество ради бессмысленных хешей, каждый джоуль, потраченный на узле Tirami, рождает реальный интеллект, нужный кому-то прямо сейчас.
 
-Движок распределённого инференса построен на [mesh-llm](https://github.com/michaelneale/mesh-llm) от Майкла Нила. Tirami надстраивает над ним экономику вычислений: учёт TRM, Proof of Useful Work, динамическое ценообразование, бюджеты автономных агентов, fail-safe контроль. См. [CREDITS.md](../../../CREDITS.md).
+Движок распределённого инференса построен на [mesh-llm](https://github.com/Mesh-LLM/mesh-llm) от Майкла Нила. Tirami надстраивает над ним экономику вычислений: учёт TRM, Proof of Useful Work, динамическое ценообразование, бюджеты автономных агентов, fail-safe контроль. См. [CREDITS.md](../../../CREDITS.md).
 
 **Интегрированный fork:** [forge-mesh](https://github.com/nm-arealnormalman/mesh-llm) — mesh-llm со встроенным экономическим слоем Tirami.
 
 ---
 
 ## ⚠️ Status Honesty (2026-04-19 / Phase 19)
+
+> ⚠️ **This translation is a Phase 19 (2026-04-19) snapshot and is out of date.**
+> The repository is at Phase 25 — 1,574 tests passing as of 2026-08-16.
+> See [README.md](../../../README.md) for the current status.
 
 Прежде всего — вот ровно то, **что работает**, и **что не работает**. Tirami — open-source программное обеспечение под лицензией MIT, **не продажа токенов**. Нет ICO, pre-mine, team treasury или airdrop. TRM — единица учёта вычислений (1 TRM = 10⁹ FLOP), не финансовый продукт — см. [`SECURITY.md § Secondary Markets`](../../../SECURITY.md#secondary-markets--third-party-tokenization).
 
@@ -241,4 +245,4 @@ TRM — это **учёт вычислений**, не финансовый пр
 
 ## Благодарности
 
-Распределённый инференс Tirami построен на [mesh-llm](https://github.com/michaelneale/mesh-llm) от Майкла Нила. См. [CREDITS.md](../../../CREDITS.md).
+Распределённый инференс Tirami построен на [mesh-llm](https://github.com/Mesh-LLM/mesh-llm) от Майкла Нила. См. [CREDITS.md](../../../CREDITS.md).

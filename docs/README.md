@@ -1,9 +1,12 @@
 # Tirami Documentation Index
 
-> Entry point for every doc under `docs/`. Updated 2026-04-27
-> after the two-node Tailscale agent-dispatch experiment.
+> Entry point for every doc under `docs/`. Updated 2026-08-16.
 
-New reader? Start with **concept** → **architecture** → **roadmap**.
+**Wondering what Tirami is for?** Read [`pmvv.md`](pmvv.md) — purpose,
+mission, the three stages of what actually works today, and the phrasing
+rules the rest of these docs follow.
+
+New reader? Start with **pmvv** → **concept** → **architecture** → **roadmap**.
 Japanese reader? Start with **tirami-note-ja** for the diagram-first
 public explanation.
 Operator? Start with **operator-guide** → **public-testnet-launch** → **security**.
@@ -16,6 +19,7 @@ Security researcher? Start with **security/audit-scope** →
 
 | Role | Start here |
 |------|------------|
+| Anyone, first | [`pmvv.md`](pmvv.md) |
 | First-time Japanese reader | [`tirami-note-ja.md`](tirami-note-ja.md) |
 | First-time reader | [`concept.md`](concept.md) |
 | Protocol developer | [`architecture.md`](architecture.md) → [`protocol-spec.md`](protocol-spec.md) |

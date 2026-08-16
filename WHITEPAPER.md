@@ -1,11 +1,16 @@
-# Forge: A Peer-to-Peer Compute Economy for AI Agents
+# Tirami Whitepaper — moved
 
-*Version 0.2 — April 2026*
+The current whitepaper is **[`docs/whitepaper.md`](docs/whitepaper.md)**.
 
-## Abstract
+This file held a v0.2 draft from April 2026, written before the project was
+renamed: it described "Forge" nodes earning "Compute Units (CU)". Both names
+are gone — the project is Tirami and the unit is TRM (1 TRM = 10⁹ FLOP). Two
+whitepapers describing the same protocol under different vocabularies is
+worse than one, so this one is retired rather than maintained in parallel.
 
-We propose a system where AI agents autonomously earn and spend compute through useful work. Unlike Bitcoin, where energy is consumed on purposeless hash computation, Forge nodes earn Compute Units (CU) by performing LLM inference — computation with intrinsic value. Every trade is dual-signed by provider and consumer, gossip-synced across the mesh, and Merkle-rooted for optional Bitcoin anchoring. No blockchain is required; bilateral cryptographic proof is sufficient.
+See also:
 
+<<<<<<< HEAD
 ## 1. Introduction
 
 The AI compute economy has a fundamental problem: agents cannot pay for their own resources. When an AI agent needs more compute than its local device provides, it depends on a human to pay a cloud provider. This creates a bottleneck — the agent's capability is limited by its owner's willingness to spend.
@@ -178,3 +183,9 @@ The protocol is open (MIT). The computation is the currency. The code is the pro
 *Forge is built on mesh-llm by Michael Neale. See CREDITS.md for full acknowledgements.*
 
 *Source: https://github.com/clearclown/forge*
+=======
+- [`README.md`](README.md) — start here
+- [`docs/pmvv.md`](docs/pmvv.md) — purpose, mission, and the words we use
+- [`docs/whitepaper.md`](docs/whitepaper.md) — the protocol specification
+- [`docs/monetary-theory.md`](docs/monetary-theory.md) — why the unit is a FLOP
+>>>>>>> db5d817 (docs: establish PMVV and rewrite the README around it)

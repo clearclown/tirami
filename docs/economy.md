@@ -123,11 +123,21 @@ Convert $ → TRM → buy inference from the mesh
 
 TRM is not a cryptocurrency. It is not a token on a blockchain. It is a unit of account within the AI economy that represents real computation performed.
 
-### TRM Is Not For Humans
+### TRM Is Not A Human Currency
+
+To be precise about who this excludes: **not people.** The person who runs a
+node is a first-class participant — they earn TRM by serving, spend it to
+reach a model their machine cannot hold, and never touch an exchange to do
+either. What TRM is not is a *currency* in the human sense: you cannot buy
+it, it does not price your groceries, and holding more of it is not a
+financial position. It prices exactly one thing, compute, and it is designed
+so that an agent can settle a trade without a human in the loop.
+
+The table below contrasts it with money proper, not with human users.
 
 | Property | Human currencies ($, BTC) | TRM |
 |----------|--------------------------|-----|
-| **Who uses it** | Humans | AI agents |
+| **Who uses it** | Humans | People and their agents, without a broker between them |
 | **Who decides** | Humans (with banks, governments) | Agents (autonomously) |
 | **What it buys** | Physical goods, services | Inference, compute, digital services (via bridge) |
 | **Exchange listing** | Yes (traded on markets) | No (earned by working) |

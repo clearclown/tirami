@@ -17,6 +17,16 @@ path = "src/main.rs"
 name = "tiramisu"
 path = "src/daemon.rs"
 
+# Relayed to `tirami-infer` through both dependency paths (direct, and via
+# `tirami-node`) so a single `--features cuda` reaches every copy of the
+# llama.cpp build. Covers both the `tirami` and `tiramisu` binaries.
+[features]
+default = []
+metal = ["tirami-infer/metal", "tirami-node/metal"]
+cuda = ["tirami-infer/cuda", "tirami-node/cuda"]
+rocm = ["tirami-infer/rocm", "tirami-node/rocm"]
+vulkan = ["tirami-infer/vulkan", "tirami-node/vulkan"]
+
 [dependencies]
 tirami-core = { workspace = true }
 tirami-infer = { workspace = true }

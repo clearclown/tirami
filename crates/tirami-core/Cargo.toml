@@ -12,6 +12,7 @@ description = "Core types for the Forge compute economy: NodeId, CU, Config"
 
 [dependencies]
 serde = { workspace = true }
+toml = { workspace = true }
 thiserror = { workspace = true }
 ed25519-dalek = { workspace = true }
 # Phase 17 Wave 1.6 — post-quantum signatures via the HybridSignature

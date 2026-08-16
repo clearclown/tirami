@@ -16,11 +16,30 @@
 
 **CPU**: x86_64 or aarch64. AVX2 recommended for x86_64; NEON is used automatically on ARM. The protocol runs on anything from a Raspberry Pi to a workstation, but inference throughput (and therefore TRM earnings) scales with compute capacity.
 
-**GPU** (optional but recommended):
-- Apple Silicon: Metal acceleration is **enabled by default** when building on macOS (`--features metal` is included in the default feature set). All inference layers run on-chip.
-- NVIDIA: build with `--features cuda` (requires CUDA toolkit + libcublas). ROCm (`--features rocm`) works for AMD GPUs.
-- Vulkan: `--features vulkan` for cross-vendor GPU acceleration.
-- CPU-only: omit all GPU features. AVX512 is used automatically when available.
+**GPU** (optional but recommended). Backends are chosen at build time and
+compiled into llama.cpp, so pick one before you build:
+
+```bash
+cargo build --release -p tirami-cli --features cuda    # NVIDIA (CUDA toolkit + libcublas)
+cargo build --release -p tirami-cli --features metal   # Apple Silicon
+cargo build --release -p tirami-cli --features rocm    # AMD
+cargo build --release -p tirami-cli --features vulkan  # cross-vendor
+```
+
+- **Apple Silicon**: `llama-cpp-sys-2`'s build script turns Metal on for
+  macOS regardless of features, so a plain `cargo build` already gets GPU
+  inference. `--features metal` makes that explicit. Verify with
+  `otool -L target/release/tirami | grep Metal`.
+- **NVIDIA / AMD / Vulkan**: these are straight passthroughs to
+  `llama-cpp-2`. This project builds and tests CUDA and Metal; `rocm` and
+  `vulkan` are exposed because upstream supports them, but are untested here.
+- **CPU-only**: omit all GPU features. AVX512 is used automatically when available.
+
+> ⚠️ A GPU build still needs `TIRAMI_GPU_LAYERS` to actually place layers on
+> the device — it defaults to 256, which is enough for every catalog model,
+> but set it explicitly (`TIRAMI_GPU_LAYERS=99`) if you are loading a custom
+> GGUF and want to be sure. Without layers offloaded, a `--features cuda`
+> binary runs on the CPU and looks like it is working.
 
 **Disk**:
 - Model files (GGUF): SmolLM2-135M ≈ 100 MB, Qwen2.5-0.5B ≈ 491 MB, Qwen2.5-1.5B ≈ 1.1 GB, Qwen2.5-3B ≈ 2.0 GB, Qwen2.5-7B ≈ 4.7 GB.
@@ -73,6 +92,49 @@ cargo install --path crates/tirami-cli
 ## Configure
 
 All configuration fields come from `crates/tirami-core/src/config.rs`. The daemon resolves them in order: CLI flags → config file → `Config::default()`.
+
+### The config file
+
+`~/.tirami/config.toml` (or `<data-dir>/config.toml`) is read at startup if
+present. Absent is fine — it is the normal case. Every field is optional and
+uses the field name exactly as it appears in `config.rs`:
+
+```toml
+# ~/.tirami/config.toml
+api_port = 8080
+api_bind_addr = "0.0.0.0"
+stake_gate_enabled = false
+metrics_require_bearer = true
+```
+
+Two things to know:
+
+- **Unrecognised keys are logged, not applied.** A misspelled key would
+  otherwise deserialize to its default and give you the opposite of what the
+  file says. Watch for `ignoring unknown key ...` on startup.
+- **A malformed file is a hard error**, not a silent fall back to defaults.
+- The durable state paths (`ledger_path`, `node_key_path`, and the L2/L3/L4
+  snapshots) are always derived from the data directory, so a config file
+  does not need to restate them.
+
+### Turning off the stake gate
+
+Providers need `MIN_PROVIDER_STAKE_TRM = 100` staked once they have earned
+past `STAKELESS_EARN_CAP_TRM = 10`. On a **private fleet** — every node owned
+by the same operator — this buys nothing, because there is no Sybil attacker
+to deter. It is also easy to miss: the 1,000 TRM welcome loan masks it for
+72 hours, so the fleet runs fine for two days and then every node stops at
+once (#162).
+
+Three ways to turn it off, highest precedence first:
+
+```bash
+tirami start --no-stake-gate            # per-invocation
+TIRAMI_STAKE_GATE=0 tirami start        # per-shell / systemd unit
+echo 'stake_gate_enabled = false' >> ~/.tirami/config.toml   # per-machine
+```
+
+Leave it on for any mesh you do not own end to end.
 
 | Field | Default | Impact |
 |---|---|---|

@@ -8,6 +8,14 @@
 
 Date: 2026-05-17. Status: Wave 1 in flight.
 
+> **Superseded in part.** This document records Wave 1, where
+> `stake_gate_enabled` defaulted to `false`. Wave 2 flipped the default to
+> `true`, and #162 added the ways to turn it back off — `--no-stake-gate`,
+> `TIRAMI_STAKE_GATE=0`, or `stake_gate_enabled = false` in
+> `~/.tirami/config.toml`. Read the "default `false`" statements below as
+> history. Current operator guidance:
+> [`operator-guide.md`](operator-guide.md#turning-off-the-stake-gate).
+
 ---
 
 ## What's still 🟡 after Phase 20

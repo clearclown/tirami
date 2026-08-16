@@ -352,7 +352,127 @@ fn default_personal_agent_enabled() -> bool {
     true
 }
 
+/// Conventional file name for operator overrides inside a data directory.
+///
+/// `docs/operator-guide.md`, `docs/phase-14-design.md`, and
+/// `docs/deployments/global-scale-kubernetes.md` have documented this file
+/// since Phase 14; until #162 nothing actually read it.
+pub const CONFIG_FILE_NAME: &str = "config.toml";
+
+/// Every `Config` field name, as it appears in a TOML document.
+///
+/// Used only to tell an operator that a key they wrote was not recognised.
+/// `Config` carries a container-level `#[serde(default)]`, so an unknown or
+/// misspelled key would otherwise deserialize silently to its default — the
+/// operator sees a setting in their file and gets the opposite behaviour,
+/// which is the exact failure mode #162 was reported for.
+///
+/// Kept honest by `known_fields_matches_struct`, which fails if a field is
+/// added to `Config` without being listed here.
+const KNOWN_FIELDS: &[&str] = &[
+    "model_path",
+    "node_key_path",
+    "ledger_path",
+    "bank_state_path",
+    "marketplace_state_path",
+    "staking_state_path",
+    "mind_state_path",
+    "personal_agent_state_path",
+    "agent_identity_path",
+    "agent_identity_passphrase_env",
+    "share_compute",
+    "max_memory_gb",
+    "api_port",
+    "api_bind_addr",
+    "api_bearer_token",
+    "api_max_request_body_bytes",
+    "stake_gate_enabled",
+    "bootstrap_relays",
+    "p2p_bind_addr",
+    "bootstrap_peers",
+    "region",
+    "max_prompt_chars",
+    "max_generate_tokens",
+    "max_concurrent_remote_inference_requests",
+    "settlement_window_hours",
+    "anchor_interval_secs",
+    "slashing_interval_secs",
+    "welcome_loan_settle_interval_secs",
+    "pq_signatures",
+    "asn_rate_limit_enabled",
+    "max_concurrent_connections",
+    "checkpoint_interval_secs",
+    "checkpoint_retain_secs",
+    "archive_path",
+    "proof_policy",
+    "agent_tick_interval_secs",
+    "personal_agent_enabled",
+    "zkml_backend",
+    "metrics_require_bearer",
+    "max_slashes_per_tick",
+    "gossip_max_seen",
+    "chat_concurrency_cap",
+];
+
 impl Config {
+    /// Path of the operator override file for a given data directory.
+    pub fn config_file_path(data_dir: impl Into<PathBuf>) -> PathBuf {
+        data_dir.into().join(CONFIG_FILE_NAME)
+    }
+
+    /// Build a config from a TOML document, rooted at `data_dir`.
+    ///
+    /// Keys absent from the document keep their default, and the durable
+    /// state paths are re-derived from `data_dir` afterwards so an operator
+    /// override file never has to restate them.
+    ///
+    /// Returns the config together with any keys that were not recognised,
+    /// so the caller can warn instead of silently discarding them.
+    pub fn from_toml_str(
+        doc: &str,
+        data_dir: impl Into<PathBuf>,
+    ) -> Result<(Self, Vec<String>), crate::TiramiError> {
+        let table: toml::Table = doc
+            .parse()
+            .map_err(|e| crate::TiramiError::Config(format!("invalid TOML: {e}")))?;
+
+        let unknown: Vec<String> = table
+            .keys()
+            .filter(|key| !KNOWN_FIELDS.contains(&key.as_str()))
+            .cloned()
+            .collect();
+
+        let mut config: Config = table
+            .try_into()
+            .map_err(|e| crate::TiramiError::Config(format!("invalid config value: {e}")))?;
+        config.set_data_dir(data_dir);
+
+        Ok((config, unknown))
+    }
+
+    /// Load `<data_dir>/config.toml` if it exists.
+    ///
+    /// A missing file is not an error — it is the normal case for a node
+    /// that has never been configured by hand. A file that exists but
+    /// cannot be read or parsed *is* an error: silently falling back to
+    /// defaults would hide the operator's intent.
+    pub fn load_from_data_dir(
+        data_dir: impl Into<PathBuf>,
+    ) -> Result<(Self, Vec<String>), crate::TiramiError> {
+        let data_dir = data_dir.into();
+        let path = Self::config_file_path(&data_dir);
+        match std::fs::read_to_string(&path) {
+            Ok(doc) => Self::from_toml_str(&doc, data_dir),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                Ok((Self::for_data_dir(data_dir), Vec::new()))
+            }
+            Err(e) => Err(crate::TiramiError::Config(format!(
+                "cannot read {}: {e}",
+                path.display()
+            ))),
+        }
+    }
+
     /// Build a production-oriented config rooted at `data_dir`.
     ///
     /// This wires all durable identity/economy state to predictable files:
@@ -479,8 +599,83 @@ impl Default for Config {
 
 #[cfg(test)]
 mod tests {
-    use super::Config;
+    use super::{Config, KNOWN_FIELDS};
     use std::path::PathBuf;
+
+    /// `KNOWN_FIELDS` drives the unknown-key warning. If it drifts from the
+    /// struct, an operator's real setting gets reported as a typo (or a real
+    /// typo goes unreported), so pin the two together.
+    #[test]
+    fn known_fields_matches_struct() {
+        // Serialize a Config with every `Option` populated — TOML has no
+        // null, so a `None` field would simply not appear as a key.
+        let mut config = Config::for_data_dir("/tmp/known-fields");
+        config.model_path = Some(PathBuf::from("/tmp/m.gguf"));
+        config.agent_identity_path = Some(PathBuf::from("/tmp/id.json"));
+        config.api_bearer_token = Some("t".to_string());
+        config.p2p_bind_addr = Some("0.0.0.0:7700".to_string());
+
+        let table = toml::Table::try_from(&config).expect("Config serializes to TOML");
+
+        let mut actual: Vec<&str> = table.keys().map(String::as_str).collect();
+        let mut listed: Vec<&str> = KNOWN_FIELDS.to_vec();
+        actual.sort_unstable();
+        listed.sort_unstable();
+
+        assert_eq!(
+            actual, listed,
+            "KNOWN_FIELDS is out of sync with `struct Config`"
+        );
+    }
+
+    #[test]
+    fn toml_override_applies_and_keeps_data_dir_paths() {
+        let (config, unknown) =
+            Config::from_toml_str("stake_gate_enabled = false\napi_port = 8080\n", "/tmp/cfg")
+                .expect("valid TOML");
+
+        assert!(unknown.is_empty());
+        assert!(!config.stake_gate_enabled, "override must be applied");
+        assert_eq!(config.api_port, 8080);
+        // Unmentioned keys keep their default...
+        assert_eq!(config.api_bind_addr, "127.0.0.1");
+        // ...and durable paths are still derived from the data dir.
+        assert_eq!(
+            config.ledger_path,
+            Some(PathBuf::from("/tmp/cfg/ledger.json"))
+        );
+    }
+
+    #[test]
+    fn toml_reports_unrecognised_keys() {
+        // A plausible typo: the real field is `stake_gate_enabled`.
+        let (config, unknown) =
+            Config::from_toml_str("stake_gate_enable = false\n", "/tmp/cfg").expect("valid TOML");
+
+        assert_eq!(unknown, vec!["stake_gate_enable".to_string()]);
+        assert!(
+            config.stake_gate_enabled,
+            "a typo must not silently disable the gate"
+        );
+    }
+
+    #[test]
+    fn toml_parse_failure_is_an_error() {
+        assert!(Config::from_toml_str("this is not toml", "/tmp/cfg").is_err());
+        assert!(
+            Config::from_toml_str("api_port = \"not a number\"", "/tmp/cfg").is_err(),
+            "a wrongly-typed value must not fall back to the default"
+        );
+    }
+
+    #[test]
+    fn missing_config_file_is_not_an_error() {
+        let (config, unknown) = Config::load_from_data_dir("/tmp/tirami-no-such-dir-162")
+            .expect("absent config.toml is the normal case");
+
+        assert!(unknown.is_empty());
+        assert!(config.stake_gate_enabled, "default is on");
+    }
 
     #[test]
     fn for_data_dir_wires_all_durable_paths() {

@@ -1082,7 +1082,16 @@ async fn handle_inference(
         let mut ledger = ledger.lock().await;
         let cost = ledger.estimate_cost(req.max_tokens as u64, 32, 32);
         if !ledger.reserve_cu(&consumer_id, cost) {
-            tracing::warn!("Consumer {} cannot afford {} CU", peer_id, cost);
+            // #150 — a consumer running out of TRM is the economy working, not
+            // a node fault, and it repeats on every retry. At WARN it drowned
+            // real signals once a mesh exhausted its welcome loans. The caller
+            // still gets `InsufficientBalance` over the wire, which is where
+            // this belongs.
+            tracing::debug!(
+                consumer = %peer_id,
+                cu_needed = cost,
+                "consumer balance insufficient (expected once a welcome loan is spent)"
+            );
             send_protocol_error(
                 &transport,
                 peer_id,

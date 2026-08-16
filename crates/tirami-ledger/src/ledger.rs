@@ -1,6 +1,7 @@
 use tirami_core::{NodeBalance, NodeId, WorkUnit};
 use tirami_proto::ReputationObservation;
 use serde::{Deserialize, Serialize};
+use std::sync::atomic::Ordering;
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use crate::lending::{
@@ -47,6 +48,15 @@ pub struct ComputeLedger {
     /// Total CU deposited by lenders into the pool (active + repaid + reserved).
     #[serde(default)]
     loan_pool_total: u64,
+    /// #153 — whether the free-tier-only node cap is currently engaged.
+    ///
+    /// Ephemeral: a restart should re-announce the state rather than inherit a
+    /// stale "already warned" flag, so it is neither serialized nor restored.
+    /// An atomic because `can_afford` takes `&self`; `Arc` because
+    /// `ComputeLedger` derives `Clone` and a snapshot clone sharing a
+    /// log-dedup flag is harmless.
+    #[serde(default, skip)]
+    free_tier_cap_reached: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// Recent remote reputation observations, keyed by subject.
     /// Each subject holds up to `MAX_REMOTE_OBSERVATIONS_PER_NODE` latest observations.
     /// Not persisted to disk (ephemeral gossip state, re-built from peers on startup).
@@ -797,6 +807,7 @@ impl ComputeLedger {
             work_log: Vec::new(),
             trade_log: Vec::new(),
             price: MarketPrice::default(),
+            free_tier_cap_reached: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             loans: Vec::new(),
             loan_pool_lent: 0,
             loan_pool_total: 0,
@@ -1158,6 +1169,8 @@ impl ComputeLedger {
             work_log: snapshot.work_log,
             trade_log: snapshot.trade_log,
             price: snapshot.price,
+            // Ephemeral: a restart re-announces the Sybil-cap state (#153).
+            free_tier_cap_reached: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             loans: snapshot.loan_log,
             loan_pool_lent: snapshot.loan_pool_lent,
             loan_pool_total: snapshot.loan_pool_total,
@@ -1788,11 +1801,36 @@ impl ComputeLedger {
                     .filter(|b| b.contributed == 0 && b.consumed > 0)
                     .count();
                 if unknown_nodes > 50 {
-                    tracing::warn!(
-                        "Sybil protection: too many free-tier-only nodes ({}), rejecting new node",
-                        unknown_nodes
-                    );
+                    // #153 — being at the cap is a *state*, not an event. Every
+                    // rejected request used to re-fire this at WARN, so volume
+                    // scaled with retry rate: a measured 100 rejections produced
+                    // 100 WARN lines, burying anything actionable.
+                    //
+                    // WARN once when the mesh enters the state, DEBUG for each
+                    // rejection inside it. An operator still learns the cap
+                    // engaged; they do not learn it 240 times per 10 minutes.
+                    if !self.free_tier_cap_reached.swap(true, Ordering::Relaxed) {
+                        tracing::warn!(
+                            free_tier_only_nodes = unknown_nodes,
+                            "Sybil protection engaged: free-tier-only node cap reached, \
+                             new free-tier nodes are now refused"
+                        );
+                    } else {
+                        tracing::debug!(
+                            free_tier_only_nodes = unknown_nodes,
+                            "Sybil protection: refusing another free-tier-only node"
+                        );
+                    }
                     return false;
+                }
+
+                // Dropped back under the cap — re-arm so the next episode is
+                // reported instead of being swallowed as "already warned".
+                if self.free_tier_cap_reached.swap(false, Ordering::Relaxed) {
+                    tracing::info!(
+                        free_tier_only_nodes = unknown_nodes,
+                        "Sybil protection released: free-tier-only node count back under cap"
+                    );
                 }
                 FREE_TIER_CU >= trm_cost
             }

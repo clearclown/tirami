@@ -1932,7 +1932,9 @@ async fn run_start_command(
     // ------------------------------------------------------------------
     println!();
     println!("╔══════════════════════════════════════════════════════════════╗");
-    println!("║         🌱 Tirami — GPU Airbnb × AI Agent Economy            ║");
+    // "GPU Airbnb" is on the do-not-use list in `docs/pmvv.md`: it names a
+    // mechanism to someone who has not been told what problem it solves.
+    println!("║    🌱 Tirami — run models your machine can't hold alone      ║");
     println!("╚══════════════════════════════════════════════════════════════╝");
     println!();
     println!("   Data dir:  {}", tirami_dir.display());

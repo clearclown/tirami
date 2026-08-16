@@ -154,8 +154,24 @@ Useful environment variables on the contributing side:
 | Variable | Effect |
 |---|---|
 | `TIRAMI_RPC_SERVER_PATH` | Path to `ggml-rpc-server` (or the older `rpc-server`) |
-| `TIRAMI_RPC_DEVICE` | ggml device to bind, e.g. `MTL0`, `CUDA0`. **Without it llama.cpp picks its own backend, and a Metal machine can serve from the CPU while looking healthy.** |
+| `TIRAMI_RPC_DEVICE` | ggml device to bind. Defaults to `MTL0` on macOS and `CUDA0` on a CUDA build. `auto` hands the choice back to llama.cpp. |
 | `TIRAMI_RPC_CACHE=0` | Disable the local tensor cache (on by default; measured 210 s cold → 156 s warm on a 17 GiB shard) |
+
+> ⚠️ **Do not set `TIRAMI_RPC_DEVICE=auto` unless you know the backend is
+> right.** Measured on an Apple M4 against llama.cpp b10360: with no device
+> named, `ggml-rpc-server` selects BLAS and aborts on the first graph with
+> `unsupported op RMS_NORM`; the client then reports `Remote RPC server
+> crashed or returned malformed response`. Naming the GPU makes the same run
+> load cleanly, which is why it is the default.
+
+Building llama.cpp with RPC support:
+
+```bash
+git clone --depth 1 https://github.com/ggml-org/llama.cpp
+cd llama.cpp && cmake -B build -DGGML_RPC=ON -DGGML_METAL=ON -DCMAKE_BUILD_TYPE=Release
+cmake --build build --config Release -j8
+# binaries: build/bin/ggml-rpc-server, build/bin/llama-cli
+```
 
 On the coordinating side, `POST /v1/tirami/split-inference` runs one prompt
 across the peers in the current topology plan:
@@ -182,6 +198,27 @@ extrapolating to roughly 40 minutes at 20 ms. Splitting a model over a WAN is
 not viable with llama.cpp RPC alone. Inference itself is far less sensitive
 (about 3.83 round-trips per token), which is why forwarding a whole request to
 a peer that already holds the model works fine over a WAN.
+
+### Verified run
+
+Two nodes on loopback, Apple M4, llama.cpp b10360, SmolLM2-135M. The
+coordinator was given `max_memory_gb = 0.05` so the model would not fit
+locally and a split was planned.
+
+```
+nodeB  Starting split session for SmolLM2-135M-Instruct-Q4_K_M across 1 remote stage(s)
+nodeA  requests RPC server start (session 14695…, layers 0..30, port 50052)
+nodeA  Starting rpc-server on port 50052 (device=Some("MTL0"), cache=true)
+nodeA  rpc-server ready on 127.0.0.1:50052
+nodeA  Accepted RPC tunnel connection from c061284312
+nodeB  RPC tunnel listening on 127.0.0.1:52713 (session 14695…)
+nodeA  Stopped rpc-server on port 50052 (session 14695…)
+```
+
+15 seconds end to end, generation at 146 tok/s. A peer with
+`rpc_server_enabled = false` refuses immediately and the coordinator surfaces
+`peer … refused to start an rpc-server: rpc server spawning is disabled on
+this node` rather than waiting out the 20-second timeout.
 
 | Field | Default | Impact |
 |---|---|---|

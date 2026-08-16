@@ -65,6 +65,10 @@ pub struct ForgeTransport {
     asn_limiter: Option<Arc<Mutex<crate::asn_rate_limit::AsnRateLimiter>>>,
     /// Counter of connections dropped due to ASN rate limit.
     dropped_asn_over_cap: Arc<AtomicU64>,
+    /// #163 — inbound RPC-tunnel connections, routed here by ALPN so they
+    /// never reach `read_peer_messages`. See `RPC_TUNNEL_ALPN`.
+    rpc_tunnel_tx: mpsc::Sender<iroh::endpoint::Connection>,
+    rpc_tunnel_rx: Arc<Mutex<mpsc::Receiver<iroh::endpoint::Connection>>>,
 }
 
 impl ForgeTransport {
@@ -129,7 +133,7 @@ impl ForgeTransport {
         // re-enable mDNS via a future `mdns` feature flag bringing
         // back iroh-mdns-address-lookup once it is 1.0-compatible.
         let mut builder = iroh::Endpoint::builder(presets::N0)
-            .alpns(vec![FORGE_ALPN.to_vec()]);
+            .alpns(vec![FORGE_ALPN.to_vec(), crate::RPC_TUNNEL_ALPN.to_vec()]);
         if let Some(secret_key) = secret_key {
             builder = builder.secret_key(secret_key);
         }
@@ -146,6 +150,7 @@ impl ForgeTransport {
         tracing::info!("Endpoint address: {:?}", addr);
 
         let (incoming_tx, incoming_rx) = mpsc::channel(256);
+        let (rpc_tunnel_tx, rpc_tunnel_rx) = mpsc::channel(16);
 
         Ok(Self {
             endpoint,
@@ -163,7 +168,35 @@ impl ForgeTransport {
             dropped_over_cap: Arc::new(AtomicU64::new(0)),
             asn_limiter: None,
             dropped_asn_over_cap: Arc::new(AtomicU64::new(0)),
+            rpc_tunnel_tx,
+            rpc_tunnel_rx: Arc::new(Mutex::new(rpc_tunnel_rx)),
         })
+    }
+
+    /// Dial a peer on the RPC-tunnel ALPN (#163).
+    ///
+    /// This is a second QUIC connection to the same peer, separate from the
+    /// protocol one, so the tunnel owns every stream it opens.
+    pub async fn connect_rpc_tunnel(
+        &self,
+        addr: iroh::EndpointAddr,
+    ) -> anyhow::Result<iroh::endpoint::Connection> {
+        Ok(self
+            .endpoint
+            .connect(addr, crate::RPC_TUNNEL_ALPN)
+            .await?)
+    }
+
+    /// Await the next inbound RPC-tunnel connection.
+    ///
+    /// Returns `None` once the endpoint is closed.
+    pub async fn accept_rpc_tunnel(&self) -> Option<iroh::endpoint::Connection> {
+        self.rpc_tunnel_rx.lock().await.recv().await
+    }
+
+    /// Saved dial address for a peer, if we have one.
+    pub async fn peer_addr(&self, peer_id: &str) -> Option<iroh::EndpointAddr> {
+        self.peer_addrs.lock().await.get(peer_id).cloned()
     }
 
     /// Current accept-cap. 0 means unlimited.
@@ -274,6 +307,7 @@ impl ForgeTransport {
         // Phase 17 Wave 4.4 — capture the optional ASN limiter.
         let asn_limiter = self.asn_limiter.clone();
         let dropped_asn_over_cap = self.dropped_asn_over_cap.clone();
+        let rpc_tunnel_tx = self.rpc_tunnel_tx.clone();
 
         tokio::spawn(async move {
             loop {
@@ -300,10 +334,28 @@ impl ForgeTransport {
                         let incoming_tx = incoming_tx.clone();
                         let asn_limiter = asn_limiter.clone();
                         let dropped_asn_over_cap = dropped_asn_over_cap.clone();
+                        let rpc_tunnel_tx = rpc_tunnel_tx.clone();
 
                         tokio::spawn(async move {
                             match connecting.await {
                                 Ok(conn) => {
+                                    // #163 — RPC-tunnel connections get their
+                                    // own ALPN so they never reach
+                                    // `read_peer_messages`, which would try to
+                                    // bincode-decode raw llama.cpp bytes.
+                                    if conn.alpn() == crate::RPC_TUNNEL_ALPN {
+                                        tracing::info!(
+                                            "Accepted RPC tunnel connection from {}",
+                                            conn.remote_id().fmt_short()
+                                        );
+                                        if rpc_tunnel_tx.send(conn).await.is_err() {
+                                            tracing::debug!(
+                                                "no RPC tunnel listener; dropping connection"
+                                            );
+                                        }
+                                        return;
+                                    }
+
                                     let peer_conn = PeerConnection::new(conn);
                                     let peer_id = peer_conn.peer_id().to_string();
 

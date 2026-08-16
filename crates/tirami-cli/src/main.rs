@@ -274,6 +274,16 @@ enum Commands {
         /// GPU layers to offload (0 = CPU only)
         #[arg(long, default_value = "99")]
         ngl: u32,
+
+        /// Proportional split across local + RPC devices, e.g. "21,43".
+        /// Passed to llama.cpp as `-ts`. Without it llama.cpp chooses its
+        /// own ratio, which can leave a remote device nearly empty.
+        #[arg(long = "tensor-split")]
+        tensor_split: Option<String>,
+
+        /// Context size, passed as `-c`. Defaults to llama.cpp's own.
+        #[arg(long)]
+        ctx: Option<u32>,
     },
 
     /// Export a settlement statement from a running forge node API
@@ -954,6 +964,8 @@ async fn main() -> anyhow::Result<()> {
             max_tokens,
             temperature,
             ngl,
+            tensor_split,
+            ctx,
         } => {
             let llama_cli = tirami_infer::distributed::find_llama_cli().ok_or_else(|| {
                 anyhow::anyhow!(
@@ -968,6 +980,9 @@ async fn main() -> anyhow::Result<()> {
                 rpc_endpoints,
                 n_gpu_layers: ngl,
                 llama_cli_path: llama_cli,
+                tensor_split,
+                context_size: ctx,
+                no_mmap: true,
             };
 
             let start = std::time::Instant::now();

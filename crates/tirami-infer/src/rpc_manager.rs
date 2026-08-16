@@ -49,20 +49,50 @@ fn validate_port(port: u16) -> Result<u16, TiramiError> {
     Ok(port)
 }
 
+/// Default ggml device when the operator has not named one.
+///
+/// **`-d` is not an optimisation — without it the server aborts.** Measured
+/// on an Apple M4 against llama.cpp b10360: `ggml-rpc-server -p 50052` with no
+/// device picks the BLAS backend and dies on the first graph:
+///
+/// ```text
+/// ggml-blas.cpp:253: ggml_backend_blas_graph_compute: unsupported op RMS_NORM
+///   rpc_server::graph_compute
+///   ggml_backend_rpc_start_server
+/// ```
+///
+/// The client then reports `Remote RPC server crashed or returned malformed
+/// response`. Naming the GPU (`-d MTL0`) makes the same run load cleanly.
+///
+/// So this defaults to the platform GPU rather than to "let llama.cpp choose".
+/// Override with `TIRAMI_RPC_DEVICE`; set it to `auto` to genuinely leave the
+/// choice to llama.cpp.
+fn default_rpc_device() -> Option<String> {
+    match std::env::var("TIRAMI_RPC_DEVICE") {
+        Ok(v) if v.trim().eq_ignore_ascii_case("auto") => None,
+        Ok(v) if !v.trim().is_empty() => Some(v.trim().to_string()),
+        // Metal is compiled in on macOS regardless of cargo features, and the
+        // first Metal device is `MTL0`.
+        _ if cfg!(target_os = "macos") => Some("MTL0".to_string()),
+        // A CUDA build names its first device `CUDA0`. On a CPU-only build
+        // there is no GPU to name, and BLAS-vs-CPU selection is llama.cpp's
+        // problem — leaving it unset there is correct.
+        _ if cfg!(feature = "cuda") => Some("CUDA0".to_string()),
+        _ => None,
+    }
+}
+
 /// How to launch the rpc-server subprocess.
 ///
-/// The defaults reflect what actually worked in the #164 measurements on a
-/// Mac mini ⟷ Mac Studio pair. In particular, without `-d` llama.cpp picks
-/// its own backend, which is how a Metal machine ends up serving from the
-/// CPU while looking healthy.
+/// The defaults reflect what actually ran, not what the flags suggest: `-d` is
+/// required for the server to survive at all (see [`default_rpc_device`]), and
+/// `-c` was measured at 210 s cold → 156 s warm on a 17 GiB shard (#164).
 #[derive(Debug, Clone)]
 pub struct RpcServerOptions {
     pub port: u16,
-    /// ggml device to bind, e.g. `MTL0` or `CUDA0`. `None` lets llama.cpp
-    /// choose. Defaults from `TIRAMI_RPC_DEVICE`.
+    /// ggml device to bind, e.g. `MTL0` or `CUDA0`.
     pub device: Option<String>,
-    /// Local tensor cache (`-c`). Measured at 210 s cold → 156 s warm on a
-    /// 17 GiB shard, so it is on unless `TIRAMI_RPC_CACHE=0`.
+    /// Local tensor cache (`-c`).
     pub cache: bool,
 }
 
@@ -70,9 +100,7 @@ impl RpcServerOptions {
     pub fn new(port: u16) -> Self {
         Self {
             port,
-            device: std::env::var("TIRAMI_RPC_DEVICE")
-                .ok()
-                .filter(|d| !d.trim().is_empty()),
+            device: default_rpc_device(),
             cache: !matches!(
                 std::env::var("TIRAMI_RPC_CACHE").as_deref(),
                 Ok("0") | Ok("false") | Ok("no") | Ok("off")
@@ -256,12 +284,14 @@ mod tests {
         assert!(result.is_err());
     }
 
-    /// #164 measured 210 s cold vs 156 s warm on a 17 GiB shard, so the cache
-    /// is on unless an operator turns it off — and `-d` matters because
-    /// without it llama.cpp picks its own backend and a Metal machine can end
-    /// up serving from the CPU while looking healthy.
+    /// The default must name a device. Measured on an Apple M4 against
+    /// llama.cpp b10360: with no `-d`, `ggml-rpc-server` selects BLAS and
+    /// aborts on the first graph with `unsupported op RMS_NORM`, and the
+    /// client reports `Remote RPC server crashed`. The same run with
+    /// `-d MTL0` loads cleanly. `-c` was measured at 210 s cold → 156 s warm
+    /// on a 17 GiB shard (#164).
     #[test]
-    fn options_default_to_cache_on_and_no_device() {
+    fn options_default_to_a_named_device_and_cache_on() {
         // SAFETY: this test owns these vars; no other test reads them.
         unsafe {
             std::env::remove_var("TIRAMI_RPC_DEVICE");
@@ -270,18 +300,33 @@ mod tests {
         let opts = RpcServerOptions::new(50052);
         assert_eq!(opts.port, 50052);
         assert!(opts.cache);
-        assert_eq!(opts.device, None);
+        if cfg!(target_os = "macos") {
+            assert_eq!(
+                opts.device.as_deref(),
+                Some("MTL0"),
+                "an unset device makes the server abort, so macOS must default to Metal"
+            );
+        }
 
         unsafe {
-            std::env::set_var("TIRAMI_RPC_DEVICE", "MTL0");
+            std::env::set_var("TIRAMI_RPC_DEVICE", "CUDA1");
             std::env::set_var("TIRAMI_RPC_CACHE", "0");
         }
         let opts = RpcServerOptions::new(50052);
-        assert_eq!(opts.device.as_deref(), Some("MTL0"));
+        assert_eq!(opts.device.as_deref(), Some("CUDA1"));
         assert!(!opts.cache);
 
-        // An empty device string means "unset", not "bind to nothing".
+        // Whitespace is not a device name; fall back to the platform default.
         unsafe { std::env::set_var("TIRAMI_RPC_DEVICE", "  ") };
+        assert_eq!(
+            RpcServerOptions::new(50052).device,
+            default_rpc_device(),
+            "a blank value must not be passed through as `-d ''`"
+        );
+
+        // `auto` is the explicit opt-out for anyone who wants llama.cpp to
+        // choose — including the CPU-only case where there is no GPU to name.
+        unsafe { std::env::set_var("TIRAMI_RPC_DEVICE", "auto") };
         assert_eq!(RpcServerOptions::new(50052).device, None);
 
         unsafe {

@@ -185,9 +185,15 @@ TRM cannot be speculated on because:
 
 Compare to Bittensor: TAO is listed on exchanges, has a $2.9B market cap, and swings 50%+ based on market sentiment. The token's speculative dynamics dominate its economic function. TRM avoids this entirely by design.
 
-## The AI-Only Currency Thesis
+## The Machine-Settled Currency Thesis
 
-TRM is not money for humans. It is money for AI agents.
+TRM is not money *for* humans in the way dollars are — you cannot buy it, it
+prices nothing but compute, and holding it is not a financial position. But
+the participant is still a person: someone with a Mac Mini who wants a model
+that does not fit on it. What is unusual is not who benefits, it is **who
+settles**. A trade completes when two Ed25519 keys sign, with no bank, no
+exchange, and no human approving the transfer — which is what lets an agent
+manage its own budget.
 
 This distinction resolves many problems that plague human currencies:
 
@@ -210,14 +216,14 @@ TRM provides all of these. Human currencies provide none.
 ## Historical Position
 
 ```
-Era              Standard           Backing              For Whom
+Era              Standard           Backing              Settled By
 ─────────────    ─────────────      ──────────────       ─────────
 Ancient          Commodity          Direct use           Humans
 1870-1914        Gold Standard      Geological scarcity  Humans
 1944-1971        Bretton Woods      Gold + USD peg       Humans
 1971-present     Fiat               Government trust     Humans
 2009-present     Bitcoin            Energy on SHA-256    Humans
-2026-            Compute Standard   Useful computation   AI agents
+2026-            Compute Standard   Useful computation   Keys, not people
 ```
 
-TRM is not the next Bitcoin. It is the first currency designed for a non-human economy — an economy where AI agents autonomously earn, spend, lend, borrow, and invest compute without human approval. The theoretical foundations (Soddy, Fuller, Technocracy) were right about the destination. They were wrong about the traveler.
+TRM is not the next Bitcoin. It is a unit of account for one thing — compute — settled directly between the two parties to a trade, with no exchange and no human approving the transfer. That is what lets an agent hold its own budget, and it is also what lets a person reach a 70B model from a laptop without a subscription. The theoretical foundations (Soddy, Fuller, Technocracy) were right about the destination: value backed by useful work. What they could not have anticipated is that the useful work would be *inference*, and that the settlement would not need a human at all.

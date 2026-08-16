@@ -1,4 +1,4 @@
-# Forge v0.3 Launch Runbook
+# Tirami v0.3 Launch Runbook
 
 This file lists **every command you (the maintainer) need to run** to
 complete the v0.3.0 public launch. Everything else has been done

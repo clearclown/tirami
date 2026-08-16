@@ -327,10 +327,19 @@ zkML completion.
 
 ## 14. Non-goals
 
-- We are NOT building a replacement for centralized LLM APIs
-  today. We are building the infrastructure for when those APIs
-  become insufficient (regulatory, economic, or political
-  pressure).
+- We are NOT competing on frontier capability. If you need the
+  strongest model in the world on this prompt, a centralized API
+  is the right answer and Tirami does not change that.
+  What Tirami changes is *where your everyday inference runs* —
+  the large fraction of work an open-weights model handles fine,
+  which today leaves your machine only because your machine is
+  too small to hold the model.
+- We are NOT claiming privacy for remote inference. A provider
+  node sees the prompt it serves in plaintext. What the protocol
+  offers is the *choice* of trust boundary — your own machine, a
+  peer you named, or an anonymous one — not confidentiality from
+  the peer you picked. Encrypted-in-flight inference (zkML, TEE)
+  is a later phase; see `docs/zkml-strategy.md`.
 - We are NOT aiming for Bitcoin-scale in 2026. Filecoin-scale
   credibility is the Phase 18-21 target.
 - We are NOT issuing a governance token separate from TRM. TRM

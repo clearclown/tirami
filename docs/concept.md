@@ -1,12 +1,39 @@
 # Tirami — Concept & Vision
 
-## The Problem Is Not Distributed Inference
+> Purpose, mission, and the words we use to describe them live in
+> [`pmvv.md`](pmvv.md). This document is the design reasoning underneath.
 
-Projects like [mesh-llm](https://github.com/Mesh-LLM/mesh-llm), Petals, and Exo have shown that you can split LLM inference across multiple devices over a network. The hard engineering of pipeline parallelism, expert sharding, and mesh coordination is largely solved.
+## The Problem: Local Inference Hits a Memory Wall
 
-The unsolved problem is: **why would anyone contribute their hardware?**
+People move to local LLMs for four reasons — metered cost, no control over
+which model version they get, price-based exclusion, and the fact that
+prompts leave the machine. Ollama and LM Studio already solve those, and
+solve them well.
 
-mesh-llm pools GPUs beautifully — but if you run your Mac Mini as a mesh node for a year, you get nothing. No record of contribution, no priority access, no economic return. The network runs on goodwill. Goodwill doesn't scale.
+They do not solve what comes next. **Running a 32B model at Q4 takes about
+20 GB; 70B takes about 40 GB; a 100B+ MoE takes 50 GB or more.** Most people
+do not own that machine. The options are to buy datacenter-class hardware or
+to settle for a smaller model.
+
+Tirami's answer is to trade for the capacity instead of buying it: ask
+someone who has it, and repay by serving when you can. That is the whole
+idea. **What makes it hard is not the inference — it is making the trade
+trustworthy without a central operator or a blockchain.**
+
+## The Second Problem: Why Would Anyone Serve?
+
+Pooling compute is not new. [mesh-llm](https://github.com/Mesh-LLM/mesh-llm),
+Petals, and Exo all split inference across devices, and the hard engineering
+of pipeline parallelism, expert sharding, and mesh coordination is largely
+solved.
+
+What is missing is the reason to stay. Run your Mac Mini as a mesh node for
+a year and you get nothing — no record of contribution, no priority access,
+no claim on anyone else's capacity. The network runs on goodwill, and
+goodwill does not scale past the people who already know each other.
+
+So Tirami needs an accounting unit. That is where the rest of this document
+goes.
 
 ## The Insight: Compute Is Money
 

@@ -232,13 +232,79 @@ pub fn run_distributed_inference(
 
     verify_layers_distributed(&stderr, config.rpc_endpoints.len())?;
 
-    let text = String::from_utf8_lossy(&output.stdout).to_string();
-    let text = text.trim().to_string();
+    let raw = String::from_utf8_lossy(&output.stdout);
+    let text = extract_generated_text(&raw, prompt);
 
     // Estimate token count from output length (rough approximation)
     let token_count = text.split_whitespace().count().max(1);
 
     Ok((text, token_count))
+}
+
+/// Pull the model's completion out of llama-cli's stdout.
+///
+/// b10360's llama-cli prints a terminal UI regardless of `-no-cnv`,
+/// `--no-display-prompt`, or `--simple-io`: a loading spinner, an ASCII
+/// banner, build/model/ftype lines, a `available commands:` block, then the
+/// echoed prompt, the completion, a timing line, and `Exiting...`.
+///
+/// Returning that whole blob as the answer is what the first version did — a
+/// real split-inference call came back with 111 "tokens" of banner. So the
+/// completion is bracketed out instead:
+///
+/// ```text
+/// > The capital of France is        <- echoed prompt, last `> ` line
+/// The capital of France is Paris.   <- what we want
+///
+/// [ Prompt: 585.8 t/s | Generation: 213.6 t/s ]   <- end marker
+/// ```
+///
+/// Builds that print only the completion have neither marker, so an unmarked
+/// output is returned trimmed and unchanged.
+pub fn extract_generated_text(stdout: &str, prompt: &str) -> String {
+    // The spinner writes backspaces; strip control characters other than
+    // newline and tab so they cannot end up in an API response.
+    let cleaned: String = stdout
+        .chars()
+        .filter(|c| !c.is_control() || *c == '\n' || *c == '\t')
+        .collect();
+
+    let lines: Vec<&str> = cleaned.lines().collect();
+
+    // Start after the last echoed-prompt line, if there is one.
+    let start = lines
+        .iter()
+        .rposition(|l| l.starts_with("> "))
+        .map(|i| i + 1);
+
+    // Stop at the timing line or the exit banner.
+    let end = lines.iter().position(|l| {
+        let l = l.trim_start();
+        l.starts_with("[ Prompt:") || l == "Exiting..."
+    });
+
+    let body = match (start, end) {
+        (Some(s), Some(e)) if s < e => lines[s..e].join("\n"),
+        (Some(s), None) => lines[s..].join("\n"),
+        (None, Some(e)) => lines[..e].join("\n"),
+        // No markers: an older build that printed only the completion.
+        (None, None) => cleaned.clone(),
+        // Markers out of order — do not guess.
+        _ => cleaned.clone(),
+    };
+
+    let body = body.trim();
+
+    // `--no-display-prompt` is passed, but this build echoes the prompt into
+    // the completion line anyway. Drop it when it leads.
+    let prompt = prompt.trim();
+    if !prompt.is_empty() {
+        if let Some(rest) = body.strip_prefix(prompt) {
+            return rest.trim().to_string();
+        }
+    }
+
+    body.to_string()
 }
 
 /// Confirm llama.cpp actually placed layers on every RPC device.
@@ -383,6 +449,46 @@ mod tests {
     /// RPC0 — the silent degradation #164 describes.
     const REAL_SILENTLY_LOCAL: &str =
         include_str!("../tests/fixtures/split-silently-local-b10360.log");
+
+    /// Real stdout from b10360: spinner, ASCII banner, build info, a command
+    /// list, the echoed prompt, the completion, a timing line, `Exiting...`.
+    const REAL_STDOUT: &str = include_str!("../tests/fixtures/llama-cli-stdout-b10360.txt");
+
+    /// The first version returned this whole blob as the answer — a live
+    /// split-inference call came back with 111 "tokens" of banner.
+    #[test]
+    fn the_completion_is_pulled_out_of_the_terminal_ui() {
+        let text = extract_generated_text(REAL_STDOUT, "The capital of France is");
+
+        assert_eq!(text, "Paris.", "got: {text:?}");
+        assert!(!text.contains("build"), "banner leaked: {text:?}");
+        assert!(!text.contains("Prompt:"), "timing line leaked: {text:?}");
+        assert!(!text.contains("Exiting"), "exit banner leaked: {text:?}");
+    }
+
+    /// The spinner writes backspaces; they must not reach an API response.
+    #[test]
+    fn control_characters_are_stripped() {
+        let text = extract_generated_text(REAL_STDOUT, "The capital of France is");
+        assert!(
+            !text.chars().any(|c| c.is_control() && c != '\n' && c != '\t'),
+            "control characters survived: {text:?}"
+        );
+    }
+
+    /// A build that prints only the completion has neither marker.
+    #[test]
+    fn output_without_markers_passes_through() {
+        assert_eq!(extract_generated_text("  Paris.\n", "irrelevant"), "Paris.");
+    }
+
+    /// This build echoes the prompt into the completion line despite
+    /// `--no-display-prompt`.
+    #[test]
+    fn a_leading_prompt_echo_is_removed() {
+        let out = "> Hello\nHello world\n\n[ Prompt: 1.0 t/s | Generation: 2.0 t/s ]";
+        assert_eq!(extract_generated_text(out, "Hello"), "world");
+    }
 
     #[test]
     fn a_real_working_split_is_accepted() {

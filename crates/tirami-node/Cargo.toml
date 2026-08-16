@@ -9,6 +9,16 @@ documentation.workspace = true
 readme.workspace = true
 authors.workspace = true
 
+# GPU backends are compiled into llama.cpp by `tirami-infer`. Relay them so
+# an operator can build a GPU binary from the crate they actually install,
+# rather than having to name `tirami-infer` explicitly.
+[features]
+default = []
+metal = ["tirami-infer/metal"]
+cuda = ["tirami-infer/cuda"]
+rocm = ["tirami-infer/rocm"]
+vulkan = ["tirami-infer/vulkan"]
+
 [dependencies]
 tirami-core = { workspace = true }
 tirami-net = { workspace = true }

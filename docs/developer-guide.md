@@ -56,13 +56,25 @@ cargo check --workspace        # fast type check, no codegen (~15s)
 cargo clippy --workspace       # lint (71 baseline warnings accepted for now)
 ```
 
-Rust edition 2024, resolver v2. Apple Metal is ON by default on macOS builds. CUDA and ROCm require explicit feature flags:
+Rust edition 2024, resolver v2.
+
+GPU backends are compiled into llama.cpp, selected by feature flag. Name the
+binary crate — the workspace root has no features of its own, so a bare
+`cargo build --features cuda` fails with "none of the selected packages
+contains these features":
 
 ```bash
-cargo build --release --features cuda    # NVIDIA
-cargo build --release --features rocm    # AMD
-cargo build --release --features vulkan  # cross-vendor GPU
+cargo build --release -p tirami-cli --features cuda    # NVIDIA
+cargo build --release -p tirami-cli --features metal   # Apple Silicon
+cargo build --release -p tirami-cli --features rocm    # AMD (untested here)
+cargo build --release -p tirami-cli --features vulkan  # cross-vendor (untested here)
 ```
+
+`tirami-cli` and `tirami-node` relay these to `tirami-infer`, which relays to
+`llama-cpp-2`. No Rust code is conditionally compiled on them. Note that on
+macOS `llama-cpp-sys-2` enables Metal from its build script anyway, so
+`default = []` still yields a Metal binary there — `--features metal` only
+makes the intent explicit.
 
 For CPU-only builds, omit all GPU features.
 

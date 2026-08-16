@@ -22,13 +22,13 @@ enum DaemonCommand {
         #[arg(short, long)]
         tokenizer: String,
 
-        /// Port for the local HTTP API
-        #[arg(short, long, default_value = "3000")]
-        port: u16,
+        /// Port for the local HTTP API. Default 3000, or `api_port` from config.toml.
+        #[arg(short, long)]
+        port: Option<u16>,
 
-        /// Bind address for the local HTTP API
-        #[arg(long, default_value = "127.0.0.1")]
-        bind: String,
+        /// Bind address for the local HTTP API. Default 127.0.0.1, or `api_bind_addr` from config.toml.
+        #[arg(long)]
+        bind: Option<String>,
 
         /// Fixed P2P UDP bind socket for direct peers, e.g. 0.0.0.0:7700.
         #[arg(long)]
@@ -41,6 +41,16 @@ enum DaemonCommand {
         /// Optional bearer token protecting administrative HTTP API routes
         #[arg(long)]
         api_token: Option<String>,
+
+        /// Disable the provider stake gate on this node.
+        ///
+        /// Also settable with `TIRAMI_STAKE_GATE=0` or
+        /// `stake_gate_enabled = false` in config.toml. Intended for
+        /// private fleets where every node has the same owner, so Sybil
+        /// resistance buys nothing and the gate only stops the fleet
+        /// once the welcome loan expires (#162).
+        #[arg(long, default_value_t = false)]
+        no_stake_gate: bool,
 
         /// Public bootstrap peer to join on startup. Repeatable.
         /// Format: PUBLIC_KEY, PUBLIC_KEY@RELAY_URL, or PUBLIC_KEY@IP:PORT.
@@ -58,13 +68,13 @@ enum DaemonCommand {
         #[arg(short, long)]
         tokenizer: Option<String>,
 
-        /// Port for the local API
-        #[arg(short, long, default_value = "3000")]
-        port: u16,
+        /// Port for the local API. Default 3000, or `api_port` from config.toml.
+        #[arg(short, long)]
+        port: Option<u16>,
 
-        /// Bind address for the local HTTP API
-        #[arg(long, default_value = "127.0.0.1")]
-        bind: String,
+        /// Bind address for the local HTTP API. Default 127.0.0.1, or `api_bind_addr` from config.toml.
+        #[arg(long)]
+        bind: Option<String>,
 
         /// Path to the persisted ledger snapshot
         #[arg(long, default_value = "forge-ledger.json")]
@@ -73,6 +83,16 @@ enum DaemonCommand {
         /// Optional bearer token protecting administrative HTTP API routes
         #[arg(long)]
         api_token: Option<String>,
+
+        /// Disable the provider stake gate on this node.
+        ///
+        /// Also settable with `TIRAMI_STAKE_GATE=0` or
+        /// `stake_gate_enabled = false` in config.toml. Intended for
+        /// private fleets where every node has the same owner, so Sybil
+        /// resistance buys nothing and the gate only stops the fleet
+        /// once the welcome loan expires (#162).
+        #[arg(long, default_value_t = false)]
+        no_stake_gate: bool,
     },
 }
 
@@ -103,14 +123,19 @@ async fn main() -> anyhow::Result<()> {
             p2p_bind,
             ledger,
             api_token,
+            no_stake_gate,
             bootstrap_peers,
         } => {
             let node_key_path = ensure_default_node_key()?;
-            let api_bearer_token = resolve_api_token_for_bind(&bind, api_token)?;
-            let mut config = Config::for_data_dir(default_data_dir()?);
-            config.api_port = port;
-            config.api_bind_addr = bind;
-            config.api_bearer_token = api_bearer_token;
+            let mut config = load_operator_config(default_data_dir()?)?;
+            config.api_port = port.unwrap_or(config.api_port);
+            if let Some(bind) = bind {
+                config.api_bind_addr = bind;
+            }
+            config.api_bearer_token =
+                resolve_api_token_for_bind(&config.api_bind_addr, api_token)?;
+            config.stake_gate_enabled =
+                resolve_stake_gate(no_stake_gate, config.stake_gate_enabled);
             config.p2p_bind_addr = p2p_bind;
             config.node_key_path = Some(node_key_path);
             config.ledger_path = Some(PathBuf::from(&ledger));
@@ -139,13 +164,19 @@ async fn main() -> anyhow::Result<()> {
             bind,
             ledger,
             api_token,
+            no_stake_gate,
         } => {
-            let api_bearer_token = resolve_api_token_for_bind(&bind, api_token)?;
-            let mut config = Config::for_data_dir(ensure_default_data_dir()?);
-            config.api_port = port;
-            config.api_bind_addr = bind;
-            config.api_bearer_token = api_bearer_token;
+            let mut config = load_operator_config(ensure_default_data_dir()?)?;
+            config.api_port = port.unwrap_or(config.api_port);
+            if let Some(bind) = bind {
+                config.api_bind_addr = bind;
+            }
+            config.api_bearer_token =
+                resolve_api_token_for_bind(&config.api_bind_addr, api_token)?;
+            config.stake_gate_enabled =
+                resolve_stake_gate(no_stake_gate, config.stake_gate_enabled);
             config.ledger_path = Some(PathBuf::from(&ledger));
+            let api_port = config.api_port;
             let node = tirami_node::TiramiNode::new(config);
 
             if let (Some(model), Some(tokenizer)) = (model, tokenizer) {
@@ -153,7 +184,7 @@ async fn main() -> anyhow::Result<()> {
                     .await?;
             }
 
-            tracing::info!("Starting forged local API server on port {}", port);
+            tracing::info!("Starting forged local API server on port {}", api_port);
 
             tokio::select! {
                 result = node.serve_api() => { result?; }
@@ -166,6 +197,36 @@ async fn main() -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+/// Mirror of `main.rs::load_operator_config`. `tiramisu` is a separate
+/// binary with no shared module, so the resolution helpers are duplicated
+/// here — the same way `resolve_api_token` already is.
+fn load_operator_config(data_dir: impl Into<PathBuf>) -> anyhow::Result<Config> {
+    let data_dir = data_dir.into();
+    let (config, unknown) = Config::load_from_data_dir(&data_dir)?;
+    for key in &unknown {
+        tracing::warn!(
+            "ignoring unknown key `{}` in {}",
+            key,
+            Config::config_file_path(&data_dir).display()
+        );
+    }
+    Ok(config)
+}
+
+/// Mirror of `main.rs::resolve_stake_gate` (#162).
+fn resolve_stake_gate(no_stake_gate: bool, from_config: bool) -> bool {
+    if no_stake_gate {
+        return false;
+    }
+    match std::env::var("TIRAMI_STAKE_GATE") {
+        Ok(v) => !matches!(
+            v.trim().to_ascii_lowercase().as_str(),
+            "0" | "false" | "no" | "off"
+        ),
+        Err(_) => from_config,
+    }
 }
 
 fn resolve_api_token(flag: Option<String>) -> Option<String> {

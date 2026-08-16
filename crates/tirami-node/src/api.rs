@@ -1929,9 +1929,10 @@ async fn openai_chat_completions(
     //   - `PreviouslySlashed` | `StakeRequired` → 403 with the
     //                             machine-readable reason in the body.
     //
-    // Default is `false` so this PR ships strictly additively. A
-    // follow-up wave (Phase 21 Wave 2) integrates welcome-loan
-    // eligibility into the verdict and flips the default to `true`.
+    // Default is `true` since Phase 21 Wave 2. Operators who need it off —
+    // a private fleet has no Sybil attacker to deter — can use
+    // `--no-stake-gate`, `TIRAMI_STAKE_GATE=0`, or
+    // `stake_gate_enabled = false` in config.toml (#162).
     if state.config.stake_gate_enabled {
         let ledger = state.ledger.lock().await;
         let staking = state.staking_pool.lock().await;

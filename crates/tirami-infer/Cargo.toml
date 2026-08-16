@@ -10,10 +10,16 @@ readme.workspace = true
 authors.workspace = true
 description = "llama.cpp inference engine integration for Tirami"
 
+# GPU backends are selected at build time and compiled into llama.cpp.
+# Each is a straight passthrough to `llama-cpp-2`; no Rust code is
+# conditionally compiled on them. `rocm` and `vulkan` are offered because
+# upstream supports them, but this project does not test either.
 [features]
 default = []
 metal = ["llama-cpp-2/metal"]
 cuda = ["llama-cpp-2/cuda"]
+rocm = ["llama-cpp-2/rocm"]
+vulkan = ["llama-cpp-2/vulkan"]
 
 [dependencies]
 tirami-core = { workspace = true }

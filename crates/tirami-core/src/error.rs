@@ -39,4 +39,8 @@ pub enum TiramiError {
 
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
+
+    /// Operator config file could not be read or parsed (#162).
+    #[error("config error: {0}")]
+    Config(String),
 }

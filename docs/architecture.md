@@ -15,22 +15,22 @@ The economy layer handles TRM accounting, trade recording, pricing, and agent bu
 │  Third-party agents, dashboards, adapters       │
 └──────────────────┬──────────────────────────────┘
                    │
-┌──────────────────▼──────────────────────────────┐
-│  Economic Layer (Tirami-original)                │
-│                                                  │
-│  ┌──────────────┐ ┌──────────┐ ┌─────────────┐ │
-│  │ tirami-ledger │ │ pricing  │ │ agent       │ │
-│  │ TRM trades    │ │ supply/  │ │ budgets     │ │
-│  │ reputation   │ │ demand   │ │ /v1/tirami/* │ │
-│  │ yield        │ │          │ │             │ │
-│  └──────────────┘ └──────────┘ └─────────────┘ │
-│                                                  │
-│  ┌──────────────┐ ┌──────────────────────────┐  │
-│  │ forge-verify │ │ forge-bridge (optional)  │  │
-│  │ dual-sign    │ │ TRM ↔ BTC Lightning      │  │
-│  │ gossip sync  │ │ TRM ↔ stablecoin         │  │
-│  └──────────────┘ └──────────────────────────┘  │
-└──────────────────┬──────────────────────────────┘
+┌──────────────────▼──────────────────────────────────────┐
+│  Economic Layer (Tirami-original)                       │
+│                                                         │
+│  ┌────────────────┐ ┌────────────┐ ┌───────────────┐    │
+│  │ tirami-ledger  │ │ pricing    │ │ agent budgets │    │
+│  │ TRM trades     │ │ supply/    │ │ /v1/tirami/*  │    │
+│  │ reputation     │ │ demand     │ │               │    │
+│  │ yield          │ │            │ │               │    │
+│  └────────────────┘ └────────────┘ └───────────────┘    │
+│                                                         │
+│  ┌────────────────┐ ┌──────────────────────────────┐    │
+│  │ tirami-verify  │ │ tirami-bridge (optional)     │    │
+│  │ dual-sign      │ │ TRM ↔ BTC Lightning          │    │
+│  │ gossip sync    │ │ TRM ↔ stablecoin             │    │
+│  └────────────────┘ └──────────────────────────────┘    │
+└──────────────────┬──────────────────────────────────────┘
                    │
 ┌──────────────────▼──────────────────────────────┐
 │  Inference Layer (mesh-llm-derived + Tirami)    │
@@ -79,7 +79,7 @@ Core responsibilities:
 - Export settlement statements for off-protocol bridges
 - Persist snapshots to disk with HMAC-SHA256 integrity
 
-### forge-verify — Proof of Useful Work (target)
+### tirami-verify — Proof of Useful Work (target)
 
 Ensures trade claims are legitimate:
 - Dual-sign protocol: both provider and consumer sign each TradeRecord
@@ -87,7 +87,7 @@ Ensures trade claims are legitimate:
 - Verification: any node can validate both signatures
 - Fraud detection: mismatched or unsigned trades are rejected
 
-### forge-bridge — External Settlement (optional)
+### tirami-bridge — External Settlement (optional)
 
 Converts TRM to external value for operators who need it:
 - Bitcoin Lightning: TRM → msats via configurable exchange rate

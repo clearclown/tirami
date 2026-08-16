@@ -334,14 +334,11 @@ NOT in Phase 18.5 (future phases):
 
 ## Narrative commitment
 
-All future docs / PRs / announcements should lead with:
+**Moved to [`pmvv.md`](pmvv.md).** The do/don't list this section used to
+carry now lives there alongside the purpose and mission it serves, so there
+is one place to check before writing a README, a PR description, or an
+announcement.
 
-> Tirami is how your personal AI agent earns and spends its own
-> compute, while you just see the results.
+The line this document contributed, and which still holds:
 
-Not:
-- "Proof of useful work blockchain protocol" (too abstract)
-- "GPU Airbnb" (no user, no vocabulary)
-- "Distributed LLM inference marketplace" (jargon)
-
-The tagline: **"My AI runs on my Mac. And yours. And theirs."**
+> **"My AI runs on my Mac. And yours. And theirs."**

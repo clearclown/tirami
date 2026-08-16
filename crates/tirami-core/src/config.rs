@@ -273,6 +273,19 @@ pub struct Config {
     /// runaway loops without bottlenecking honest agents.
     #[serde(default = "default_chat_concurrency_cap")]
     pub chat_concurrency_cap: u32,
+
+    /// #163 — whether this node will fork a llama.cpp `rpc-server` when a
+    /// peer asks it to (`Payload::StartRpcServer`).
+    ///
+    /// Default **`false`**. Before this flag the receive handler honoured
+    /// the request from any connected peer, on any port ≥ 1024, with no
+    /// authorization check at all — `Payload::TradeProposal` verifies the
+    /// sender, this did not. Spawning a process on request is not something
+    /// a node should do because someone asked nicely, so it is opt-in.
+    ///
+    /// Turn it on for machines you intend to contribute to a model split.
+    #[serde(default)]
+    pub rpc_server_enabled: bool,
 }
 
 /// Phase 21 Wave 2 — stake gate is **on by default** so that fresh
@@ -412,6 +425,7 @@ const KNOWN_FIELDS: &[&str] = &[
     "max_slashes_per_tick",
     "gossip_max_seen",
     "chat_concurrency_cap",
+    "rpc_server_enabled",
 ];
 
 impl Config {
@@ -593,6 +607,7 @@ impl Default for Config {
             max_slashes_per_tick: 100,
             gossip_max_seen: 100_000,
             chat_concurrency_cap: 64,
+            rpc_server_enabled: false,
         }
     }
 }

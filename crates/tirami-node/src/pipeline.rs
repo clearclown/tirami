@@ -92,6 +92,16 @@ impl PipelineCoordinator {
         let trade_accept_dispatcher: TradeAcceptDispatcher =
             Arc::new(Mutex::new(HashMap::new()));
 
+        // #163 — rpc-server subprocesses this node started on behalf of a
+        // peer, keyed by the requester's session id. Previously the spawning
+        // task parked on `ctrl_c()` forever to keep the child alive, which
+        // meant the port could never be reused, an orphan outlived any
+        // requester that crashed, and every request leaked a task. Owning
+        // them here ties their lifetime to the seed loop instead, and
+        // `RpcServer`'s existing `Drop` does the killing.
+        let rpc_servers: Arc<Mutex<HashMap<u64, tirami_infer::rpc_manager::RpcServer>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+
         loop {
             match self.transport.recv().await {
                 Some((peer_id, envelope)) => match envelope.payload.clone() {
@@ -245,63 +255,127 @@ impl PipelineCoordinator {
                         tracing::debug!("Heartbeat from {}: load={:.0}%", peer_id, hb.load * 100.0);
                     }
                     Payload::StartRpcServer(req) => {
+                        // Forking a process because a peer asked is not
+                        // something to do by default (#163). Opt in per node
+                        // with `rpc_server_enabled`.
+                        if !config.rpc_server_enabled {
+                            tracing::warn!(
+                                "Refusing StartRpcServer from {}: rpc_server_enabled = false",
+                                peer_id
+                            );
+                            let msg = Envelope {
+                                msg_id: rand::random(),
+                                sender: node_id.clone(),
+                                timestamp: now_millis(),
+                                payload: Payload::RpcServerFailed(RpcServerFailed {
+                                    reason: "rpc server spawning is disabled on this node"
+                                        .to_string(),
+                                    session_id: req.session_id,
+                                }),
+                            };
+                            let _ = self.transport.send_to(&peer_id, &msg).await;
+                            continue;
+                        }
+
+                        if rpc_servers.lock().await.contains_key(&req.session_id) {
+                            tracing::warn!(
+                                "Duplicate StartRpcServer session {} from {}",
+                                req.session_id,
+                                peer_id
+                            );
+                            continue;
+                        }
+
                         tracing::info!(
-                            "Peer {} requests RPC server start (layers {}..{}, port {})",
+                            "Peer {} requests RPC server start (session {}, layers {}..{}, port {})",
                             peer_id,
+                            req.session_id,
                             req.layer_range.start,
                             req.layer_range.end,
                             req.port
                         );
 
-                        // Attempt to start rpc-server subprocess
                         let transport = self.transport.clone();
                         let node_id = node_id.clone();
                         let peer_id = peer_id.clone();
+                        let rpc_servers = rpc_servers.clone();
                         tokio::spawn(async move {
-                            match tirami_infer::rpc_manager::RpcServer::spawn(req.port) {
-                                Ok(_server) => {
-                                    let msg = Envelope {
-                                        msg_id: rand::random(),
-                                        sender: node_id,
-                                        timestamp: now_millis(),
-                                        payload: Payload::RpcServerReady(RpcServerReady {
-                                            port: req.port,
-                                        }),
-                                    };
-                                    let _ = transport.send_to(&peer_id, &msg).await;
-                                    // Keep server alive by holding _server
-                                    // In production, store in a map
-                                    tracing::info!("RPC server running on port {}", req.port);
-                                    // Keep the task alive to hold the server process
-                                    tokio::signal::ctrl_c().await.ok();
+                            // `spawn` polls the listening socket with
+                            // `std::thread::sleep` for up to 10 s. Running
+                            // that on a runtime worker blocks it (#163).
+                            let opts = tirami_infer::rpc_manager::RpcServerOptions::new(req.port);
+                            let spawned = tokio::task::spawn_blocking(move || {
+                                tirami_infer::rpc_manager::RpcServer::spawn_with(&opts)
+                            })
+                            .await;
+
+                            let payload = match spawned {
+                                Ok(Ok(server)) => {
+                                    let port = server.port();
+                                    rpc_servers.lock().await.insert(req.session_id, server);
+                                    tracing::info!(
+                                        "rpc-server running on port {} for session {}",
+                                        port,
+                                        req.session_id
+                                    );
+                                    Payload::RpcServerReady(RpcServerReady {
+                                        port,
+                                        session_id: req.session_id,
+                                    })
                                 }
-                                Err(e) => {
-                                    let msg = Envelope {
-                                        msg_id: rand::random(),
-                                        sender: node_id,
-                                        timestamp: now_millis(),
-                                        payload: Payload::RpcServerFailed(RpcServerFailed {
-                                            reason: e.to_string(),
-                                        }),
-                                    };
-                                    let _ = transport.send_to(&peer_id, &msg).await;
-                                }
-                            }
+                                Ok(Err(e)) => Payload::RpcServerFailed(RpcServerFailed {
+                                    reason: e.to_string(),
+                                    session_id: req.session_id,
+                                }),
+                                Err(e) => Payload::RpcServerFailed(RpcServerFailed {
+                                    reason: format!("spawn task failed: {e}"),
+                                    session_id: req.session_id,
+                                }),
+                            };
+
+                            let msg = Envelope {
+                                msg_id: rand::random(),
+                                sender: node_id,
+                                timestamp: now_millis(),
+                                payload,
+                            };
+                            let _ = transport.send_to(&peer_id, &msg).await;
                         });
+                    }
+                    Payload::StopRpcServer(stop) => {
+                        // Dropping the `RpcServer` kills the child via its
+                        // `Drop` impl, which existed all along but could
+                        // never run under the old `ctrl_c()` parking.
+                        match rpc_servers.lock().await.remove(&stop.session_id) {
+                            Some(server) => tracing::info!(
+                                "Stopped rpc-server on port {} (session {}, requested by {})",
+                                server.port(),
+                                stop.session_id,
+                                peer_id
+                            ),
+                            None => tracing::debug!(
+                                "StopRpcServer for unknown session {} from {}",
+                                stop.session_id,
+                                peer_id
+                            ),
+                        }
                     }
                     Payload::RpcServerReady(ready) => {
                         tracing::info!(
-                            "Peer {} has RPC server ready on port {}",
+                            "Peer {} has RPC server ready on port {} (session {})",
                             peer_id,
-                            ready.port
+                            ready.port,
+                            ready.session_id
                         );
-                        // QUIC tunnel + engine RPC configuration will be wired
-                        // when split-inference runtime lands (Phase 4).
+                        // The requester side — tunnel setup and handing the
+                        // endpoint to the engine — lands with the sender
+                        // orchestrator (#162).
                     }
                     Payload::RpcServerFailed(failed) => {
                         tracing::warn!(
-                            "Peer {} failed to start RPC server: {}",
+                            "Peer {} failed to start RPC server (session {}): {}",
                             peer_id,
+                            failed.session_id,
                             failed.reason
                         );
                     }

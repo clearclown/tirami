@@ -161,7 +161,15 @@ async fn chunked_payload_with_idle_gaps_survives_intact() {
     let mut received = vec![0u8; CHUNK * CHUNKS];
     let reader = client_read.read_exact(&mut received);
 
-    let (w, r) = tokio::join!(writer, reader);
+    // Bounded: a tunnel that loses the response direction would otherwise hang
+    // this test forever instead of failing it. Measured round trip for this
+    // payload is well under a second.
+    let (w, r) = tokio::time::timeout(
+        std::time::Duration::from_secs(20),
+        async { tokio::join!(writer, reader) },
+    )
+    .await
+    .expect("tunnel did not return the payload within 20s — response path is broken");
     w.expect("write through tunnel");
     r.expect("read back every byte");
 

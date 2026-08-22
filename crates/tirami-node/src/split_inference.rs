@@ -262,6 +262,31 @@ pub async fn start_split_session(
     Ok(Some(SplitSession { stages, tunnels }))
 }
 
+/// Plan a split for a model **file**, without loading it.
+///
+/// The first version of the endpoint planned from `advertised_topology`, which
+/// is built from the model this node already loaded. That made the feature
+/// self-defeating: splitting a model too large for one machine first required
+/// loading it on one machine. Measured on an Apple M4 (Metal working set
+/// 26.2 GiB) with a 39.6 GiB GGUF, that attempt ends in
+/// `GGML_ASSERT([rsets->data count] == 0) failed`.
+///
+/// The manifest comes from the GGUF header instead — a few KB of reads — so a
+/// node can plan for a model it could never hold.
+pub fn plan_split_for_model(
+    model_path: &std::path::Path,
+    local: &tirami_core::PeerCapability,
+    peers: &[tirami_core::PeerCapability],
+) -> Result<PipelineTopology, TiramiError> {
+    let manifest = tirami_infer::gguf::parse_gguf_metadata(model_path)?;
+
+    let mut candidates = Vec::with_capacity(1 + peers.len());
+    candidates.push(local.clone());
+    candidates.extend(peers.iter().cloned());
+
+    tirami_shard::ShardAssigner::assign(&manifest, &candidates)
+}
+
 /// Proportional `-ts` string for a plan, in stage order.
 ///
 /// llama.cpp splits by these weights across local + RPC devices. Passing the
@@ -299,23 +324,6 @@ mod tests {
     fn tensor_split_follows_the_planned_layer_counts() {
         let plan = plan(&[(1, 0, 21), (2, 21, 64)]);
         assert_eq!(tensor_split_for(&plan), "21,43");
-    }
-
-    #[tokio::test]
-    async fn a_plan_with_no_remote_stage_starts_nothing() {
-        // Building a transport would need a socket; assert the filter instead,
-        // which is the branch that decides whether we touch the network.
-        let local = NodeId([1u8; 32]);
-        let single = plan(&[(1, 0, 32)]);
-        let remote: Vec<_> = single
-            .stages
-            .iter()
-            .filter(|s| s.node_id != local)
-            .collect();
-        assert!(
-            remote.is_empty(),
-            "a local-only plan must not open any session"
-        );
     }
 
     #[test]

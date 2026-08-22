@@ -3020,17 +3020,27 @@ async fn forge_split_inference(
         ));
     };
 
-    let plan = state
-        .advertised_topology
-        .lock()
+    // Plan from the requested GGUF, not from whatever this node happens to
+    // have loaded. Taking `advertised_topology` meant a model could only be
+    // split if it first fit on one machine — the opposite of the point.
+    let cluster = state.cluster.clone().ok_or_else(|| {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "no cluster — connect a peer first".to_string(),
+        )
+    })?;
+    let local_capability = cluster.local_capability().clone();
+    let peers: Vec<tirami_core::PeerCapability> = cluster
+        .discovery()
+        .peers_by_capability()
         .await
-        .clone()
-        .ok_or_else(|| {
-            (
-                StatusCode::CONFLICT,
-                "no topology plan — load a model and connect peers first".to_string(),
-            )
-        })?;
+        .into_iter()
+        .filter_map(|peer| peer.capability)
+        .collect();
+
+    let model_path = std::path::PathBuf::from(&req.model_path);
+    let plan = crate::split_inference::plan_split_for_model(&model_path, &local_capability, &peers)
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
 
     let local = ctx.transport.tirami_node_id();
 

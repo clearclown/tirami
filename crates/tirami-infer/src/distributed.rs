@@ -322,16 +322,21 @@ pub fn extract_generated_text(stdout: &str, prompt: &str) -> String {
 /// 0.00.079.606 D load_tensors: layer   0 assigned to device RPC0, is_swa = 0
 /// ```
 ///
-/// Two things this deliberately does **not** rely on:
+/// Two signals, either of which is sufficient:
 ///
-/// - **The `model buffer size` line.** Issue #164 quoted it, and it is present,
-///   but on b10360 it reads `0.00 MiB` for *every* device — including the local
-///   Metal one — on a split that demonstrably worked (32 layers on RPC0, 30 on
-///   MTL0, 176.9 tok/s). Treating 0 as "contributed nothing" rejects healthy
-///   runs, so a positive size is accepted as corroboration and a zero proves
-///   nothing.
-/// - **A bare `starts_with("load_tensors:")`.** Real lines carry a
-///   `TIMESTAMP LEVEL` prefix; matching the start of the line never fires.
+/// - **Per-layer assignment** (above). Present on b10360.
+/// - **A non-zero `model buffer size`** for an RPC device — the shape issue
+///   #164 quoted, and what older builds report.
+///
+/// The buffer-size signal needs care. b10360's llama-cli loads the model
+/// **twice**, and the first pass reports `0.00 MiB` for *every* device,
+/// local Metal included. Reading only the first occurrence and concluding the
+/// number is unusable is wrong; the second pass carries the real figures
+/// (`RPC0 … = 37.82 MiB` on the captured run). Any positive size counts, and a
+/// zero is simply ignored rather than treated as proof of failure.
+///
+/// A bare `starts_with("load_tensors:")` never fires: real lines carry a
+/// `TIMESTAMP LEVEL` prefix.
 ///
 /// Requires llama-cli to run with `-v`. Without it stderr is empty.
 pub fn verify_layers_distributed(
@@ -505,16 +510,44 @@ mod tests {
         assert!(err.to_string().contains("0 of 1"), "{err}");
     }
 
-    /// b10360 reports `0.00 MiB` for *every* device, local included, on a split
-    /// that worked. Treating a zero as "contributed nothing" would reject every
-    /// healthy run on this build.
+    /// b10360 loads the model twice. The first pass reports `0.00 MiB` for
+    /// every device, the second the real figures. Stopping at the first
+    /// occurrence is how one concludes the number is unusable; it is not.
     #[test]
-    fn a_zero_buffer_size_does_not_by_itself_mean_failure() {
+    fn the_fixture_carries_both_a_zero_and_a_real_buffer_size() {
         assert!(
             REAL_SPLIT_OK.contains("RPC0[127.0.0.1:50052] model buffer size =     0.00 MiB"),
-            "fixture should still contain the zero-sized line"
+            "first pass reports zero"
         );
-        verify_layers_distributed(REAL_SPLIT_OK, 1).expect("layer assignment outweighs the zero");
+        assert!(
+            REAL_SPLIT_OK.contains("RPC0[127.0.0.1:50052] model buffer size =    37.82 MiB"),
+            "second pass reports the real size"
+        );
+        verify_layers_distributed(REAL_SPLIT_OK, 1).expect("a leading zero must not decide it");
+    }
+
+    /// Pins the per-layer signal on its own: a build that reports assignment
+    /// but no buffer sizes must still be recognised as distributed.
+    #[test]
+    fn layer_assignment_alone_is_sufficient() {
+        let only_layers = "\
+0.00.079.606 D load_tensors: layer   0 assigned to device RPC0, is_swa = 0
+0.00.079.609 D load_tensors: layer   1 assigned to device RPC0, is_swa = 0
+0.00.079.612 D load_tensors: layer   2 assigned to device MTL0, is_swa = 0";
+        verify_layers_distributed(only_layers, 1).expect("RPC0 took layers");
+    }
+
+    /// Pins the other direction: a device that only ever reported zero, with no
+    /// layers assigned to it, contributed nothing.
+    #[test]
+    fn a_zero_size_with_no_layers_is_not_distributed() {
+        let zero_only = "\
+0.00.082.446 I load_tensors:         MTL0 model buffer size =    98.87 MiB
+0.00.082.447 I load_tensors: RPC0[127.0.0.1:50052] model buffer size =     0.00 MiB";
+        assert!(
+            verify_layers_distributed(zero_only, 1).is_err(),
+            "0.00 MiB and no assigned layers means the peer contributed nothing"
+        );
     }
 
     /// Older builds (the shape #164 quoted) report a real size and may not emit
